@@ -1,0 +1,43 @@
+[project]
+name = "echo-as-record"
+version = "0.0.0"
+description = "Ear (Echo As Record) monorepo root: shared tooling, contracts and checks"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "jsonschema[format-nongpl]>=4.23",
+    "pre-commit>=4",
+    "pyright>=1.1.400",
+    "pytest>=8",
+    "ruff>=0.17",
+]
+
+[tool.uv]
+# 仓库根只放公共工具链，本身不是可安装的包。
+# 模块包建好后在这里加入 workspace，例如：
+# [tool.uv.workspace]
+# members = ["libs/*", "services/*"]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["docs", "ai-docs"]
+
+[tool.ruff.lint]
+# 中文注释和字符串使用全角标点
+ignore = ["RUF001", "RUF002", "RUF003"]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+extraPaths = ["tools"]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+include = ["tools", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

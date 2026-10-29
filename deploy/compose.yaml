@@ -1,0 +1,5 @@
+# Ear 一键部署（一人一套）。各模块的服务在实现后加入。
+# 用法：cp deploy/.env.example deploy/.env，填好后 docker compose -f deploy/compose.yaml up -d
+name: ear
+
+services: {}

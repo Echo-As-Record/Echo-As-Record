@@ -1,0 +1,13 @@
+{
+  "event_id": "0199f0a2-7777-7aaa-9bbb-000000000007",
+  "event_type": "data_changed",
+  "occurred_at": "2026-10-29T21:05:01+08:00",
+  "data_type": "attribution",
+  "data_id": "0199f0a1-1111-7aaa-9bbb-000000000001",
+  "operation": "updated",
+  "new_version": 2,
+  "old_version": 1,
+  "root_feedback_id": "0199f0a2-7c3e-7a10-8b2c-4d5e6f708192",
+  "depth": 0,
+  "skip_history": false
+}

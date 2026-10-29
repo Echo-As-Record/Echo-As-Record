@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ear:contracts:events:reevaluation-requested",
+  "title": "ReevaluationRequested（「请求重新判断」）",
+  "$comment": "DRAFT：按设计文档 v1.1 第 4.1 节与补充章节第 3 节起草，待 ① 负责人与 I 审定。字段只能增加，不能减少或改义。",
+  "description": "只由 ⑤ 发出，按「数据类型 → 负责模块」登记表分发。负责模块写入新版本时，原样带上 root_feedback_id 和 depth。",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "event_id",
+    "event_type",
+    "occurred_at",
+    "target_type",
+    "target_id",
+    "cause",
+    "change_description",
+    "root_feedback_id",
+    "depth"
+  ],
+  "properties": {
+    "event_id": { "$ref": "#/$defs/id" },
+    "event_type": { "const": "reevaluation_requested" },
+    "occurred_at": { "$ref": "#/$defs/timestamp" },
+    "target_type": {
+      "$ref": "#/$defs/data_type",
+      "description": "要重新判断的数据类型；MVP 只有 attribution（→ ③）和 artifact（→ ④）"
+    },
+    "target_id": { "$ref": "#/$defs/id" },
+    "cause": {
+      "type": "object",
+      "description": "引起这次请求的那次修改",
+      "additionalProperties": true,
+      "required": ["data_type", "data_id", "old_version", "new_version"],
+      "properties": {
+        "data_type": { "$ref": "#/$defs/data_type" },
+        "data_id": { "$ref": "#/$defs/id" },
+        "old_version": { "type": ["integer", "null"], "minimum": 1 },
+        "new_version": { "type": ["integer", "null"], "minimum": 1 }
+      }
+    },
+    "change_description": {
+      "type": "string",
+      "minLength": 1,
+      "description": "可读的修改描述，交给大模型使用，例如「局部说话人 C：丙 → 丁」"
+    },
+    "root_feedback_id": { "$ref": "#/$defs/root_feedback_id" },
+    "depth": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "触发它的事件的深度 + 1"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "description": "UUIDv7，小写"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$",
+      "description": "RFC 3339，UTC，以 Z 结尾"
+    },
+    "data_type": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "root_feedback_id": {
+      "description": "引起这次修改的用户反馈 id；系统发起的行为为字面量 \"system\"",
+      "oneOf": [{ "$ref": "#/$defs/id" }, { "const": "system" }]
+    }
+  }
+}

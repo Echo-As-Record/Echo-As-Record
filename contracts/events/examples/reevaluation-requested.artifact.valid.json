@@ -1,0 +1,16 @@
+{
+  "event_id": "0199f0a2-8888-7aaa-9bbb-000000000008",
+  "event_type": "reevaluation_requested",
+  "occurred_at": "2026-10-29T13:05:02Z",
+  "target_type": "artifact",
+  "target_id": "0199f0a1-2222-7aaa-9bbb-000000000002",
+  "cause": {
+    "data_type": "attribution",
+    "data_id": "0199f0a1-1111-7aaa-9bbb-000000000001",
+    "old_version": 1,
+    "new_version": 2
+  },
+  "change_description": "局部说话人 A：甲 → 乙",
+  "root_feedback_id": "0199f0a2-7c3e-7a10-8b2c-4d5e6f708192",
+  "depth": 1
+}

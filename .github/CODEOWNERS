@@ -1,0 +1,20 @@
+# 代码负责人。分工会议后按模块负责人填写 GitHub 用户名。
+# 规则：后匹配的行优先；负责人必须对仓库有写权限。
+
+# 默认
+*                       @ay-tony
+
+# 已审定文档、公共约定：需要 ① 负责人与 I 一起审核（会后补上）
+/docs/                  @ay-tony
+/contracts/             @ay-tony
+/AGENTS.md              @ay-tony
+/README.md              @ay-tony
+
+# 各模块（会后填写负责人）
+# /services/storage/      @<①负责人>
+# /services/adapters/     @<②负责人>
+# /services/attribution/  @<③负责人>
+# /services/extraction/   @<④负责人>
+# /services/dependency/   @<⑤负责人>
+# /services/api/          @<⑥负责人>
+# /services/llm_gateway/  @<⑦负责人>

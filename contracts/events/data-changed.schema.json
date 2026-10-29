@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ear:contracts:events:data-changed",
+  "title": "DataChanged（「数据库被修改」）",
+  "$comment": "DRAFT：按设计文档 v1.1 第 4.1 节起草，待 ① 负责人与 I 审定。字段只能增加，不能减少或改义。",
+  "description": "写入原始数据、语义信息、归属关系、规则时由 ① 自动发出；写入系统记录时不发。只带 id 与版本号，不带内容。",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "event_id",
+    "event_type",
+    "occurred_at",
+    "data_type",
+    "data_id",
+    "operation",
+    "new_version",
+    "old_version",
+    "root_feedback_id",
+    "depth",
+    "skip_history"
+  ],
+  "properties": {
+    "event_id": { "$ref": "#/$defs/id", "description": "事件本身的 id，用于日志与去重" },
+    "event_type": { "const": "data_changed" },
+    "occurred_at": { "$ref": "#/$defs/timestamp" },
+    "data_type": {
+      "$ref": "#/$defs/data_type",
+      "description": "数据类型，例如 voiceprint、gps_point、feedback、attribution、artifact。扩展模块可登记新类型，因此不用枚举"
+    },
+    "data_id": { "$ref": "#/$defs/id" },
+    "operation": { "enum": ["created", "updated", "superseded"] },
+    "new_version": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "description": "写入后的版本号；原始数据没有版本时为 null"
+    },
+    "old_version": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "description": "写入前的版本号；新增时为 null"
+    },
+    "root_feedback_id": { "$ref": "#/$defs/root_feedback_id" },
+    "depth": { "type": "integer", "minimum": 0, "description": "依赖分析深度" },
+    "skip_history": {
+      "type": "boolean",
+      "description": "「不处理历史」标记，为 true 时 ⑤ 跳过（补充章节 3.4）"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "description": "UUIDv7，小写"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$",
+      "description": "RFC 3339，UTC，以 Z 结尾"
+    },
+    "data_type": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "root_feedback_id": {
+      "description": "引起这次修改的用户反馈 id；系统发起的行为为字面量 \"system\"",
+      "oneOf": [{ "$ref": "#/$defs/id" }, { "const": "system" }]
+    }
+  }
+}
