@@ -1,11 +1,9 @@
 ---
-generated-by: Claude (AI)
-generated-at: 2026-10-29
-based-on: docs/design/design-v1.1.md (2026-10-26), docs/design/signals-supplement.md (2026-10-29)
-status: 提案，待分工会议讨论；审定后移到 docs/glossary.md
+reviewed-by: aytony
+reviewed-at: 2026-10-30
 ---
 
-# 术语表（中 → 代码标识）提案
+# 术语表（中 → 代码标识）
 
 文档用中文，代码、数据库、事件、日志一律用下表的英文标识。**同一个概念只用一个标识。**
 代码标识用 `snake_case`；类名用对应的 `PascalCase`（如 `ActionSuggestion`）。
@@ -67,6 +65,7 @@ status: 提案，待分工会议讨论；审定后移到 docs/glossary.md
 |---|---|
 | id | `id` |
 | 类型 | `data_type` |
+| 版本号 | `version`（原始数据固定为 1） |
 | 事件时间区间 | `event_start`、`event_end`（半开区间；单点时相等） |
 | 入库时间 | `ingested_at` |
 | 来源：设备、渠道、用户 | `source.device`、`source.channel`、`source.user` |

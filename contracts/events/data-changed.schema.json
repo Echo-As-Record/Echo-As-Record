@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:ear:contracts:events:data-changed",
   "title": "DataChanged（「数据库被修改」）",
-  "$comment": "DRAFT：按设计文档 v1.1 第 4.1 节起草，待 ① 负责人与 I 审定。字段只能增加，不能减少或改义。",
+  "$comment": "按设计文档 v1.1 第 4.1 节制定，2026-10-30 由 aytony 审定。字段只能增加，不能减少或改义。",
   "description": "写入原始数据、语义信息、归属关系、规则时由 ① 自动发出；写入系统记录时不发。只带 id 与版本号，不带内容。",
   "type": "object",
   "additionalProperties": true,
@@ -30,9 +30,9 @@
     "data_id": { "$ref": "#/$defs/id" },
     "operation": { "enum": ["created", "updated", "superseded"] },
     "new_version": {
-      "type": ["integer", "null"],
+      "type": "integer",
       "minimum": 1,
-      "description": "写入后的版本号；原始数据没有版本时为 null"
+      "description": "写入后的版本号；原始数据固定为 1"
     },
     "old_version": {
       "type": ["integer", "null"],

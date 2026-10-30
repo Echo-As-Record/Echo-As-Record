@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:ear:contracts:events:reevaluation-requested",
   "title": "ReevaluationRequested（「请求重新判断」）",
-  "$comment": "DRAFT：按设计文档 v1.1 第 4.1 节与补充章节第 3 节起草，待 ① 负责人与 I 审定。字段只能增加，不能减少或改义。",
+  "$comment": "按设计文档 v1.1 第 4.1 节与补充章节第 3 节制定，2026-10-30 由 aytony 审定。字段只能增加，不能减少或改义。",
   "description": "只由 ⑤ 发出，按「数据类型 → 负责模块」登记表分发。负责模块写入新版本时，原样带上 root_feedback_id 和 depth。",
   "type": "object",
   "additionalProperties": true,
@@ -35,7 +35,7 @@
         "data_type": { "$ref": "#/$defs/data_type" },
         "data_id": { "$ref": "#/$defs/id" },
         "old_version": { "type": ["integer", "null"], "minimum": 1 },
-        "new_version": { "type": ["integer", "null"], "minimum": 1 }
+        "new_version": { "type": "integer", "minimum": 1 }
       }
     },
     "change_description": {
