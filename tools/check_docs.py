@@ -1,6 +1,6 @@
 """检查文档的审定状态。
 
-规则（详见 AGENTS.md「文档分级」）：
+规则（详见 README.md「文档分级」）：
 - ai-docs/ 下（任意层级）是工作文档：未审定，不得带 reviewed-by。
 - .github/ 下的模板不检查。
 - 其余所有 Markdown 都是已审定文档：必须有 front matter，写明
