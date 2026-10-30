@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ear:contracts:records:raw-record",
+  "title": "RawRecord（原始数据）",
+  "$comment": "DRAFT：按设计文档 v1.1 第 3.2、3.3 节起草，待 ① 负责人与 I 审定。字段只能增加，不能减少或改义。",
+  "description": "原始数据的公共字段（设计文档 3.3）。本约定描述存入 ① 之后的完整记录；写入方提交时不带 version 和 ingested_at，由 ① 填写，其余字段由写入方填写。payload 的具体字段按 data_type 另行约定：② 负责说明各类原始数据，用户反馈由 ⑥ 与 ③④ 约定。原始数据只追加，不修改。",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "id",
+    "data_type",
+    "version",
+    "event_start",
+    "event_end",
+    "ingested_at",
+    "source",
+    "adapter_version",
+    "dedup_key",
+    "payload"
+  ],
+  "properties": {
+    "id": { "$ref": "#/$defs/id", "description": "由写入方生成" },
+    "data_type": {
+      "$ref": "#/$defs/snake_case",
+      "description": "原始数据类型。MVP 用到：audio_ref、transcript_segment、local_speaker、voiceprint、ambient_sound、gps_point、phone_info、feedback。以后新增适配器可登记新类型，因此不用枚举"
+    },
+    "version": {
+      "const": 1,
+      "description": "原始数据只追加、不修改，版本号固定为 1（设计文档 3.2）。由 ① 填写"
+    },
+    "event_start": {
+      "$ref": "#/$defs/timestamp",
+      "description": "数据描述的时间段的起点"
+    },
+    "event_end": {
+      "$ref": "#/$defs/timestamp",
+      "description": "数据描述的时间段的终点，必须 >= event_start（JSON Schema 无法表达，由 ① 在写入时校验）。单点数据（如 GPS 点）与 event_start 相等。按时间范围 [a, b) 查询时：单点数据满足 a <= event_start < b 即命中；有时长的数据满足 event_start < b 且 event_end > a 即命中"
+    },
+    "ingested_at": {
+      "$ref": "#/$defs/timestamp",
+      "description": "入库时间，和事件时间分开记。由 ① 填写"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["device", "channel", "user"],
+      "properties": {
+        "device": {
+          "type": "string",
+          "minLength": 1,
+          "description": "产生数据的设备标识，例如 phone-01"
+        },
+        "channel": {
+          "$ref": "#/$defs/snake_case",
+          "description": "输入渠道。MVP 用到：octopus（从 Octopus 目录扫描到的文件）、api（经 ⑥ 写入，如用户反馈）。不用枚举"
+        },
+        "user": {
+          "type": "string",
+          "minLength": 1,
+          "description": "数据属于哪个用户。MVP 只有一个用户，统一填 default；多用户支持属于【以后】"
+        }
+      }
+    },
+    "adapter_version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "产生这条数据的适配器版本，建议写成 <适配器名>/<版本>，例如 ear-audio/0.3.0。换版本重新处理会产生一批新数据，旧数据保留"
+    },
+    "dedup_key": {
+      "type": "string",
+      "minLength": 1,
+      "description": "去重键，由写入方计算，① 不解析，只比较是否相同。① 按 (data_type, adapter_version, dedup_key) 判断重复，已存在则跳过，因此同一份数据无论送进来多少次都只存一条，而换适配器版本重新处理时会产生新数据。写入方须保证同一 adapter_version 内的去重键唯一；同一文件产生多条数据时，在键里加上段序号等区分信息，例如 phone-01:<文件 sha256>:seg-0007"
+    },
+    "payload": {
+      "type": "object",
+      "description": "具体内容，字段按 data_type 另行约定。大文件只存引用，格式见 $defs/file_ref"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "description": "UUIDv7，小写"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$",
+      "description": "RFC 3339，UTC，以 Z 结尾"
+    },
+    "snake_case": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "file_ref": {
+      "type": "object",
+      "description": "大文件引用。payload 中需要引用文件时使用：{\"$ref\": \"urn:ear:contracts:records:raw-record#/$defs/file_ref\"}",
+      "additionalProperties": true,
+      "required": ["path", "sha256", "size"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$)).+$",
+          "description": "相对于 Octopus 数据根目录的路径，用 / 分隔；不能是绝对路径，不能含 .. 段"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "文件内容的 SHA-256，小写十六进制"
+        },
+        "size": { "type": "integer", "minimum": 0, "description": "文件大小，单位字节" }
+      }
+    }
+  }
+}

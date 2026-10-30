@@ -70,8 +70,9 @@ reviewed-at: 2026-10-30
 | 入库时间 | `ingested_at` |
 | 来源：设备、渠道、用户 | `source.device`、`source.channel`、`source.user` |
 | 适配器版本 | `adapter_version` |
-| 去重键 | `dedup_key` |
+| 去重键 | `dedup_key`（① 按 `data_type`、`adapter_version`、`dedup_key` 三者判断重复） |
 | 数据 | `payload` |
+| 大文件引用 | `file_ref`：`path`（相对 Octopus 数据根目录）、`sha256`、`size`（字节） |
 
 ## 版本与状态
 

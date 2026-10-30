@@ -1,0 +1,22 @@
+{
+  "id": "0199f0a0-1111-7aaa-9bbb-000000000103",
+  "data_type": "audio_ref",
+  "version": 1,
+  "event_start": "2026-10-29T06:00:00Z",
+  "event_end": "2026-10-29T06:30:00Z",
+  "ingested_at": "2026-10-29T06:20:03Z",
+  "source": {
+    "device": "phone-01",
+    "channel": "octopus",
+    "user": "default"
+  },
+  "adapter_version": "ear-audio/0.3.0",
+  "dedup_key": "phone-01:3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a",
+  "payload": {
+    "file": {
+      "path": "octopus/phone-01/2026-10-29/rec-0001.m4a",
+      "sha256": "3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a",
+      "size": 14680064
+    }
+  }
+}
