@@ -1,6 +1,6 @@
 ---
 reviewed-by: aytony
-reviewed-at: 2026-10-26
+reviewed-at: 2026-10-30
 ---
 
 # Ear 设计文档 v1.1（定稿）
