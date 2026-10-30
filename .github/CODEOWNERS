@@ -13,7 +13,7 @@
 # 各模块（会后填写负责人）
 # /services/storage/      @<①负责人>
 # /services/adapters/     @<②负责人>
-# /services/attribution/  @<③负责人>
+/services/attribution/  @yixiang-fan
 # /services/extraction/   @<④负责人>
 # /services/dependency/   @<⑤负责人>
 # /services/api/          @<⑥负责人>
