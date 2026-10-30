@@ -1,7 +1,6 @@
 ---
-status: draft
-reviewed-by:
-reviewed-at:
+reviewed-by: aytony
+reviewed-at: 2026-10-30
 ---
 
 # Ear（Echo As Record）
@@ -86,9 +85,9 @@ uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run 
 - 写入时原样带上触发它的 `root_feedback_id` 和 `depth`。
 - 核心数据不能依赖扩展数据；⑤ 按登记表分发，不在代码里写死接收方。
 
-## 7. 公共约定（草案，以 `contracts/` 和审定后的术语表为准）
+## 7. 公共约定（细节以 `contracts/` 和术语表为准）
 
-- 代码标识用英文，见 `ai-docs/proposals/glossary.md`（待审定后移入 `docs/`）。
+- 代码标识用英文，见 [术语表](docs/glossary.md)。
 - id：UUIDv7，小写字符串。版本号：整数，从 1 开始。
 - 时间：一律 UTC，RFC 3339，以 `Z` 结尾；时间区间为半开区间 `[start, end)`。
 - 系统发起的行为，`root_feedback_id` 为字面量 `"system"`。
@@ -105,7 +104,10 @@ uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run 
 
 ## 9. Git 与 PR
 
-- `main` 为保护分支，只通过 PR 合并（squash）；不改写已推送的历史，不强推。
+- 两个长期分支，都是保护分支，只能通过 PR 合并，合并前必须通过全部 CI 检查：
+  - `dev`：日常集成分支。成员从 `dev` 拉出自己的分支，开发完成后提 PR 合回 `dev`（squash 合并）。
+  - `main`：稳定分支。由 `dev` 提 PR 合入（使用 merge commit，不 squash，保证 `dev` 与 `main` 的历史一致）。
+- 不直接向 `dev`、`main` 推送；不改写已推送的历史，不强推。
 - 分支名：`<模块>/<主题>`，例如 `attribution/voiceprint-matching`、`docs/glossary`。
 - 提交信息：Conventional Commits，scope 用模块名，例如 `feat(extraction): 定时提取跳过已提取时间段`。
 - CODEOWNERS 指定的负责人审核对应目录；PR 按模板逐项勾选。

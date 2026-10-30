@@ -1,7 +1,6 @@
 ---
-status: draft
-reviewed-by:
-reviewed-at:
+reviewed-by: aytony
+reviewed-at: 2026-10-30
 ---
 
 # AGENTS.md：给 AI 编程工具的说明
@@ -23,5 +22,5 @@ reviewed-at:
 - 自己生成的说明文档放进最近的 `ai-docs/`，front matter 写 `generated-by`、`generated-at`、`based-on`（格式见 `ai-docs/README.md`）。
 - 发现冲突（文档之间、文档与代码之间）时只报告，不修改任何一方。
 - 不确定某类数据由哪个模块写、某个约定是否已定时，停下来问人，不要按猜测实现。
-- 不 push 到 `main`，不强推，不改写已推送的历史。
+- 不直接 push 到 `dev` 或 `main`，不强推，不改写已推送的历史。
 - 交付前运行 README「开发环境」中的提交前检查，并如实报告结果，包括没有通过的项。
