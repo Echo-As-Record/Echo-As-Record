@@ -1,6 +1,6 @@
 ---
 reviewed-by: aytony
-reviewed-at: 2026-10-30
+reviewed-at: 2026-11-01
 ---
 
 # 术语表（中 → 代码标识）
