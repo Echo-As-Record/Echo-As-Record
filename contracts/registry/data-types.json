@@ -1,0 +1,42 @@
+{
+  "$comment": "DRAFT：数据类型登记表（MVP）。写入权限依据设计文档 5.1 节与工作分解第 0 节；unique_fields、exclusive_members、time_from 引用的 payload 字段名待 ③ 负责人确认。",
+  "data_types": {
+    "audio_ref": { "kind": "raw_record", "writer": "adapter", "description": "录音引用" },
+    "transcript_segment": { "kind": "raw_record", "writer": "adapter", "description": "转写段" },
+    "local_speaker": { "kind": "raw_record", "writer": "adapter", "description": "局部说话人" },
+    "voiceprint": { "kind": "raw_record", "writer": "adapter", "description": "声纹" },
+    "ambient_sound": { "kind": "raw_record", "writer": "adapter", "description": "环境声" },
+    "gps_point": { "kind": "raw_record", "writer": "adapter", "description": "GPS 点" },
+    "phone_info": { "kind": "raw_record", "writer": "adapter", "description": "手机信息" },
+    "feedback": { "kind": "raw_record", "writer": "api", "description": "用户反馈" },
+    "person": {
+      "kind": "semantic",
+      "writer": "attribution",
+      "exclusive_members": ["references"],
+      "description": "人物（含参考）"
+    },
+    "place": {
+      "kind": "semantic",
+      "writer": "attribution",
+      "exclusive_members": ["references"],
+      "description": "地点（含参考）"
+    },
+    "attribution": {
+      "kind": "semantic",
+      "writer": "attribution",
+      "unique_fields": ["subject_id"],
+      "time_from": "subject_id",
+      "description": "归属关系：声纹 → 人物、GPS 点 → 地点"
+    },
+    "activity": { "kind": "semantic", "writer": "extraction", "description": "活动" },
+    "artifact": { "kind": "semantic", "writer": "extraction", "description": "md 产物" },
+    "action_suggestion": { "kind": "semantic", "writer": "extraction", "description": "外部动作建议" },
+    "rule": { "kind": "rule", "writer": "extraction", "description": "提取规则（含只改这一次的提取）" },
+    "extraction_run": { "kind": "system_record", "writer": "extraction", "description": "提取记录" },
+    "propagation_record": { "kind": "system_record", "writer": "dependency", "description": "传播记录" }
+  },
+  "event_publishers": {
+    "data_changed": ["storage"],
+    "reevaluation_requested": ["dependency"]
+  }
+}

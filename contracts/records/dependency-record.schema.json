@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ear:contracts:records:dependency-record",
+  "title": "DependencyRecord（依赖登记）",
+  "$comment": "DRAFT：按设计文档 v1.1 第 3.2、7.2、8.1 节起草，待 ① 负责人与 I 审定。字段只能增加，不能减少或改义。",
+  "description": "依赖方的某个版本，依赖了被依赖方的某个版本。属于系统记录，不发事件。登记由负责写依赖方的模块完成；同一个依赖方版本重新登记时，整体替换它之前登记的全部依赖。",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["dependent", "depends_on", "registered_by", "registered_at"],
+  "properties": {
+    "dependent": { "$ref": "#/$defs/version_ref", "description": "依赖方，例如 md 产物或归属关系的某个版本" },
+    "depends_on": {
+      "$ref": "#/$defs/version_ref",
+      "description": "被依赖方，例如活动、规则、归属关系、人物的某个版本；原始数据的版本固定为 1"
+    },
+    "registered_by": { "$ref": "#/$defs/snake_case", "description": "登记它的模块名" },
+    "registered_at": { "$ref": "#/$defs/timestamp" }
+  },
+  "$defs": {
+    "version_ref": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["data_type", "id", "version"],
+      "properties": {
+        "data_type": { "$ref": "#/$defs/snake_case" },
+        "id": { "$ref": "#/$defs/id" },
+        "version": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "description": "UUIDv7，小写"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$",
+      "description": "RFC 3339，UTC，以 Z 结尾"
+    },
+    "snake_case": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+  }
+}

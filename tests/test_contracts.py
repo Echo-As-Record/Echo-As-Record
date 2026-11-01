@@ -48,8 +48,20 @@ def raw_record_time_order(data: dict) -> list[str]:
     return [] if end >= start else ["event_end 早于 event_start"]
 
 
+def optional_time_range(data: dict) -> list[str]:
+    """event_start、event_end 同时为 null 或同时有值；有值时 event_end >= event_start。"""
+    start, end = data.get("event_start"), data.get("event_end")
+    if start is None and end is None:
+        return []
+    if start is None or end is None:
+        return ["event_start、event_end 必须同时为 null 或同时有值"]
+    return raw_record_time_order(data)
+
+
 SEMANTIC_CHECKS: dict[str, Callable[[dict], list[str]]] = {
     "raw-record": raw_record_time_order,
+    "semantic-record": optional_time_range,
+    "system-record": optional_time_range,
 }
 
 
@@ -109,3 +121,23 @@ def test_file_ref_valid(path: str) -> None:
 )
 def test_file_ref_invalid(ref: dict, reason: str) -> None:
     assert file_ref_errors(ref), reason
+
+
+REGISTRY = CONTRACTS / "registry" / "data-types.json"
+REGISTRY_SCHEMA = CONTRACTS / "registry" / "data-types.schema.json"
+VERSIONED_KINDS = {"semantic", "rule"}
+
+
+def test_registry_matches_schema() -> None:
+    validator = Draft202012Validator(load(REGISTRY_SCHEMA))
+    errors = [e.message for e in validator.iter_errors(load(REGISTRY))]
+    assert errors == [], errors
+
+
+def test_registry_semantics() -> None:
+    registry = load(REGISTRY)
+    for name, spec in registry["data_types"].items():
+        for key in ("unique_fields", "exclusive_members", "time_from"):
+            if key in spec:
+                assert spec["kind"] in VERSIONED_KINDS, f"{name}: {key} 只用于有版本的数据"
+    assert registry["event_publishers"]["data_changed"] == ["storage"]

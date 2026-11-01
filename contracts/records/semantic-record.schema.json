@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ear:contracts:records:semantic-record",
+  "title": "SemanticRecord（语义信息、归属关系、规则的一个版本）",
+  "$comment": "DRAFT：按设计文档 v1.1 第 3.1、3.2 节起草，待 ① 负责人与 I 审定。字段只能增加，不能减少或改义。",
+  "description": "有版本的数据（语义信息、归属关系、规则）存入 ① 之后的一个版本。版本一经写入就不再改变：修改即新增版本，旧版本保留。对象当前版本是版本号最大的那个；当前版本的 status 为 superseded 时，表示对象已被整体替代，以后不再有新版本。payload 的字段按 data_type 由负责写它的模块约定；① 只依赖数据类型登记表（contracts/registry/data-types.json）中声明的字段。",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "id",
+    "data_type",
+    "version",
+    "status",
+    "event_start",
+    "event_end",
+    "dedup_key",
+    "payload",
+    "writer",
+    "root_feedback_id",
+    "depth",
+    "skip_history",
+    "batch_id",
+    "created_at"
+  ],
+  "properties": {
+    "id": { "$ref": "#/$defs/id", "description": "对象 id，所有版本相同，永远不变。由写入方生成" },
+    "data_type": {
+      "$ref": "#/$defs/snake_case",
+      "description": "例如 person、place、attribution、activity、artifact、action_suggestion、rule。扩展模块可登记新类型，因此不用枚举"
+    },
+    "version": { "type": "integer", "minimum": 1, "description": "从 1 开始，每次加 1，不跳号" },
+    "status": {
+      "enum": ["active", "superseded"],
+      "description": "这个版本写入时对象的状态。整体替代会新增一个 status 为 superseded 的版本（内容与上一版本相同），之后对象不能再写入"
+    },
+    "event_start": {
+      "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }],
+      "description": "对象描述的时间段起点，用于按时间查询；没有时间的对象为 null。活动、md 产物由写入方填写；归属关系由 ① 从它的原始数据复制"
+    },
+    "event_end": {
+      "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }],
+      "description": "时间段终点，与 event_start 同时为 null 或同时有值，且 >= event_start"
+    },
+    "dedup_key": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "新建时可选的去重键，例如 unnamed_person:<声纹 id>。同一 data_type 内永远唯一（包括已被替代的对象）"
+    },
+    "payload": { "type": "object", "description": "这个版本的完整内容" },
+    "writer": { "$ref": "#/$defs/snake_case", "description": "写入这个版本的模块名（术语表「模块」）" },
+    "root_feedback_id": { "$ref": "#/$defs/root_feedback_id" },
+    "depth": { "type": "integer", "minimum": 0, "description": "写入这个版本时的依赖分析深度" },
+    "skip_history": { "type": "boolean", "description": "写入这个版本时的「不处理历史」标记" },
+    "batch_id": { "$ref": "#/$defs/id", "description": "同一次原子写入的所有数据共用一个 batch_id" },
+    "created_at": { "$ref": "#/$defs/timestamp", "description": "这个版本的写入时间" }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "description": "UUIDv7，小写"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$",
+      "description": "RFC 3339，UTC，以 Z 结尾"
+    },
+    "snake_case": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "root_feedback_id": {
+      "description": "引起这次修改的用户反馈 id；系统发起的行为为字面量 \"system\"",
+      "oneOf": [{ "$ref": "#/$defs/id" }, { "const": "system" }]
+    }
+  }
+}

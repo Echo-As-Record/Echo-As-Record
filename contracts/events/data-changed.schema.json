@@ -28,7 +28,10 @@
       "description": "数据类型，例如 voiceprint、gps_point、feedback、attribution、artifact。扩展模块可登记新类型，因此不用枚举"
     },
     "data_id": { "$ref": "#/$defs/id" },
-    "operation": { "enum": ["created", "updated", "superseded"] },
+    "operation": {
+      "enum": ["created", "updated", "superseded"],
+      "description": "updated 时旧版本随之被替代，不另发 superseded。superseded 只用于对象整体被替代：① 新增一个 status 为 superseded 的版本（内容与上一版本相同），new_version 为它的版本号"
+    },
     "new_version": {
       "type": "integer",
       "minimum": 1,
@@ -44,6 +47,14 @@
     "skip_history": {
       "type": "boolean",
       "description": "「不处理历史」标记，为 true 时 ⑤ 跳过（补充章节 3.4）"
+    },
+    "writer": {
+      "$ref": "#/$defs/data_type",
+      "description": "可选（DRAFT 新增）。写入这条数据的模块名"
+    },
+    "batch_id": {
+      "$ref": "#/$defs/id",
+      "description": "可选（DRAFT 新增）。同一次原子写入产生的事件共用一个 batch_id"
     }
   },
   "$defs": {
