@@ -1,0 +1,86 @@
+"""Ear 模块间约定的 Python 类型。
+
+语义以 docs/ 为准，字段以 contracts/ 的 JSON Schema 为准；本包与二者的一致性由测试检查。
+"""
+
+from ear_contracts.base import (
+    ID_PATTERN,
+    MODULES,
+    SYSTEM,
+    DataType,
+    Id,
+    ModuleName,
+    RootFeedbackId,
+    UtcDatetime,
+    format_utc,
+    is_id,
+    new_id,
+    utcnow,
+)
+from ear_contracts.events import (
+    Cause,
+    DataChanged,
+    Event,
+    Operation,
+    ReevaluationRequested,
+    parse_event,
+    to_json_dict,
+)
+from ear_contracts.records import (
+    DataKind,
+    DependencyRecord,
+    FileRef,
+    NewRawRecord,
+    RawRecord,
+    Record,
+    SemanticRecord,
+    Source,
+    SystemRecord,
+    VersionRef,
+    VersionStatus,
+    record_from_dict,
+)
+from ear_contracts.registry import (
+    DEFAULT_REGISTRY,
+    DataTypeSpec,
+    Registry,
+    UnknownDataTypeError,
+)
+
+__all__ = [
+    "DEFAULT_REGISTRY",
+    "ID_PATTERN",
+    "MODULES",
+    "SYSTEM",
+    "Cause",
+    "DataChanged",
+    "DataKind",
+    "DataType",
+    "DataTypeSpec",
+    "DependencyRecord",
+    "Event",
+    "FileRef",
+    "Id",
+    "ModuleName",
+    "NewRawRecord",
+    "Operation",
+    "RawRecord",
+    "Record",
+    "ReevaluationRequested",
+    "Registry",
+    "RootFeedbackId",
+    "SemanticRecord",
+    "Source",
+    "SystemRecord",
+    "UnknownDataTypeError",
+    "UtcDatetime",
+    "VersionRef",
+    "VersionStatus",
+    "format_utc",
+    "is_id",
+    "new_id",
+    "parse_event",
+    "record_from_dict",
+    "to_json_dict",
+    "utcnow",
+]

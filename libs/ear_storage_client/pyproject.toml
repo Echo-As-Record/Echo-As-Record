@@ -1,0 +1,13 @@
+[project]
+name = "ear-storage-client"
+version = "0.1.0"
+description = "① 存储与事件的客户端接口，以及供各模块开发和测试使用的内存实现"
+requires-python = ">=3.12"
+dependencies = ["ear-contracts"]
+
+[tool.uv.sources]
+ear-contracts = { workspace = true }
+
+[build-system]
+requires = ["uv_build>=0.8,<0.14"]
+build-backend = "uv_build"
