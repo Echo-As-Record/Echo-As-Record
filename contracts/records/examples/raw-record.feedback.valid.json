@@ -1,0 +1,19 @@
+{
+  "id": "0199f0a0-1111-7aaa-9bbb-000000000104",
+  "data_type": "feedback",
+  "version": 1,
+  "event_start": "2026-10-29T08:00:00Z",
+  "event_end": "2026-10-29T08:00:00Z",
+  "ingested_at": "2026-10-29T08:00:01Z",
+  "source": {
+    "device": "phone-01",
+    "channel": "api",
+    "user": "default"
+  },
+  "adapter_version": "api-feedback/0.1.0",
+  "dedup_key": "client-request:0199f0a0-2222-7aaa-9bbb-000000000001",
+  "payload": {
+    "kind": "correct_attribution",
+    "note": "payload 字段由 ⑥ 与 ③④ 另行约定，此处仅为示意"
+  }
+}

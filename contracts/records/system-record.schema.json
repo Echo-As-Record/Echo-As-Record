@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ear:contracts:records:system-record",
+  "title": "SystemRecord（系统记录）",
+  "$comment": "DRAFT：按设计文档 v1.1 第 3.1 节起草，待 ① 负责人与 I 审定。字段只能增加，不能减少或改义。",
+  "description": "提取记录、传播记录等系统记录。普通读写：可以整体覆盖，不保留历史，不发事件。payload 的字段由负责写它的模块约定。依赖登记有专门的格式（dependency-record），不用本格式。",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "id",
+    "data_type",
+    "revision",
+    "event_start",
+    "event_end",
+    "payload",
+    "writer",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "id": { "$ref": "#/$defs/id", "description": "由写入方生成" },
+    "data_type": {
+      "$ref": "#/$defs/snake_case",
+      "description": "例如 extraction_run、propagation_record。不用枚举"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "每次覆盖加 1，用于乐观锁；不保留旧内容"
+    },
+    "event_start": {
+      "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }],
+      "description": "记录涉及的时间段起点（例如提取记录的时间范围），用于按时间查询；没有时为 null"
+    },
+    "event_end": {
+      "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }],
+      "description": "与 event_start 同时为 null 或同时有值"
+    },
+    "payload": { "type": "object" },
+    "writer": { "$ref": "#/$defs/snake_case" },
+    "created_at": { "$ref": "#/$defs/timestamp" },
+    "updated_at": { "$ref": "#/$defs/timestamp" }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "description": "UUIDv7，小写"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$",
+      "description": "RFC 3339，UTC，以 Z 结尾"
+    },
+    "snake_case": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+  }
+}

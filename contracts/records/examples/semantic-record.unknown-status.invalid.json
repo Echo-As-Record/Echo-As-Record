@@ -1,0 +1,21 @@
+{
+  "id": "0199f09f-3333-7aaa-9bbb-000000000003",
+  "data_type": "person",
+  "version": 3,
+  "status": "deleted",
+  "event_start": null,
+  "event_end": null,
+  "dedup_key": null,
+  "payload": {
+    "name": "乙",
+    "references": [
+      "0199f0a0-1111-7aaa-9bbb-000000000101"
+    ]
+  },
+  "writer": "attribution",
+  "root_feedback_id": "0199f0a2-7c3e-7a10-8b2c-4d5e6f708192",
+  "depth": 0,
+  "skip_history": true,
+  "batch_id": "0199f0a2-9999-7aaa-9bbb-000000000009",
+  "created_at": "2026-10-29T13:05:00Z"
+}

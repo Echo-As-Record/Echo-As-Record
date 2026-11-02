@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ear:contracts:registry:data-types",
+  "title": "DataTypeRegistry（数据类型登记表）",
+  "$comment": "DRAFT：待 ① 负责人与 I 审定。字段只能增加，不能减少或改义。",
+  "description": "数据类型 → 分类、负责写入的模块，以及 ① 需要知道的少量 payload 字段。① 按它检查写入权限、执行唯一性约束、计算时间范围。扩展模块登记自己的数据类型即可接入，不改 ① 的代码。⑤ 的分发登记表（handler_registry）由 ⑤ 负责人决定形式，可以复用本表。",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["data_types", "event_publishers"],
+  "properties": {
+    "data_types": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/snake_case" },
+      "additionalProperties": { "$ref": "#/$defs/data_type_spec" }
+    },
+    "event_publishers": {
+      "type": "object",
+      "description": "事件类型 → 允许发布它的模块。data_changed 只能由 ① 自动发出",
+      "propertyNames": { "$ref": "#/$defs/snake_case" },
+      "additionalProperties": {
+        "type": "array",
+        "items": { "$ref": "#/$defs/snake_case" },
+        "uniqueItems": true
+      }
+    }
+  },
+  "$defs": {
+    "snake_case": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "data_type_spec": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["kind", "writer"],
+      "properties": {
+        "kind": {
+          "enum": ["raw_record", "semantic", "rule", "system_record"],
+          "description": "术语表「数据分类」。raw_record 只追加并按去重键去重；semantic、rule 有版本；system_record 普通读写、不发事件"
+        },
+        "writer": { "$ref": "#/$defs/snake_case", "description": "唯一负责写这类数据的模块" },
+        "unique_fields": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/snake_case" },
+          "uniqueItems": true,
+          "description": "payload 中的顶层字段：同一类型的所有未被替代的对象中，该字段的值不能重复（null 不参与）。例如归属关系的 subject_id"
+        },
+        "exclusive_members": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/snake_case" },
+          "uniqueItems": true,
+          "description": "payload 中的顶层数组字段：同一类型的所有未被替代的对象中，同一个元素最多出现一次。例如人物、地点的 references"
+        },
+        "time_from": {
+          "$ref": "#/$defs/snake_case",
+          "description": "payload 中保存原始数据 id 的顶层字段。设置后，这类数据的 event_start、event_end 由 ① 从该原始数据复制，写入方不填"
+        },
+        "description": { "type": "string" }
+      }
+    }
+  }
+}

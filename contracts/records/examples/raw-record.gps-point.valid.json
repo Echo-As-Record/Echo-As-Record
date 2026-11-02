@@ -1,0 +1,20 @@
+{
+  "id": "0199f0a0-1111-7aaa-9bbb-000000000102",
+  "data_type": "gps_point",
+  "version": 1,
+  "event_start": "2026-10-29T06:06:00Z",
+  "event_end": "2026-10-29T06:06:00Z",
+  "ingested_at": "2026-10-29T06:20:03Z",
+  "source": {
+    "device": "phone-01",
+    "channel": "octopus",
+    "user": "default"
+  },
+  "adapter_version": "gps/0.1.0",
+  "dedup_key": "phone-01:gps:2026-10-29T06:06:00Z",
+  "payload": {
+    "latitude": 39.999,
+    "longitude": 116.326,
+    "accuracy_m": 12.5
+  }
+}

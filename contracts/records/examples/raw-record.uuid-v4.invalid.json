@@ -1,0 +1,23 @@
+{
+  "id": "3b241101-e2bb-4255-8caf-4136c566a962",
+  "data_type": "voiceprint",
+  "version": 1,
+  "event_start": "2026-10-29T06:05:12Z",
+  "event_end": "2026-10-29T06:05:40Z",
+  "ingested_at": "2026-10-29T06:20:03Z",
+  "source": {
+    "device": "phone-01",
+    "channel": "octopus",
+    "user": "default"
+  },
+  "adapter_version": "ear-audio/0.3.0",
+  "dedup_key": "phone-01:3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a:seg-0007:voiceprint",
+  "payload": {
+    "local_speaker": "C",
+    "embedding": {
+      "path": "ear/2026-10-29/rec-0001/seg-0007.npy",
+      "sha256": "9c1d9c1d9c1d9c1d9c1d9c1d9c1d9c1d9c1d9c1d9c1d9c1d9c1d9c1d9c1d9c1d",
+      "size": 1024
+    }
+  }
+}

@@ -1,0 +1,10 @@
+[project]
+name = "ear-contracts"
+version = "0.1.0"
+description = "Ear 模块间约定（contracts/）的 Python 类型：事件、原始数据、语义信息、系统记录、依赖登记、数据类型登记表"
+requires-python = ">=3.12"
+dependencies = ["pydantic>=2.9"]
+
+[build-system]
+requires = ["uv_build>=0.8,<0.14"]
+build-backend = "uv_build"

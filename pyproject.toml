@@ -7,6 +7,8 @@ dependencies = []
 
 [dependency-groups]
 dev = [
+    "ear-contracts",
+    "ear-storage-client",
     "jsonschema[format-nongpl]>=4.23",
     "pre-commit>=4",
     "pyright>=1.1.400",
@@ -16,10 +18,15 @@ dev = [
 
 [tool.uv]
 # 仓库根只放公共工具链，本身不是可安装的包。
-# 模块包建好后在这里加入 workspace，例如：
-# [tool.uv.workspace]
-# members = ["libs/*", "services/*"]
 package = false
+
+[tool.uv.workspace]
+# 新建模块包时加到这里。
+members = ["libs/ear_contracts", "libs/ear_storage_client"]
+
+[tool.uv.sources]
+ear-contracts = { workspace = true }
+ear-storage-client = { workspace = true }
 
 [tool.ruff]
 line-length = 100
@@ -37,7 +44,8 @@ venv = ".venv"
 extraPaths = ["tools"]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
-include = ["tools", "tests"]
+include = ["tools", "tests", "libs"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "libs"]
+addopts = ["--import-mode=importlib"]
