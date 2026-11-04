@@ -1,12 +1,22 @@
 ---
+audience: human
+doc-type: proposal
+status: superseded
+superseded-by: ../decisions/mvp-confirmed-decisions.md
 generated-by: Claude (AI)，应 aytony 要求
 generated-at: 2026-11-02
 based-on: docs/design/design-v1.1.md (reviewed-at 2026-10-30), docs/design/signals-supplement.md (reviewed-at 2026-10-29), docs/design/work-breakdown-v1.1.md (reviewed-at 2026-10-30), docs/glossary.md (reviewed-at 2026-11-01), contracts/records/dependency-record.schema.json, contracts/registry/data-types.json, services/storage/ai-docs/interface.md, commit 5fbcb77；aytony 在 2026-11-02 讨论中的决定
 ---
 
-# 提案：细化依赖与纯 Markdown 产物（未审定）
+# 提案：细化依赖与纯 Markdown 产物（待采纳）
 
-> 未审定的工作文档，与已审定文档冲突时以已审定文档为准。
+> 追溯说明：下文原稿的“设计/补充章节”节号及旧接口说明均指 `48d3c51` 基线中的版本，不对应原地更新后的现行信号章节；可用 `git show 48d3c51:docs/design/signals-supplement.md` 查看旧信号正文。请勿按这些历史节号执行当前任务。
+
+
+> **历史提案，已由负责人逐项决定后的当前设计替代。** 下文保留起草时的方案与待定措辞，不再作为当前规则；并非整篇原稿获批。最终决定见[确认索引](../decisions/mvp-confirmed-decisions.md)，现行行为见[设计 v1.2](../design/design-v1.2.md)与[插件 MVP](../design/plugins-mvp.md)。
+
+
+> 面向人的设计提案；迁移目录不表示采纳。与当前已采纳设计冲突时，仍以当前设计为准。
 > 本文的五项决定由 aytony 在 2026-11-02 的讨论中提出，**尚未经团队讨论**。第 4 节列出的已审定文档和契约都**没有修改**。
 > 需要 ①存储与事件、④活动提取模块、⑤依赖分析模块的负责人与审定人共同决定；改 `contracts/` 还需要 ① 负责人与 I 共同审核。
 
@@ -125,7 +135,7 @@ based-on: docs/design/design-v1.1.md (reviewed-at 2026-10-30), docs/design/signa
 
 【以后】让各步骤都能看到人物和地点并登记依赖，允许依赖成环，另设机制防止无限循环（对应设计 8.4 的【以后】）。
 
-## 4. 需要修改的已审定文档和契约
+## 4. 采纳后需要修改的设计文档和契约
 
 | 位置 | 现在 | 改成 | 来自 |
 |---|---|---|---|
@@ -151,7 +161,7 @@ based-on: docs/design/design-v1.1.md (reviewed-at 2026-10-30), docs/design/signa
 | `contracts/records/dependency-record` | 没有 `fields` | 增加可选的 `fields` | D1 |
 | `contracts/registry/data-types.json` | — | 增加 `rule_selection`、「重新判断结果」 | D4、D5 |
 
-上述决定定稿后，还要跟着修改（未审定文档和代码）：`services/storage/ai-docs/interface.md` 第 4 节；`libs/ear_contracts` 的依赖登记类型；`libs/ear_storage_client` 的过时判断、内存实现和测试。
+上述决定定稿后，还要跟着修改（工程文档和代码）：`services/storage/ai-docs/interface.md` 第 5 节；`libs/ear_contracts` 的依赖登记类型；`libs/ear_storage_client` 的过时判断、内存实现和测试。
 
 ## 5. 待决定的问题
 

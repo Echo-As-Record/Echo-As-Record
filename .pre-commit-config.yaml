@@ -28,7 +28,7 @@ repos:
   - repo: local
     hooks:
       - id: check-docs
-        name: 文档审定检查
+        name: 文档结构与链接检查
         entry: uv run python tools/check_docs.py
         language: system
         pass_filenames: false

@@ -1,9 +1,15 @@
 ---
+audience: human
+doc-type: design
+status: superseded
+superseded-by: work-breakdown-v1.2.md
 reviewed-by: aytony
 reviewed-at: 2026-10-30
 ---
 
 # Ear MVP 工作分解 v1.1（分工会议用）
+
+> 历史版本，已由 [MVP 工作分解 v1.2](work-breakdown-v1.2.md) 替代。下列旧正文和 review 字段仅保留历史，不代表当前范围或本轮人工审核。
 
 > 定稿日期：2026-10-26
 > 配套文档：《Ear 设计文档 v1.1》。本文中的节号指设计文档的节号。
