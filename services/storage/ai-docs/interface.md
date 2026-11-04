@@ -1,7 +1,7 @@
 ---
 audience: ai
 doc-type: guide
-based-on: docs/modules/storage.md；contracts/；libs/ear_storage_client 与 libs/ear_contracts（origin/dev 48d3c51）；原接口说明 v0.2 的职责拆分；设计v1.2同步（代码仍为原基线）
+based-on: docs/modules/storage.md；contracts/；libs/ear_storage_client 与 libs/ear_contracts（origin/dev 48d3c51）；原接口说明 v0.2 的职责拆分；设计v1.2同步（代码仍为原基线）；P0a 修复（基于 6cea0b7，提交与合并状态以分支历史为准）
 ---
 
 # ① SDK 使用与实现导航
@@ -24,7 +24,7 @@ based-on: docs/modules/storage.md；contracts/；libs/ear_storage_client 与 lib
 | 参考实现、进程内事件队列 | `memory.py`（同包） |
 | 合成数据工具 | `testing.py`（同包，仅开发/测试） |
 | 公共模型与注册表 | `libs/ear_contracts/src/ear_contracts/` |
-| 行为测试 | `libs/ear_storage_client/tests/test_memory.py` |
+| 行为测试 | `libs/ear_storage_client/tests/test_memory.py`；P0a 回归 `test_memory_regressions.py`（同目录） |
 
 业务模块依赖 `StorageClient`，不要依赖 `MemoryStorage` 的内部状态。正式后端尚未实现，不要假设存在 HTTP 路由、生产总线或 SQL 表。
 
@@ -110,17 +110,19 @@ assert seen == [record.id]
 
 两种事件的模型位于 [ear_contracts/events.py](../../../libs/ear_contracts/src/ear_contracts/events.py)；未知事件由 parse_event 返回 None，调用方忽略。不要新增未经决策的第三种事件。
 
-`subscribe(consumer, handler, event_types=None, from_beginning=False)` 的 consumer 必须为本模块名或以“模块名.”开头。handler 抛异常触发重投，超过次数进入 dead_letters。already_processed 表示以前完成过，可结束；其他冲突应重算或显式失败，不能默默确认。
+`subscribe(consumer, handler, event_types=None, from_beginning=False)` 的 consumer 必须为本模块名或以“模块名.”开头。handler 抛异常触发重投，超过次数进入 dead_letters。
 
-内存辅助功能：`duplicate_delivery=True`、`max_attempts`、`run_until_idle()`、`dead_letters`、`storage.events`、from_beginning 重放。它们不证明跨进程持久化或外部动作恰好执行一次。
+handler 内写入的固定处理方式（见第 2 节示例）：先单独判断 `already_processed`（说明之前已提交，正常 return）；其余情况调用 `result.check()`，把冲突转成异常以触发重投。其他冲突应重算或显式失败，不能默默确认。总线无法发现 handler 忽略了 `write()` 的返回值；与本 consumer 无关的事件可以直接 return。
+
+内存辅助功能：`duplicate_delivery=True`、`max_attempts`、`run_until_idle()`、`dead_letters`、`storage.events`、from_beginning 重放。它们不证明跨进程持久化或外部动作恰好执行一次。`run_until_idle` 中，同一 consumer 同时只处理一个事件：多个 runner 或 handler 内嵌套调用会跳过正在处理的 consumer（不等待），由持有它的 runner 继续投递；超过 `max_deliveries` 时抛出 RuntimeError，未投递的事件留在队列中（P0a 修复，状态见 [progress](progress.md)）。
 
 ## 7. 验证与已知边界
 
 ```bash
-uv run pytest libs/ear_storage_client/tests/test_memory.py
+uv run pytest libs/ear_storage_client/tests/test_memory.py libs/ear_storage_client/tests/test_memory_regressions.py
 uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest && uv run python tools/check_docs.py
 ```
 
 当前实现以排序键的 json.dumps 比较 payload，不是 RFC 8785/JCS 实现。修改比较算法时注意数值、数组、字符串及事件时间的一致性。
 
-已知静态审查关注项：run_until_idle 在投递次数检查前出队；并发 runner 的 consumer 串行边界；空时间查询区间；系统记录更新路径的时间校验。它们需补回归测试验证和修复，**本次文档迁移未修业务代码**。正式后端、故障测试与已采纳语义的实现差距见[进度](progress.md)。
+已知静态审查关注项（run_until_idle 在检查投递上限前出队、并发 runner 的 consumer 串行边界、空时间查询区间、系统记录更新路径的时间校验）已在本分支补回归测试（`test_memory_regressions.py`）并修复，提交与合并状态以分支历史和 PR 为准，见 [progress](progress.md)。正式后端、故障测试与已采纳语义的实现差距也见[进度](progress.md)。

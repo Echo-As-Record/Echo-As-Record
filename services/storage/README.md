@@ -12,5 +12,6 @@ doc-type: reference
 - [动态插件 MVP](../../docs/design/plugins-mvp.md)
 - [SDK 当前用法](ai-docs/interface.md)
 - [实现状态](ai-docs/progress.md)及[全局实施计划](../../ai-docs/plans/mvp-implementation.md)
+- [①实施准备与 P0 拆分](ai-docs/implementation-plan.md)；[P0 契约提案（accepted，P0b 待实现）](../../docs/proposals/storage-p0-contracts.md)
 
 正式服务、数据库与总线尚未落地；现有联调实现位于 `libs/ear_storage_client/`。本入口不将已采纳设计描述为已实现能力。

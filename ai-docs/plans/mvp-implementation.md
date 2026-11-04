@@ -10,7 +10,7 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 
 负责人已明确采纳目标并授权本轮同步文档，**本轮不改contracts、业务代码、依赖或部署**。现有内存行为与新目标不同是显式待实现差距，不因测试绿就认定完成。目标定义见[设计](../../docs/design/design-v1.2.md)、[插件](../../docs/design/plugins-mvp.md)及[决策来源](../../docs/decisions/mvp-confirmed-decisions.md)。
 
-本页是工程执行顺序和风险清单，新增字段/类型名除已讨论术语外只是待设计项；不替代公共契约审核。协议、索引、超时等细节可由实施者提出，不反复问产品负责人；会改变已确认行为时再请求决策。
+①的首批PR拆分、6cea0b7代码证据与阶段出入口见[①实施准备](../../services/storage/ai-docs/implementation-plan.md)。本页是工程执行顺序和风险清单，新增字段/类型名除已讨论术语外只是待设计项；不替代公共契约审核。协议、索引、超时等细节可由实施者提出，不反复问产品负责人；会改变已确认行为时再请求决策。
 
 ## 1. 基线与代码导航
 
@@ -54,7 +54,8 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 - 强制需依赖类型的Create/Update（包括unchanged）同批完整依赖；不自动继承；显式空集；Supersede免新登记。
 - 处理批次最终图约束和历史图分离；不能只按单条操作检查，临时中间关系不应替代最终状态判断。
 - 当前MemoryStorage只按版本失效；fields不能仅进入extra字段后在构造VersionRef时丢掉。
-- 原可疑边界补回归后修：投递上限先出队、并发runner、空时间查询、系统记录更新时间。此任务不是本次文档同步的一部分。
+- 原可疑边界补回归后修：投递上限先出队、并发runner、空时间查询、系统记录更新时间。已作为 P0a 在 `storage/implementation-preparation` 分支实现并验证（提交与合并状态以提交历史和 PR 为准）；拆分与证据见[①实施准备](../../services/storage/ai-docs/implementation-plan.md)。
+- P0b（字段依赖、登记表能力、批末强制）的契约选择见[P0 契约提案](../../docs/proposals/storage-p0-contracts.md)，已 accepted 并获功能分支实现授权，合并前由①负责人兼 I 审核；**尚未实现**，上面前几项仍是待实现差距。
 
 ### P1 独立服务与持久事务
 

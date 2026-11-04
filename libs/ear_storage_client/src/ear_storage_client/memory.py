@@ -776,22 +776,34 @@ class _Txn:
             start, end = current.event_start, current.event_end
         else:
             start, end = self.time_range(spec, payload, op.event_start, op.event_end)
+        # 与新建一样经模型校验（UTC 等）。先校验再比较，同一时刻的非 UTC 输入也不能借“无变化”跳过。
+        candidate = _build(
+            SystemRecord,
+            id=current.id,
+            data_type=current.data_type,
+            revision=current.revision,
+            event_start=start,
+            event_end=end,
+            payload=payload,
+            writer=current.writer,
+            created_at=current.created_at,
+            updated_at=current.updated_at,
+        )
         if (
-            canonical_json(payload) == canonical_json(current.payload)
-            and start == current.event_start
-            and end == current.event_end
+            canonical_json(candidate.payload) == canonical_json(current.payload)
+            and candidate.event_start == current.event_start
+            and candidate.event_end == current.event_end
         ):
             self.result("unchanged", op.data_type, op.id, current.revision, current.revision)
             return
-        self.s.system[op.id] = current.model_copy(
-            update={
+        self.s.system[op.id] = _build(
+            SystemRecord,
+            **{
+                **candidate.model_dump(),
                 "revision": current.revision + 1,
-                "event_start": start,
-                "event_end": end,
-                "payload": payload,
                 "writer": self.module,
                 "updated_at": self.now,
-            }
+            },
         )
         self.result("written", op.data_type, op.id, current.revision + 1, current.revision)
 
@@ -920,6 +932,7 @@ class _Subscription:
     queue: deque[tuple[Event, int, bool]] = field(
         default_factory=deque
     )  # 事件、已失败次数、是否重复投递
+    busy: bool = False  # 有 runner 正在处理它的一个事件（在总线锁下读写）
 
     def wants(self, event: Event) -> bool:
         return self.event_types is None or event.event_type in self.event_types
@@ -963,37 +976,52 @@ class MemoryBus:
             return sum(len(s.queue) for s in self._subs.values())
 
     def run_until_idle(self, max_deliveries: int = 100_000) -> int:
-        """轮流给各 consumer 投递一个事件，直到没有待投递的事件。返回投递次数。
+        """轮流给各 consumer 投递一个事件，直到没有可投递的事件。返回本次调用的投递次数。
 
         handler 抛出异常时，同一事件稍后重投（保持该 consumer 的顺序）；失败 max_attempts 次
-        进入 dead_letters。超过 max_deliveries 次投递时抛出 RuntimeError（多半是传播没有停）。
+        进入 dead_letters。再投递就会超过 max_deliveries 次时抛出 RuntimeError（多半是传播没有停），
+        尚未投递的事件留在队列里。
+
+        同一 consumer 同时只处理一个事件：handler 在总线锁外执行；其他 runner（包括 handler 里
+        嵌套的调用）跳过正在处理的 consumer，由持有它的 runner 继续投递，其余 consumer 照常轮转。
         """
         delivered = 0
         while True:
             with self._lock:
-                ready = [s for s in self._subs.values() if s.queue]
+                ready = [s for s in self._subs.values() if s.queue and not s.busy]
             if not ready:
                 return delivered
             for sub in ready:
                 with self._lock:
-                    if not sub.queue:
+                    if sub.busy or not sub.queue:
                         continue
+                    if delivered >= max_deliveries:
+                        raise RuntimeError(
+                            f"投递超过 {max_deliveries} 次仍未结束，可能存在无限传播"
+                        )
                     event, failures, duplicate = sub.queue.popleft()
+                    sub.busy = True
                 delivered += 1
-                if delivered > max_deliveries:
-                    raise RuntimeError(f"投递超过 {max_deliveries} 次仍未结束，可能存在无限传播")
                 try:
-                    sub.handler(event)
-                except Exception as exc:
+                    self._deliver(sub, event, failures, duplicate)
+                finally:
                     with self._lock:
-                        if failures + 1 >= self.max_attempts:
-                            self.dead_letters.append(DeadLetter(sub.consumer, event, exc))
-                        else:
-                            sub.queue.appendleft((event, failures + 1, duplicate))
-                    continue
-                if self.duplicate_delivery and not duplicate:
-                    with self._lock:
-                        sub.queue.append((event, 0, True))
+                        sub.busy = False
+
+    def _deliver(self, sub: _Subscription, event: Event, failures: int, duplicate: bool) -> None:
+        """调用 handler；重投或重复投递的事件在释放 busy 之前放回队列，保证顺序。"""
+        try:
+            sub.handler(event)
+        except Exception as exc:
+            with self._lock:
+                if failures + 1 >= self.max_attempts:
+                    self.dead_letters.append(DeadLetter(sub.consumer, event, exc))
+                else:
+                    sub.queue.appendleft((event, failures + 1, duplicate))
+            return
+        if self.duplicate_delivery and not duplicate:
+            with self._lock:
+                sub.queue.append((event, 0, True))
 
 
 # ---------------------------------------------------------------------------

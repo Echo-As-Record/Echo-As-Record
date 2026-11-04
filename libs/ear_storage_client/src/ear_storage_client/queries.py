@@ -39,7 +39,10 @@ class TimeRange:
 
         单点数据（start == end）满足 self.start <= start < self.end 即命中；
         有时长的数据满足 start < self.end 且 end > self.start 即命中。
+        本区间为空（self.start == self.end，即 [t, t)）时什么都不命中。
         """
+        if self.start == self.end:
+            return False
         if start == end:
             return self.start <= start < self.end
         return start < self.end and end > self.start
