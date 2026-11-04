@@ -13,6 +13,13 @@
       "$ref": "#/$defs/version_ref",
       "description": "被依赖方，例如活动、规则、归属关系、人物的某个版本；原始数据的版本固定为 1"
     },
+    "fields": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string" },
+      "description": "可选，修饰 depends_on：只依赖被依赖方 payload 的这些顶层键（任意 JSON 键，含空字符串；不要求 snake_case）。省略表示依赖整个对象；不允许 null 或空数组。① 写入时去重并按 Unicode 码点升序保存（JSON Schema 无法表达排序，读取方不得依赖未排序时的报错）。旧读取方把它当作未知字段保留、忽略，不会理解其语义。见 docs/proposals/storage-p0-contracts.md 第 2.1、2.3 节"
+    },
     "registered_by": { "$ref": "#/$defs/snake_case", "description": "登记它的模块名" },
     "registered_at": { "$ref": "#/$defs/timestamp" }
   },

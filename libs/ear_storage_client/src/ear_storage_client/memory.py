@@ -48,6 +48,7 @@ from ear_storage_client.errors import InvalidRequest, PermissionDenied
 from ear_storage_client.ops import (
     AppendRaw,
     Create,
+    DependencyInput,
     MarkProcessed,
     PublishReevaluation,
     PutSystemRecord,
@@ -57,7 +58,7 @@ from ear_storage_client.ops import (
     WriteOp,
 )
 from ear_storage_client.protocol import EventHandler, Reader
-from ear_storage_client.queries import Page, Query, QueryItem, StaleDependency
+from ear_storage_client.queries import DependencySet, Page, Query, QueryItem, StaleDependency
 from ear_storage_client.results import Conflict, ConflictReason, OpResult, WriteResult
 
 
@@ -100,7 +101,7 @@ class _State:
     versions: dict[str, tuple[SemanticRecord, ...]] = field(default_factory=dict)
     semantic_keys: dict[tuple[str, str], str] = field(default_factory=dict)
     system: dict[str, SystemRecord] = field(default_factory=dict)
-    deps: dict[tuple[str, int], tuple[DependencyRecord, ...]] = field(default_factory=dict)
+    deps: dict[tuple[str, int], DependencySet] = field(default_factory=dict)
     deps_by_target: dict[str, frozenset[tuple[str, int]]] = field(default_factory=dict)
     processed: dict[tuple[str, str], None] = field(default_factory=dict)
     published: dict[str, None] = field(default_factory=dict)
@@ -124,8 +125,31 @@ class _State:
         versions = self.versions.get(id)
         return versions[-1] if versions else None
 
+    def version(self, id: str, version: int) -> Record | None:
+        if id in self.raw:
+            return self.raw[id] if version == 1 else None
+        versions = self.versions.get(id, ())
+        return versions[version - 1] if 1 <= version <= len(versions) else None
+
     def id_in_use(self, id: str) -> bool:
         return id in self.raw or id in self.versions or id in self.system
+
+
+def _stale(state: _State, ref: VersionRef, fields: tuple[str, ...] | None) -> bool:
+    """登记、批末校验和读取共享的失效规则；缺失通过键是否存在与 null 区分。"""
+    current = state.current(ref.id)
+    if current is None or (isinstance(current, SemanticRecord) and current.superseded):
+        return True
+    recorded = state.version(ref.id, ref.version)
+    if recorded is None or recorded.data_type != ref.data_type:
+        return True
+    if fields is None:
+        return ref.version != current.version
+    return any(
+        (key in recorded.payload) != (key in current.payload)
+        or canonical_json(recorded.payload.get(key)) != canonical_json(current.payload.get(key))
+        for key in fields
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -150,12 +174,8 @@ class _StateReader:
         return None if record is None else _copy(record)
 
     def get_version(self, id: str, version: int) -> Record | None:
-        if id in self._s.raw:
-            return _copy(self._s.raw[id]) if version == 1 else None
-        versions = self._s.versions.get(id, ())
-        if 1 <= version <= len(versions):
-            return _copy(versions[version - 1])
-        return None
+        record = self._s.version(id, version)
+        return None if record is None else _copy(record)
 
     def history(self, id: str) -> list[SemanticRecord]:
         return [_copy(v) for v in self._s.versions.get(id, ())]
@@ -269,27 +289,45 @@ class _StateReader:
             for key in sorted(self._s.deps_by_target.get(target_id, frozenset())):
                 if only_current_dependents and not self._current_dependent(*key):
                     continue
-                for dep in self._s.deps.get(key, ()):
-                    if dep.depends_on.id == target_id and dep.depends_on.version < target.version:
+                group = self._s.deps.get(key)
+                if group is None:
+                    continue
+                for dep in group.dependencies:
+                    if dep.depends_on.id == target_id and _stale(
+                        self._s, dep.depends_on, dep.fields
+                    ):
                         stale.append(
                             StaleDependency(
-                                dependent=dep.dependent.model_copy(),
-                                depends_on=dep.depends_on.model_copy(),
+                                dependent=_copy(dep.dependent),
+                                depends_on=_copy(dep.depends_on),
                                 current_version=target.version,
                                 target_superseded=superseded,
+                                fields=dep.fields,
                             )
                         )
         return stale
 
-    def dependencies_of(
-        self, dependent_id: str, version: int | None = None
-    ) -> list[DependencyRecord]:
+    def dependency_set(self, dependent_id: str, version: int | None = None) -> DependencySet | None:
         if version is None:
             versions = self._s.versions.get(dependent_id)
             if not versions:
-                return []
+                return None
             version = versions[-1].version
-        return [_copy(d) for d in self._s.deps.get((dependent_id, version), ())]
+        group = self._s.deps.get((dependent_id, version))
+        if group is None:
+            return None
+        return DependencySet(
+            _copy(group.dependent),
+            tuple(_copy(d) for d in group.dependencies),
+            group.registered_by,
+            group.registered_at,
+        )
+
+    def dependencies_of(
+        self, dependent_id: str, version: int | None = None
+    ) -> list[DependencyRecord]:
+        group = self.dependency_set(dependent_id, version)
+        return [] if group is None else list(group.dependencies)
 
     def dependents_of(
         self, target_id: str, *, only_current_dependents: bool = True
@@ -298,9 +336,9 @@ class _StateReader:
         for key in sorted(self._s.deps_by_target.get(target_id, frozenset())):
             if only_current_dependents and not self._current_dependent(*key):
                 continue
-            found.extend(
-                _copy(d) for d in self._s.deps.get(key, ()) if d.depends_on.id == target_id
-            )
+            group = self._s.deps.get(key)
+            if group is not None:
+                found.extend(_copy(d) for d in group.dependencies if d.depends_on.id == target_id)
         return found
 
     def is_processed(self, consumer: str, event_id: str) -> bool:
@@ -341,6 +379,9 @@ class _Txn:
         self.results: list[OpResult] = []
         self.events: list[Event] = []
         self.touched: dict[str, int] = {}  # 本批写过的有版本对象 → 最后一条相关操作的序号
+        # 与 touched 分开：无变化 Update 仍是重算结果，不能绕过依赖检查。
+        self.recomputed: dict[tuple[str, int], int] = {}
+        self.registered: dict[tuple[str, int], int] = {}
         self.index = 0
 
     # -- 工具 --
@@ -506,7 +547,12 @@ class _Txn:
             if handler is None:
                 self.invalid(f"未知的操作：{type(op).__name__}")
             handler(op)
+            if isinstance(op, Create | Update):
+                version = self.results[-1].version
+                assert version is not None
+                self.recomputed[(op.id, version)] = self.index
         self.check_constraints()
+        self.check_dependencies()
 
     def append_raw(self, op: AppendRaw) -> None:
         rec = op.record
@@ -674,52 +720,69 @@ class _Txn:
                 expected_version=version,
                 current_version=current.version,
             )
-        refs: dict[str, VersionRef] = {}
-        for ref in op.depends_on:
-            if ref.id == op.dependent_id:
-                self.invalid("不能依赖自己")
-            target = self.s.current(ref.id)
+        # 先合并/拒绝重复输入，再做新鲜度检查，不能用后一条静默覆盖前一条。
+        refs: dict[str, DependencyInput] = {}
+        for item in op.inputs():
+            previous = refs.get(item.id)
+            if previous is not None:
+                if (previous.data_type, previous.version) != (item.data_type, item.version):
+                    self.invalid(f"同一对象 {item.id} 的重复依赖类型或版本不同")
+                fields = (
+                    None
+                    if previous.fields is None or item.fields is None
+                    else tuple(sorted(set(previous.fields) | set(item.fields)))
+                )
+            else:
+                fields = item.fields
+            clean = VersionRef(data_type=item.data_type, id=item.id, version=item.version)
+            refs[item.id] = DependencyInput(clean, fields)
+
+        for item in refs.values():
+            target = self.s.current(item.id)
             if target is None:
                 self.conflict(
                     "not_found",
-                    f"被依赖的 {ref.data_type} {ref.id} 不存在",
-                    data_type=ref.data_type,
-                    id=ref.id,
+                    f"被依赖的 {item.data_type} {item.id} 不存在",
+                    data_type=item.data_type,
+                    id=item.id,
                 )
-            if target.data_type != ref.data_type:
-                self.invalid(f"{ref.id} 的类型是 {target.data_type}，不是 {ref.data_type}")
-            superseded = isinstance(target, SemanticRecord) and target.superseded
-            if superseded or target.version != ref.version:
-                self.conflict(
-                    "stale_dependency",
-                    f"{ref.data_type} {ref.id} 的当前版本是 {target.version}"
-                    f"{'（已被整体替代）' if superseded else ''}，不能登记版本 {ref.version}",
-                    data_type=ref.data_type,
-                    id=ref.id,
-                    registered_version=ref.version,
-                    current_version=target.version,
-                    target_superseded=superseded,
-                )
-            refs[ref.id] = VersionRef(data_type=ref.data_type, id=ref.id, version=ref.version)
+            if target.data_type != item.data_type:
+                self.invalid(f"{item.id} 的类型是 {target.data_type}，不是 {item.data_type}")
+            if self.registry.is_core(op.dependent_type) and not self.registry.is_core(
+                item.data_type
+            ):
+                self.invalid(f"核心类型 {op.dependent_type} 不能依赖插件类型 {item.data_type}")
+            self.require_fresh(item.ref, item.fields)
 
         key = (op.dependent_id, version)
-        old = self.s.deps.get(key, ())
-        old_set = {(d.depends_on.id, d.depends_on.version) for d in old}
-        new_set = {(r.id, r.version) for r in refs.values()}
-        if old_set == new_set and old:
+        self.registered[key] = self.index  # unchanged/空集也算本批显式完整登记。
+        old = self.s.deps.get(key)
+        old_set = (
+            set()
+            if old is None
+            else {
+                (d.depends_on.data_type, d.depends_on.id, d.depends_on.version, d.fields)
+                for d in old.dependencies
+            }
+        )
+        new_set = {(r.data_type, r.id, r.version, r.fields) for r in refs.values()}
+        if old is not None and old_set == new_set:
             self.result("unchanged", op.dependent_type, op.dependent_id, version)
             return
         dependent = VersionRef(data_type=op.dependent_type, id=op.dependent_id, version=version)
-        self.s.deps[key] = tuple(
+        records = tuple(
             DependencyRecord(
                 dependent=dependent,
-                depends_on=ref,
+                depends_on=item.ref,
                 registered_by=self.module,
                 registered_at=self.now,
+                **({} if item.fields is None else {"fields": item.fields}),
             )
-            for ref in sorted(refs.values(), key=lambda r: r.id)
+            for item in sorted(refs.values(), key=lambda r: r.id)
         )
-        for target_id in {d.depends_on.id for d in old} - set(refs):
+        self.s.deps[key] = DependencySet(dependent, records, self.module, self.now)
+        old_targets = set() if old is None else {d.depends_on.id for d in old.dependencies}
+        for target_id in old_targets - refs.keys():
             remaining = self.s.deps_by_target.get(target_id, frozenset()) - {key}
             if remaining:
                 self.s.deps_by_target[target_id] = remaining
@@ -730,6 +793,22 @@ class _Txn:
                 key
             }
         self.result("written", op.dependent_type, op.dependent_id, version)
+
+    def require_fresh(self, ref: VersionRef, fields: tuple[str, ...] | None) -> None:
+        if not _stale(self.s, ref, fields):
+            return
+        target = self.s.current(ref.id)
+        superseded = isinstance(target, SemanticRecord) and target.superseded
+        self.conflict(
+            "stale_dependency",
+            f"{ref.data_type} {ref.id} 的登记版本 {ref.version} 已过时",
+            data_type=ref.data_type,
+            id=ref.id,
+            registered_version=ref.version,
+            current_version=None if target is None else target.version,
+            target_superseded=superseded,
+            fields=fields,
+        )
 
     def put_system(self, op: PutSystemRecord) -> None:
         spec = self.spec(op.data_type)
@@ -856,6 +935,90 @@ class _Txn:
         self.result("written", None, op.event_id, None)
 
     # -- 批末检查 --
+
+    def check_dependencies(self) -> None:
+        for key, index in self.recomputed.items():
+            record = self.s.version(*key)
+            assert record is not None
+            if (
+                self.registry.get(record.data_type).requires_dependencies
+                and key not in self.registered
+            ):
+                self.index = index
+                self.invalid(f"{record.data_type} {record.id} 版本 {key[1]} 缺少同批完整依赖登记")
+
+        # 只检查本批登记/重算且最终仍 current active 的结果。其他已有 stale 边是正常状态。
+        for key, index in (self.recomputed | self.registered).items():
+            current = self.s.current(key[0])
+            if (
+                not isinstance(current, SemanticRecord)
+                or current.superseded
+                or current.version != key[1]
+            ):
+                continue
+            group = self.s.deps.get(key)
+            if group is not None:
+                self.index = index
+                for dep in group.dependencies:
+                    self.require_fresh(dep.depends_on, dep.fields)
+        self.check_dependency_cycles()
+
+    def check_dependency_cycles(self) -> None:
+        # MemoryStorage 从空图开始，每次提交都维护 DAG 不变量；无需公开旧状态迁移接口。
+        # 历史登记保持可读，但只有当前有效依赖方的出边参与当前对象图。
+        active = {id: vs[-1] for id, vs in self.s.versions.items() if not vs[-1].superseded}
+        graph: dict[str, tuple[str, ...]] = {}
+        for id, record in active.items():
+            group = self.s.deps.get((id, record.version))
+            graph[id] = (
+                ()
+                if group is None
+                else tuple(
+                    dep.depends_on.id for dep in group.dependencies if dep.depends_on.id in active
+                )
+            )
+        done: set[str] = set()
+        for start in graph:
+            if start in done:
+                continue
+            path = [start]
+            positions = {start: 0}
+            stack = [iter(graph[start])]
+            while stack:
+                target = next(stack[-1], None)
+                if target is None:
+                    node = path.pop()
+                    done.add(node)
+                    del positions[node]
+                    stack.pop()
+                elif target in positions:
+                    cycle = [*path[positions[target] :], target]
+                    self.index = max(
+                        (
+                            self.registered[(id, active[id].version)]
+                            for id in cycle
+                            if (id, active[id].version) in self.registered
+                        ),
+                        default=self.index,
+                    )
+                    self.conflict(
+                        "dependency_cycle",
+                        "当前有效对象的最终依赖图成环",
+                        data_type=active[target].data_type,
+                        id=target,
+                        path=[
+                            {
+                                "data_type": active[id].data_type,
+                                "id": id,
+                                "version": active[id].version,
+                            }
+                            for id in cycle
+                        ],
+                    )
+                elif target not in done:
+                    positions[target] = len(path)
+                    path.append(target)
+                    stack.append(iter(graph[target]))
 
     def check_constraints(self) -> None:
         """唯一字段、互斥成员：在整批执行完之后检查，所以同一批里可以先移出再加入。"""
@@ -1166,6 +1329,9 @@ class MemoryClient:
         return self._reader().stale_dependencies(
             targets, only_current_dependents=only_current_dependents
         )
+
+    def dependency_set(self, dependent_id: str, version: int | None = None) -> DependencySet | None:
+        return self._reader().dependency_set(dependent_id, version)
 
     def dependencies_of(
         self, dependent_id: str, version: int | None = None

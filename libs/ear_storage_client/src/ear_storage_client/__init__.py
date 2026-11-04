@@ -15,6 +15,7 @@ from ear_storage_client.memory import DeadLetter, MemoryBus, MemoryClient, Memor
 from ear_storage_client.ops import (
     AppendRaw,
     Create,
+    DependencyInput,
     MarkProcessed,
     PublishReevaluation,
     PutSystemRecord,
@@ -30,7 +31,14 @@ from ear_storage_client.protocol import (
     iter_query,
     write_with_retry,
 )
-from ear_storage_client.queries import MAX_LIMIT, Page, Query, StaleDependency, TimeRange
+from ear_storage_client.queries import (
+    MAX_LIMIT,
+    DependencySet,
+    Page,
+    Query,
+    StaleDependency,
+    TimeRange,
+)
 from ear_storage_client.results import (
     RETRYABLE,
     Conflict,
@@ -50,6 +58,8 @@ __all__ = [
     "Context",
     "Create",
     "DeadLetter",
+    "DependencyInput",
+    "DependencySet",
     "EventHandler",
     "InvalidRequest",
     "MarkProcessed",

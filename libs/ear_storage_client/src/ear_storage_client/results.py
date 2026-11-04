@@ -30,7 +30,11 @@ ConflictReason = Literal[
     "stale_dependency",
     "revision_mismatch",
     "already_processed",
+    "dependency_cycle",
 ]
+"""冲突原因。公共枚举只增不改义；新增的 dependency_cycle 表示本批登记的依赖边会使当前有效
+对象的最终依赖图成环（details 给出环路径），默认不可重试：重读不会让环消失。旧客户端对未知
+原因的解码与分支处理兼容性尚未证明，见 P0 契约提案 2.10。"""
 
 RETRYABLE: Final[frozenset[str]] = frozenset(
     {
@@ -46,7 +50,8 @@ RETRYABLE: Final[frozenset[str]] = frozenset(
 )
 """重新读取当前状态、重新计算后可能成功的冲突。
 
-id_exists、already_processed 通常说明这件事已经做过，不应重试。
+id_exists、already_processed 通常说明这件事已经做过，不应重试；dependency_cycle 需要
+调用方改变依赖关系本身，也不在其中。不认识的原因同样按不可重试处理。
 """
 
 

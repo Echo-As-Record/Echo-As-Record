@@ -29,6 +29,7 @@ from ear_contracts.events import (
 from ear_contracts.records import (
     DataKind,
     DependencyRecord,
+    FieldName,
     FileRef,
     NewRawRecord,
     RawRecord,
@@ -59,6 +60,7 @@ __all__ = [
     "DataTypeSpec",
     "DependencyRecord",
     "Event",
+    "FieldName",
     "FileRef",
     "Id",
     "ModuleName",

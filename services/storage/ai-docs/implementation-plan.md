@@ -1,12 +1,12 @@
 ---
 audience: ai
 doc-type: guide
-based-on: origin/dev 6cea0b7 的实际代码、契约与测试；已采纳的 docs/design/design-v1.2.md、signals-supplement.md、plugins-mvp.md、decisions/mvp-confirmed-decisions.md、ADR-0001；全局实施计划；①负责人“按当前设计开始准备模块1实现”的授权（准备阶段只写文档）；此后用户授权实现 P0a（已在本分支实现并验证，提交与合并状态以提交历史和 PR 为准）；项目负责人（用户）随后明确“采用推荐方案，允许在功能分支持续实现并分批提交、推送和提 PR；I 审核由我负责，合并前再审核”，据此 P0 契约提案为 accepted
+based-on: origin/dev 6cea0b7 的实际代码、契约与测试；已采纳的 docs/design/design-v1.2.md、signals-supplement.md、plugins-mvp.md、decisions/mvp-confirmed-decisions.md、ADR-0001；全局实施计划；①负责人“按当前设计开始准备模块1实现”的授权（准备阶段只写文档）；此后用户授权实现 P0a（已在本分支实现并验证，提交与合并状态以提交历史和 PR 为准）；项目负责人（用户）随后明确“采用推荐方案，允许在功能分支持续实现并分批提交、推送和提 PR；I 审核由我负责，合并前再审核”，据此 P0 契约提案为 accepted；此后 P0b 已在本分支实现（首个 P0a 提交 a6a1c5a，P0b 提交以分支历史为准），P1 工程方案见 persistent-service-plan.md
 ---
 
 # ① 实施准备：P0 首批 PR 与阶段出入口
 
-本页原为①的**实施准备**。第 1、2 节和第 3 节的探针证据是准备阶段（基于 6cea0b7，当时没有改代码、测试、contracts、部署或依赖）的历史记录，不代表此后没有代码改动。**当前状态：P0a 已在本分支实现并验证，提交与合并状态以分支提交历史和 PR 为准（见第 3 节末尾和 [progress](progress.md)）；P0b 的契约提案已 accepted、已获实现授权，但尚未实现。** 其余能力都不因本页存在而视为已完成。目标语义以[设计 v1.2](../../../docs/design/design-v1.2.md)、[插件 MVP](../../../docs/design/plugins-mvp.md)和[决策索引](../../../docs/decisions/mvp-confirmed-decisions.md)为准；阶段编号沿用[全局实施计划](../../../ai-docs/plans/mvp-implementation.md)的 P0–P5；P0b 的契约选择见已采纳（accepted）的[P0 契约提案](../../../docs/proposals/storage-p0-contracts.md)。采纳依据是用户明确采用推荐方案并授权在功能分支持续实现、分批提交、推送和提 PR；这不等于合并前审核已完成：合并前由负责人兼 I 审核，AI 不代填 `reviewed-by` / `reviewed-at`。
+本页原为①的**实施准备**。第 1、2 节和第 3 节的探针证据是准备阶段（基于 6cea0b7，当时没有改代码、测试、contracts、部署或依赖）的历史记录，不代表此后没有代码改动。**当前状态：P0a、P0b 均已在本分支实现并验证（首个 P0a 提交 a6a1c5a，其余以分支提交历史和 PR 为准；见第 3、4 节末尾和 [progress](progress.md)），尚未经合并前审核；P1 只有[工程方案](persistent-service-plan.md)，未实现。** 其余能力都不因本页存在而视为已完成。目标语义以[设计 v1.2](../../../docs/design/design-v1.2.md)、[插件 MVP](../../../docs/design/plugins-mvp.md)和[决策索引](../../../docs/decisions/mvp-confirmed-decisions.md)为准；阶段编号沿用[全局实施计划](../../../ai-docs/plans/mvp-implementation.md)的 P0–P5；P0b 的契约选择见已采纳（accepted）的[P0 契约提案](../../../docs/proposals/storage-p0-contracts.md)。采纳依据是用户明确采用推荐方案并授权在功能分支持续实现、分批提交、推送和提 PR；这不等于合并前审核已完成：合并前由负责人兼 I 审核，AI 不代填 `reviewed-by` / `reviewed-at`。
 
 ## 1. 基线
 
@@ -54,9 +54,9 @@ based-on: origin/dev 6cea0b7 的实际代码、契约与测试；已采纳的 do
 
 **当前状态（本分支已实现并验证；提交与合并状态以提交历史和 PR 为准；尚未经合并前人工审核）**：测试位于 `libs/ear_storage_client/tests/test_memory_regressions.py`（12 项）。修复前 11 项失败、1 项通过（BaseException 释放在途标记的守护用例，旧代码没有标记，所以本来就会通过）；修复后 12 项全部通过，全量 301 passed。第 2 项采用每个 consumer 的内部在途标记：遇到正被处理的 consumer 时跳过而不等待，由持有它的 runner 继续投递；handler 以 BaseException 退出时只保证释放标记，事件仍按原语义丢失。详细结果和未覆盖项见 [progress](progress.md)。上表的“证据”列是修复前的探针结果。
 
-## 4. P0b：字段依赖、登记表能力和批末检查（提案已采纳，尚未实现）
+## 4. P0b：字段依赖、登记表能力和批末检查（已在本分支实现，待合并前审核）
 
-入口：已满足。[P0 契约提案](../../../docs/proposals/storage-p0-contracts.md)已 accepted，依据是用户明确采用推荐方案并授权在功能分支持续实现、分批提交、推送和提 PR。**P0b 尚未实现**，可以在本分支的同一 PR 中增量实施，或另开后续 PR（以 PR 说明为准）。合并前由负责人兼 I 审核（核对清单见提案第 4 节）；涉及③④的类型按类型启用时，仍须取得其实际输入并通知，不因本授权视为已通知。提案中标为“暂拟”的名称和内部 API 是工程决定，由实现者定名，不再等待确认。
+入口：已满足。[P0 契约提案](../../../docs/proposals/storage-p0-contracts.md)已 accepted，依据是用户明确采用推荐方案并授权在功能分支持续实现、分批提交、推送和提 PR。P0b 已在本分支实现，与 P0a 在同一 PR 中提交（提交以分支历史为准）。合并前由负责人兼 I 审核（核对清单见提案第 4 节）；涉及③④的类型按类型启用时，仍须取得其实际输入并通知，不因本授权视为已通知。提案中标为“暂拟”的名称和内部 API 是工程决定，由实现者定名，不再等待确认。
 
 | PR | 内容 | 文件 / 符号 | 主要测试 |
 |---|---|---|---|
@@ -66,14 +66,16 @@ based-on: origin/dev 6cea0b7 的实际代码、契约与测试；已采纳的 do
 
 约束（详见提案，不在此重复定义）：保留 `dependent_version=None` 的现有登记顺序；新的强制检查必须有明确的启用方式和调用方迁移说明，不能因为“只加了字段”就称为向后兼容；比较 JSON 时不依赖数据库的 json 相等判断。
 
+**当前状态（本分支已实现；尚未经合并前审核）**：实际名称为 `DependencyInput(ref, fields)`、`Reader.dependency_set()` / `DependencySet`、能力项 `requires_dependencies` / `supports_reevaluation`、`Registry.core_types` / `is_core` / `extend`（插件）/ `extend_core`（受信 bootstrap）及 `from_json(..., trusted_core=)`；新增冲突原因 `dependency_cycle`（不可重试）。内置登记表全部类型为核心类型、能力项全部 false，候选类型启用前须③④迁移并验证。核心/插件来源来自构造时的静态可信登记表，不是运行时鉴权或动态注册；`MemoryStorage.client(module)` 仍信任自报模块名。成环检查在内存实现中每批扫描全部当前有效图（从空图开始维护无环不变量，因此不提供旧状态迁移接口）；已有测试未修改即全部通过，无受影响测试需迁移。测试：`libs/ear_contracts/tests/test_p0_contract_models.py`、`libs/ear_storage_client/tests/test_p0_sdk_models.py`、`test_p0_memory_dependencies.py` 及 8 个新 contracts 示例；全量 426 passed、0 xfail。**待合并前核对的缺口**：提案 2.10 要求的 `dependency_cycle` 旧客户端端到端兼容测试尚未做（现有测试只证明当前 SDK 不重试）；双线程成环测试只证明内存全局锁，不是数据库并发证明。详见 [progress](progress.md)。
+
 ## 5. 阶段出入口（①视角）
 
 | 阶段 | 入口 | ①交付 / 出口 | 不在本阶段 |
 |---|---|---|---|
 | P0a | 本页 | 四个回归修复先红后绿 | 契约改动、request-id、远程 snapshot、鉴权 |
 | P0b | 提案已采纳、已获功能分支实现授权（合并前由①负责人兼 I 审核） | 契约、模型、SDK 和内存实现与设计 §3.5、§8.2 对齐；新旧用例通过 | HTTP/API/凭据/数据库版本选型；多 cause |
-| 进入 P1 前 | P0b 合入 | 写出并评审请求 ID 与提交结果未知、远程 snapshot 与分页边界、可信身份与凭据三份设计 | 实现 |
-| P1 | 上述设计已评审，I 提供可用的 PostgreSQL 环境 | 正式服务包、迁移、PostgreSQL 事务；**可信身份及读取路径的授权**（get/history/get_many/query/count/依赖/过时依赖/is_processed/snapshot）；订阅授权的接口设计与过滤规则在 P1 定稿，但实际按授权投递和远程订阅在 P2 验收，P1 不代表生产订阅已实现；**多连接的真实并发测试**（同版本竞争、并发形成环、计算期间输入更新）；提交结果未知时可安全重试；snapshot 生命周期边界 | 授权完成前不向插件开放 |
+| 进入 P1 前 | P0b 合入 | 三项设计（请求 ID 与提交结果未知、远程 snapshot 与分页、可信身份与凭据）已写入 [P1 工程方案](persistent-service-plan.md)；属工程指南，随 P1 PR 接受合并前审核 | 实现 |
+| P1 | P0 合入；本地测试用已有 `postgres:17-alpine` 镜像的隔离临时容器，部署环境仍由 I 提供 | 正式服务包、迁移、PostgreSQL 事务；**可信身份及读取路径的授权**（get/history/get_many/query/count/依赖/过时依赖/is_processed/snapshot）；订阅授权的接口设计与过滤规则在 P1 定稿，但实际按授权投递和远程订阅在 P2 验收，P1 不代表生产订阅已实现；**多连接的真实并发测试**（同版本竞争、并发形成环、计算期间输入更新）；提交结果未知时可安全重试；snapshot 生命周期边界 | 授权完成前不向插件开放 |
 | P2 | P1 | Outbox/Relay、JetStream 持久消费者、确认/退避/死信/重放；handler 失败不能被当作确认；按 P1 规则做最小权限的事件过滤与授权投递、远程订阅；`data_changed` 按获批类型订阅分发（多个获授权模块各有独立消费进度），`reevaluation_requested` 才按目标类型所属方和重判能力路由，均保留最小权限过滤；每个模块使用独立消费者；数据库内数据与 Outbox 原子提交，跨数据库/总线为至少一次投递与可恢复重投，消费端靠幂等去重，不宣称单事务或外部恰好一次 | 管理业务 |
 | P3 | P1、P2 | 动态持久注册、权限与凭据生命周期、①管理反馈处理器、可恢复阶段；配合⑥管理页 | 插件计算 |
 | P4 | 可以在 P0 内存基线上与早期阶段并行 | ①为③④⑤⑦提供结果记录、调用记录、多因与规则集合所需的类型、依赖和事务支持；不包办它们的业务 | 归属/提取/调度逻辑 |
@@ -83,12 +85,12 @@ based-on: origin/dev 6cea0b7 的实际代码、契约与测试；已采纳的 do
 
 ## 6. 阻塞项与交接
 
-- **①+I**：合并前审核 P0 实现 PR（核对清单见 P0 契约提案第 4 节）；P1 前的三份设计；提供 PostgreSQL/NATS 环境与 Compose（I 负责部署）。
+- **①+I**：合并前审核 P0 实现 PR（核对清单见 P0 契约提案第 4 节）；随 P1 PR 审核 [P1 工程方案](persistent-service-plan.md)中的三项设计；提供部署用 PostgreSQL/NATS 环境与 Compose（I 负责部署；本地隔离测试用已有镜像，不依赖 I 的部署环境）。
 - **③④负责人**：确认 `attribution`、`artifact`、`rule_selection` 等候选类型的实际输入以及是否需要强制依赖；④描述规则候选集合的业务一致性需求，由①与④共同确定提交期的集合校验方式，①负责提供存储原语，⑤遵守不扫描历史的门控。①不替他们决定业务规则。
 - **后续接口队列（不进 P0）**：多 cause 与跨 root 的兼容表达（不能改变旧 `root_feedback_id` 的含义，也不把“只合并同 root”当作已决定）；完成记录按所属模块分类型单写（不把“按行记录写入方”当作合法替代）；外部动作恢复标识；插件建议的交接方式。
-- 本页和提案都不冻结服务 HTTP 协议、API、凭据或数据库版本。
+- 本页和提案都不冻结服务 HTTP 协议、API、凭据或数据库版本；P1 的工程选择见 [P1 工程方案](persistent-service-plan.md)，精确依赖版本以 `uv.lock` 为准，不是产品承诺。
 
 ## 7. 已验证与未测
 
 - 已验证：第 1 节的基线命令（主代理运行）；第 2、3 节的探针（只读调用，没有修改仓库）。
-- 未测或未实现：P0b（字段依赖、登记表能力、批末强制）；PostgreSQL 和真实多进程并发；远程服务；鉴权；可靠投递；动态注册。P0a 后全量 301 个测试通过（含 12 个回归测试）不能证明这些新目标已经实现。
+- 未测或未实现：PostgreSQL 和真实多进程并发；远程服务；可信身份与读授权；请求 ID；远程 snapshot；可靠投递；动态注册；`dependency_cycle` 旧客户端兼容测试；核心类型启用强制登记。P0b 后全量 426 passed（P0a 后为 301）只验证内存实现，不能证明持久化服务或上述目标已经实现。

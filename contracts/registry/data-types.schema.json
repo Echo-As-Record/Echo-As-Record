@@ -52,8 +52,29 @@
           "$ref": "#/$defs/snake_case",
           "description": "payload 中保存原始数据 id 的顶层字段。设置后，这类数据的 event_start、event_end 由 ① 从该原始数据复制，写入方不填"
         },
-        "description": { "type": "string" }
-      }
+        "description": { "type": "string" },
+        "requires_dependencies": {
+          "type": "boolean",
+          "default": false,
+          "description": "这类数据的 Create、Update（含结果为 unchanged 的 Update）须在同一批完整登记结果版本的依赖（可为显式空集）。只用于有版本的数据（semantic、rule）。缺省 false 只为兼容旧登记表，不表示核心类型应永久为 false；候选核心类型按类型取得 ③④ 实际输入后再启用"
+        },
+        "supports_reevaluation": {
+          "type": "boolean",
+          "default": false,
+          "description": "所属模块（writer）是否接收「请求重新判断」并重判这类数据；重判执行方就是 writer，不另设执行人字段。只用于有版本的数据（semantic、rule）"
+        }
+      },
+      "$comment": "核心类型与插件类型的区别不在本结构中表达：由可信注册来源（内置核心配置或 ① 处理的动态插件登记）决定，不采信 spec 中的自报字段。",
+      "allOf": [
+        {
+          "if": { "required": ["requires_dependencies"], "properties": { "requires_dependencies": { "const": true } } },
+          "then": { "properties": { "kind": { "enum": ["semantic", "rule"] } } }
+        },
+        {
+          "if": { "required": ["supports_reevaluation"], "properties": { "supports_reevaluation": { "const": true } } },
+          "then": { "properties": { "kind": { "enum": ["semantic", "rule"] } } }
+        }
+      ]
     }
   }
 }

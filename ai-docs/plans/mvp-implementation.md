@@ -1,14 +1,14 @@
 ---
 audience: ai
 doc-type: guide
-based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisions/mvp-confirmed-decisions.md；docs/adr/0001-storage-and-runtime-modules.md；代码契约基线origin/dev 48d3c51
+based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisions/mvp-confirmed-decisions.md；docs/adr/0001-storage-and-runtime-modules.md；代码契约基线origin/dev 48d3c51；其后①在 storage/implementation-preparation 分支实现 P0a（首个提交 a6a1c5a）与 P0b（提交以分支历史为准），未合并
 ---
 
 # 已采纳 MVP 的契约与实施计划
 
 ## 0. 这不是实现完成报告
 
-负责人已明确采纳目标并授权本轮同步文档，**本轮不改contracts、业务代码、依赖或部署**。现有内存行为与新目标不同是显式待实现差距，不因测试绿就认定完成。目标定义见[设计](../../docs/design/design-v1.2.md)、[插件](../../docs/design/plugins-mvp.md)及[决策来源](../../docs/decisions/mvp-confirmed-decisions.md)。
+负责人已明确采纳目标并授权设计同步，那一轮不改contracts、业务代码、依赖或部署；此后①按授权在功能分支实现 P0a、P0b（未合并、未经合并前审核，见[①进度](../../services/storage/ai-docs/progress.md)）。现有内存行为与新目标不同是显式待实现差距，不因测试绿就认定完成。目标定义见[设计](../../docs/design/design-v1.2.md)、[插件](../../docs/design/plugins-mvp.md)及[决策来源](../../docs/decisions/mvp-confirmed-decisions.md)。
 
 ①的首批PR拆分、6cea0b7代码证据与阶段出入口见[①实施准备](../../services/storage/ai-docs/implementation-plan.md)。本页是工程执行顺序和风险清单，新增字段/类型名除已讨论术语外只是待设计项；不替代公共契约审核。协议、索引、超时等细节可由实施者提出，不反复问产品负责人；会改变已确认行为时再请求决策。
 
@@ -16,19 +16,19 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 
 | 位置 | 当前能力 | 不应误认为已有 |
 |---|---|---|
-| `contracts/records/dependency-record.schema.json` | 对象版本引用 | fields、动态读取权限或当前图防环 |
-| `contracts/registry/data-types.json` | 核心类型/单写者、约束 | 持久热注册、可信身份、完整插件生命周期 |
+| `contracts/records/dependency-record.schema.json` | 对象版本引用；P0b 分支新增可选顶层 `fields` | 动态读取权限、持久化后端的并发防环 |
+| `contracts/registry/data-types.json` | 核心类型/单写者、约束；P0b 分支 Schema 新增能力项（缺省 false，核心类型当前全 false） | 持久热注册、可信身份、完整插件生命周期、已启用的强制登记 |
 | `contracts/events/` | 两类事件、单cause及追踪字段 | 多cause/多root调度、完成信号的新Schema |
 | `libs/ear_contracts/src/ear_contracts/` | 模型/UUIDv7/UTC/注册表 | 新结果、管理、外部未知状态已同步 |
 | `libs/ear_storage_client/src/ear_storage_client/protocol.py` | 同步Reader/StorageClient/snapshot/subscribe及重试helper | 已实现远程快照/订阅协议 |
-| 同包 `ops.py`、`memory.py` | 批次、版本、依赖整体覆盖、内存总线 | 强制依赖/字段比较/无环/动态权限/生产可靠投递 |
-| 同包 `queries.py`、`results.py` | 查询分页与冲突 | 远程游标一致性、所有读路径访问控制 |
+| 同包 `ops.py`、`memory.py` | 批次、版本、依赖整体覆盖、内存总线；P0b 分支：`DependencyInput` 字段依赖、按能力强制登记、批末新鲜度、当前图无环（内存全局锁） | 持久化并发正确性、可信身份/动态权限、生产可靠投递 |
+| 同包 `queries.py`、`results.py` | 查询分页与冲突；P0b 分支 `DependencySet`、`dependency_cycle` | 远程游标一致性、所有读路径访问控制 |
 | `services/storage/` | 文档入口 | 正式服务包 |
 | `deploy/compose.yaml`、`tests/e2e/` | 空部署服务和E2E骨架 | 部署或插件端到端完成 |
 
 先复用正确的基础行为，不从零定义另一套category/ULID/事件命名。UUIDv7、data_type/payload、system根源、两类事件和单写者等保持既有公共约定。
 
-## 2. 契约改动清单（尚未执行）
+## 2. 契约改动清单（除①P0b 的依赖 fields 与登记表能力项外尚未执行）
 
 修改Schema仍由①与I审核，原则为只增加字段，不删除或改变旧字段含义。若现有结构无法无损表达目标，提出显式兼容版本方案，不把不兼容改义伪装成“增加字段”。
 
@@ -55,10 +55,11 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 - 处理批次最终图约束和历史图分离；不能只按单条操作检查，临时中间关系不应替代最终状态判断。
 - 当前MemoryStorage只按版本失效；fields不能仅进入extra字段后在构造VersionRef时丢掉。
 - 原可疑边界补回归后修：投递上限先出队、并发runner、空时间查询、系统记录更新时间。已作为 P0a 在 `storage/implementation-preparation` 分支实现并验证（提交与合并状态以提交历史和 PR 为准）；拆分与证据见[①实施准备](../../services/storage/ai-docs/implementation-plan.md)。
-- P0b（字段依赖、登记表能力、批末强制）的契约选择见[P0 契约提案](../../docs/proposals/storage-p0-contracts.md)，已 accepted 并获功能分支实现授权，合并前由①负责人兼 I 审核；**尚未实现**，上面前几项仍是待实现差距。
+- P0b（字段依赖、登记表能力、批末强制）的契约选择见[P0 契约提案](../../docs/proposals/storage-p0-contracts.md)，已 accepted 并获功能分支实现授权；**已在本分支实现内存版本**（全量 426 passed、0 xfail），合并前由①负责人兼 I 审核。上面依赖相关各项在内存实现中已覆盖，但核心类型能力项全部 false（启用需③④迁移验证），核心/插件来源是静态可信登记表而非动态鉴权，`dependency_cycle` 旧客户端兼容测试未做；持久化版本属于 P1。
 
 ### P1 独立服务与持久事务
 
+- 工程方案见[①P1 持久化服务方案](../../services/storage/ai-docs/persistent-service-plan.md)（未实现）。
 - 建正式storage包、迁移与PostgreSQL实现，同库模块schema+公共storage设施，不一类型强制一表。
 - 可信凭据绑定模块；所有读取路径做授权，批次写入检查所有权，不信任传参module。
 - 实现版本锁/唯一性、完整依赖、新鲜度和DAG的并发安全提交；不同事务分别添加边也不能并发形成环。
