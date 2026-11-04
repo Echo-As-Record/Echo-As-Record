@@ -1,30 +1,36 @@
 ---
-generated-by: Claude (AI)
-generated-at: 2026-11-01
-based-on: docs/design/design-v1.1.md (reviewed-at 2026-10-30), docs/design/signals-supplement.md (reviewed-at 2026-10-29), docs/glossary.md, ai-docs/proposals/module-internal-structure.md, 分支 storage/contracts-and-sdk
+audience: ai
+doc-type: status
+based-on: origin/dev 48d3c51 的代码与契约；docs/design/design-v1.2.md；docs/design/plugins-mvp.md；本轮仅同步文档
 ---
 
-# ① 存储与事件：进度与已采用的默认决定（未审定）
+# ① 实现状态与新目标差距
 
-## 已完成（分支 storage/contracts-and-sdk）
+[设计](../../../docs/design/design-v1.2.md)、[插件](../../../docs/design/plugins-mvp.md)和[ADR](../../../docs/adr/0001-storage-and-runtime-modules.md)已采纳；本轮不改代码或契约，不把决定当完成。所有权及接口目标见[人读说明](../../../docs/modules/storage.md)。
 
-- contracts：raw-record、semantic-record、system-record、dependency-record、registry/data-types（含 schema 与正反例）；data-changed 新增可选字段 writer、batch_id。
-- libs/ear_contracts：与 contracts 一一对应的 pydantic 类型、UUIDv7、UTC 时间、登记表；一致性测试。
-- libs/ear_storage_client：接口（protocol.py）、写入操作、结果与冲突、查询、内存实现与进程内总线、造数据工具；行为测试覆盖工作分解 ① 的五条验收。
-- 接口说明：本目录 interface.md。
+## 已有代码
 
-## 未完成
+- contracts：记录、事件、依赖、注册表Schema和示例，部分DRAFT。
+- ear_contracts：公共模型、UUIDv7、UTC、登记表及一致性测试。
+- ear_storage_client：同步Protocol、批次操作、结果/冲突、查询、MemoryStorage、进程内事件工具。
+- 基础内存行为测试覆盖去重、批次回滚、版本、版本级依赖、快照与重投；新目标尚不由这些测试保证。
 
-1. ADR-0001：数据库、总线、outbox、① 是服务还是库。
-2. 正式实现：PostgreSQL 表结构、outbox、relay、总线适配；与内存实现共用同一套行为测试。
-3. deploy/compose.yaml 加入数据库、总线、storage。
+## 已决定，尚未实现
 
-## 默认决定（负责人已于 2026-11-01 认可）
+| 目标 | 差距 |
+|---|---|
+| 独立服务、数据库和总线 | 无正式后端、迁移、Outbox/Relay、总线适配和实际Compose服务 |
+| 字段依赖/强制登记/防环 | 当前主要按版本判断，不强制Update同批重登，没有新目标并发图校验 |
+| 动态注册与可信权限 | 当前构造时extend不等于热注册，模块名绑定不等于部署认证；缺持久注册、全读路径权限和凭据生命周期 |
+| 管理反馈 | 缺①管理消费者、可恢复阶段、管理状态和⑥页面/API |
+| 完成记录与调度交接 | 缺③④及插件通用结果类别、多起因与请求关联的兼容契约 |
+| 最新规则/纯Markdown/选择结果 | 主要属于③④⑤业务对齐；①提供所需类型、依赖及事务支持 |
+| 插件多层/历史处理 | 缺启停与快照游标、恢复/补或跳、多层集成与权限撤销测试 |
 
-- 整体替代 = 新增 status=superseded 的版本 n+1（内容同 n），事件 operation=superseded、new_version=n+1、old_version=n。
-- 一批写入原子提交；冲突整批拒绝并返回结果，权限和格式错误抛异常。
-- 原始数据去重键已存在 → deduplicated（成功、不发事件）；语义对象 dedup_key 已存在 → 冲突。
-- skip_history 按每条写入设置；root_feedback_id、depth 按整批设置（Context）。
-- 登记依赖时被依赖方必须是当前版本，否则 stale_dependency；重新判断结果不变时要重新登记。
-- 归属关系 payload 需有 subject_id；人物/地点 references 互斥。字段名待 ③ 确认。
-- 客户端接口为同步 API。
+## 下一步
+
+按[全局实施计划](../../../ai-docs/plans/mvp-implementation.md)先对齐契约和共用行为测试，再持久化/鉴权/可靠投递，再动态管理和插件链集成。部署与I合作，页面归⑥，传播调度归⑤；不要让①包办业务模块。
+
+保留静态审查关注：内存投递上限先出队、并发runner、空时间区间、系统记录更新时间校验；须补回归测试后修复。不要把顺序旧版本冲突测试当真正并发测试。SDK用法与命令见[工程指南](interface.md)。
+
+未完成项不得因本次文档检查通过而标完成，后续更新进度需绑定实现提交与实际测试结果。

@@ -1,30 +1,29 @@
-# ai-docs：工作文档（未审定）
-
-这里放**还没有经过人完整审定**的文档：AI 生成的接口细节说明、实现方案、调研记录，也包括人写的随手笔记。
-
-- 未审定不等于不可信。它的意思是：**还没有人对它的内容负责**。
-- 人没有义务阅读这里的内容。这里的文档可以随时删除，也可以重新生成。
-- 和已审定文档（`docs/`、`README.md`、`AGENTS.md`、模块 README）冲突时，以已审定文档为准，并把冲突报告出来。
-- 各模块自己的工作文档放在 `services/<模块>/ai-docs/`。
-
-## 建议的 front matter
-
-```yaml
 ---
-generated-by: Claude (AI)        # 或作者名
-generated-at: 2026-10-29
-based-on: docs/design/design-v1.1.md (reviewed-at 2026-10-26), commit abc1234
+audience: ai
+doc-type: guide
+based-on: README.md；docs/README.md；本轮已确认设计v1.2；代码基线origin/dev 48d3c51
 ---
-```
 
-`based-on` 记下生成时依据的已审定文档版本。依据更新后，可以据此判断这份文档是否已经过时。
+# AI 工程上下文索引
 
-## 升格为已审定文档
+这里保存实现上下文，目录不表示未审定或只能由AI起草。目标与代码有差距时明确记录，不把当前实现当成新设计，也不把accepted当作已经实现。
 
-1. 人完整阅读并认可。
-2. 在 PR 里把文件移到 `docs/` 下，删掉 `generated-*`，加上 `reviewed-by`、`reviewed-at`。
-3. CI 的文档审定检查通过后合并。
+## 阅读顺序
 
-## 目录
+1. [AGENTS](../AGENTS.md)与[文档规则](../docs/README.md)。
+2. [设计 v1.2](../docs/design/design-v1.2.md)、[信号](../docs/design/signals-supplement.md)、任务相关[插件设计](../docs/design/plugins-mvp.md)及[ADR](../docs/adr/0001-storage-and-runtime-modules.md)。
+3. [决策来源](../docs/decisions/mvp-confirmed-decisions.md)和[实施计划](plans/mvp-implementation.md)。
+4. 当前契约、代码、测试和所改模块工程指南；不要批量读取所有无关文件。
 
-- `proposals/`：等待讨论、准备升格的提案。
+| 内容 | 入口 |
+|---|---|
+| ①人读目标 | [模块说明](../docs/modules/storage.md) |
+| 当前SDK用法 | [工程指南](../services/storage/ai-docs/interface.md) |
+| ①代码差距 | [状态记录](../services/storage/ai-docs/progress.md) |
+| 全局契约/实施顺序 | [实施计划](plans/mvp-implementation.md) |
+| 原结构提案 | [历史参考](proposals/module-internal-structure.md)，已superseded，不照搬旧API与职责 |
+| 原依赖提案 | [历史来源](../docs/proposals/dependency-refinement.md)，最终以设计及确认索引为准 |
+
+## 维护
+
+写具体代码路径、符号、命令、失败边界和验证，不堆积对话全文。based-on记依据与代码基线；设计规则引用人读文档，别建立第二份产品规范。尚未冻结的Schema/传输格式作为工程方案评审，修改公共契约仍需①与I审核。若影响已批准行为再请负责人决定，普通实现细节不用无限追加问答。

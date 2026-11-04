@@ -1,7 +1,13 @@
 ---
+audience: human
+doc-type: design
+status: superseded
+superseded-by: design-v1.2.md
 reviewed-by: aytony
 reviewed-at: 2026-10-30
 ---
+
+> **历史版本，已被替代。** 当前设计见 [设计 v1.2](design-v1.2.md)。本文件仅保留历史正文与原有审核记录；下文的旧规则不再作为当前设计依据。v1.2 的采纳依据是负责人本轮逐项确认及文档同步授权，不继承本文件的人工审核记录。
 
 # Ear 设计文档 v1.1（定稿）
 
