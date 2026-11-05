@@ -27,7 +27,7 @@ from ear_extraction.domain import (
 from ear_extraction.long_input import generate, segment
 from ear_extraction.persistence import range_of, records, semantic
 from ear_extraction.rules import eligible
-from ear_extraction.segmentation import check_markdown, inputs
+from ear_extraction.segmentation import check_refs, inputs
 from ear_extraction.suggestions import create_suggestion, pending_replacements
 
 Ask = Callable[[str, dict[str, Any], type], Any]
@@ -162,9 +162,6 @@ def apply_plan(
                     "body_md": result.body_md,
                     "evidence_ids": result.evidence_ids,
                     "action_reason": result.action_reason,
-                    "generated_action": result.action.model_dump(mode="json")
-                    if result.action
-                    else None,
                     "run_id": run_id,
                     "manual": True,
                 },
@@ -178,8 +175,8 @@ def apply_plan(
                     VersionRef(data_type="activity", id=activity.id, version=activity.version),
                     VersionRef(data_type="rule", id=rule_id, version=version),
                     *[
-                        VersionRef(data_type=a.data_type, id=a.id, version=a.version)
-                        for a in [*data.attributions, *data.entities]
+                        VersionRef(data_type="attribution", id=a.id, version=a.version)
+                        for a in data.attributions
                     ],
                 ],
             ),
@@ -192,38 +189,10 @@ def apply_plan(
 def rejudge_plan(reader: Reader, command: Command, ask: Ask) -> tuple[list[WriteOp], dict]:
     artifact = semantic(reader, command.target_id, "artifact")
     activity = semantic(reader, artifact.payload["activity_id"], "activity")
-    rule = reader.get(artifact.payload["rule_id"])
-    if not isinstance(rule, SemanticRecord) or rule.data_type != "rule":
-        raise Blocked("missing_rule")
-    old_version = artifact.payload["rule_version"]
-    extra_causes = []
-    if rule.version != old_version or rule.superseded or not rule.payload.get("enabled", True):
-        extra_causes.append(
-            {
-                "data_type": "rule",
-                "data_id": rule.id,
-                "old_version": old_version,
-                "new_version": rule.version,
-                "reason": "rule_unavailable"
-                if rule.superseded or not rule.payload.get("enabled", True)
-                else "rule_changed",
-            }
-        )
-    detail = {
-        "artifact_id": artifact.id,
-        "before_version": artifact.version,
-        "extra_causes": extra_causes,
-    }
-    if rule.superseded or not eligible(Rule.model_validate(rule.payload), activity.id):
-        return [
-            Supersede("artifact", artifact.id, artifact.version),
-            *pending_replacements(reader, {artifact.id}),
-        ], {
-            **detail,
-            "outcome": "not_applicable",
-            "disposition": "superseded",
-            "after_version": artifact.version + 1,
-        }
+    rule = semantic(reader, artifact.payload["rule_id"], "rule")
+    if rule.version != artifact.payload["rule_version"]:
+        # Shared contract is intentionally not weakened here.
+        raise Blocked("historical_rule_dependency_unsupported")
     data = inputs(reader, range_of(activity))
     result: Generated = ask(
         "reevaluation",
@@ -232,23 +201,12 @@ def rejudge_plan(reader: Reader, command: Command, ask: Ask) -> tuple[list[Write
             "old_artifact": artifact.payload,
             "rule": rule.model_dump(mode="json"),
             "change_description": command.description,
-            "extra_causes": extra_causes,
-            "cause": command.cause,
             **data.public(),
         },
         Generated,
     )
     validate_generated(result, Rule.model_validate(rule.payload), data, rejudge=True)
-    rule_changed = rule.version != old_version
-    if result.unchanged and rule_changed:
-        raise ValueError("changed_rule_requires_full_result")
-    # A rule upgrade changes provenance even if the rendered text stays identical.
-    changed = not result.unchanged and (
-        result.body_md != artifact.payload["body_md"]
-        or rule_changed
-        or (result.action.model_dump(mode="json") if result.action else None)
-        != artifact.payload.get("generated_action")
-    )
+    changed = not result.unchanged and result.body_md != artifact.payload["body_md"]
     ops: list[WriteOp] = []
     if changed:
         ops.append(
@@ -261,21 +219,14 @@ def rejudge_plan(reader: Reader, command: Command, ask: Ask) -> tuple[list[Write
                     "body_md": result.body_md,
                     "evidence_ids": result.evidence_ids,
                     "action_reason": result.action_reason,
-                    "generated_action": result.action.model_dump(mode="json")
-                    if result.action
-                    else None,
-                    "rule_version": rule.version,
                 },
             )
         )
         ops.extend(pending_replacements(reader, {artifact.id}))
         ops.extend(create_suggestion(artifact.id, artifact.version + 1, result, range_of(activity)))
     else:
-        check_markdown(artifact.payload["body_md"])
+        # A declared unchanged result cannot preserve now-invalid identity references.
+        check_refs(artifact.payload["body_md"], data.entities)
         ops.append(Update("artifact", artifact.id, artifact.version, artifact.payload))
     ops.append(RegisterDependencies("artifact", artifact.id, dependencies(activity, rule, data)))
-    return ops, {
-        **detail,
-        "outcome": "changed" if changed else "unchanged",
-        "after_version": artifact.version + int(changed),
-    }
+    return ops, {"artifact_id": artifact.id, "outcome": "changed" if changed else "unchanged"}

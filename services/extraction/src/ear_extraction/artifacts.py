@@ -7,7 +7,7 @@ from ear_storage_client import Create, RegisterDependencies, WriteOp
 
 from ear_extraction.domain import Activity, Generated, Rule
 from ear_extraction.persistence import ref
-from ear_extraction.segmentation import Inputs, check_markdown
+from ear_extraction.segmentation import Inputs, check_refs
 from ear_extraction.suggestions import create_suggestion
 
 
@@ -20,11 +20,11 @@ def validate_generated(result: Generated, rule: Rule, data: Inputs, *, rejudge: 
         raise ValueError("artifact_requires_text_and_evidence")
     if not set(result.evidence_ids) <= {r.id for r in data.raw}:
         raise ValueError("unknown_evidence_reference")
-    check_markdown(result.body_md)
+    check_refs(result.body_md, data.entities)
     if result.action is not None:
         if result.action.kind != rule.action:
             raise ValueError("action_not_allowed_by_rule")
-        check_markdown(result.action.title + result.action.notes)
+        check_refs(result.action.title + result.action.notes, data.entities)
     elif rule.action and not result.action_reason.strip():
         raise ValueError("missing_action_requires_reason")
 
@@ -33,13 +33,7 @@ def dependencies(
     activity: SemanticRecord | VersionRef, rule: SemanticRecord, data: Inputs
 ) -> list[VersionRef]:
     activity_ref = ref(activity) if isinstance(activity, SemanticRecord) else activity
-    # Conservative compatibility until ① supports field-scoped dependencies.
-    return [
-        activity_ref,
-        ref(rule),
-        *[ref(a) for a in data.attributions],
-        *[ref(e) for e in data.entities],
-    ]
+    return [activity_ref, ref(rule), *[ref(a) for a in data.attributions]]
 
 
 def create_artifact(
@@ -58,9 +52,7 @@ def create_artifact(
         "body_md": result.body_md,
         "evidence_ids": result.evidence_ids,
         "action_reason": result.action_reason,
-        "generated_action": result.action.model_dump(mode="json") if result.action else None,
         "run_id": run_id,
-        "manual": False,
     }
     deps = dependencies(VersionRef(data_type="activity", id=activity_id, version=1), rule, data)
     return [

@@ -114,7 +114,7 @@ def test_manual_extraction_and_duplicate_delivery(env):
     assert len(items(env, "action_suggestion")) == 1
     artifact = items(env, "artifact")[0]
     deps = env[0].client("extraction").dependencies_of(artifact.id)
-    assert {d.depends_on.data_type for d in deps} == {"activity", "rule", "attribution", "person"}
+    assert {d.depends_on.data_type for d in deps} == {"activity", "rule", "attribution"}
     assert all(c.module == "extraction" and c.root_feedback_id != "system" for c in env[2].calls)
     env[4].drain()
     env[0].run_until_idle()
@@ -198,7 +198,7 @@ def test_rejudge_changed_preserves_activity_and_approved_suggestions(env):
     assert run(env, id).payload["detail"]["outcome"] == "changed"
     assert items(env, "activity")[0].id == activity.id
     assert items(env, "artifact")[0].version == 2
-    assert "合成人物乙" in items(env, "artifact")[0].payload["body_md"]
+    assert p2 in items(env, "artifact")[0].payload["body_md"]
     assert {r.payload["state"] for r in items(env, "action_suggestion")} == {"approved", "pending"}
 
 
@@ -218,7 +218,7 @@ def test_rejudge_unchanged_refreshes_dependencies(env):
     assert not storage.client("dependency").stale_dependencies([ids["attribution"]])
 
 
-def test_rejudge_uses_current_rule_without_edit_triggering_history(env):
+def test_historical_rule_conflict_is_explicit(env):
     extract(env)
     rule = items(env, "rule")[0]
     submit(
@@ -233,9 +233,8 @@ def test_rejudge_uses_current_rule_without_edit_triggering_history(env):
     env[4].drain()
     assert items(env, "artifact")[0].version == 1
     id = rejudge(env, items(env, "artifact")[0])
-    assert run(env, id).payload["status"] == "succeeded"
-    assert items(env, "artifact")[0].payload["rule_version"] == 2
-    assert run(env, id).payload["detail"]["extra_causes"][0]["reason"] == "rule_changed"
+    assert run(env, id).payload["error"] == "historical_rule_dependency_unsupported"
+    assert items(env, "artifact")[0].version == 1
 
 
 @pytest.mark.parametrize("kind", ["apply_rule", "extract_once"])

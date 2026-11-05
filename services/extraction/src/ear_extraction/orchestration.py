@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import time
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
@@ -65,14 +64,12 @@ class ExtractionService:
         wait_seconds: int = 1800,
         lease_seconds: int = 900,
         max_input_chars: int = 100_000,
-        capture_model_content: bool = False,
     ):
         if storage.module != "extraction":
             raise ValueError("extraction_storage_client_required")
         if min(max_attempts, retry_seconds, wait_seconds, lease_seconds, max_input_chars) <= 0:
             raise ValueError("positive_limits_required")
         self.storage, self.gateway, self.clock = storage, gateway, clock
-        self.capture_model_content = capture_model_content
         self.max_attempts, self.retry_seconds, self.wait_seconds = (
             max_attempts,
             retry_seconds,
@@ -104,7 +101,6 @@ class ExtractionService:
                 "kind": "reevaluate",
                 "target_id": event.target_id,
                 "description": event.change_description,
-                "cause": event.cause.model_dump(mode="json"),
             }
         else:
             return
@@ -119,10 +115,7 @@ class ExtractionService:
         event_id: str | None = None,
         scheduled: bool = False,
     ) -> None:
-        existing = self.storage.get_system_record(id)
-        if existing:
-            if existing.data_type != "extraction_run":
-                raise ValueError("extraction_run_id_collision")
+        if self.storage.get_system_record(id):
             return
         error = None
         try:
@@ -305,41 +298,23 @@ class ExtractionService:
             return
         # The claim revision is the fencing token; another recovery cannot commit our results.
         revision = run.revision + 1
-        calls = list(payload.get("model_calls", []))
+        calls = []
 
         def ask(purpose: str, data: dict[str, Any], model: type[BaseModel]) -> BaseModel:
-            started = time.monotonic()
-            entry: dict[str, Any] = {
-                "purpose": purpose,
-                "module": "extraction",
-                "run_id": run.id,
-                "root_feedback_id": context.root_feedback_id,
-                "depth": context.depth,
-                "attempt": payload["attempts"],
-                "request_id": run.id if payload["command"].get("kind") == "reevaluate" else None,
-            }
-            try:
-                output = invoke(
-                    self.gateway,
-                    model,
-                    purpose=purpose,
-                    data=data,
-                    run_id=run.id,
-                    root=context.root_feedback_id,
-                    depth=context.depth,
-                    max_input_chars=self.max_input_chars,
-                    request_id=entry["request_id"],
-                )
-                entry["status"] = "succeeded"
-                if self.capture_model_content:
-                    entry.update(input=data, output=output.model_dump(mode="json"))
-                return output
-            except Exception as exc:
-                entry.update(status="failed", error=type(exc).__name__)
-                raise
-            finally:
-                entry["duration_ms"] = round((time.monotonic() - started) * 1000, 3)
-                calls.append(entry)
+            output = invoke(
+                self.gateway,
+                model,
+                purpose=purpose,
+                data=data,
+                run_id=run.id,
+                root=context.root_feedback_id,
+                depth=context.depth,
+                max_input_chars=self.max_input_chars,
+            )
+            calls.append(
+                {"purpose": purpose, "input": data, "output": output.model_dump(mode="json")}
+            )
+            return output
 
         try:
             command = Command.model_validate(payload["command"])
@@ -359,12 +334,9 @@ class ExtractionService:
                 "status": "succeeded",
                 "error": None,
                 "detail": detail,
-                "completed_at": format_utc(self.clock()),
                 "model_calls": calls,
                 "lease_until": None,
             }
-            if payload.get("event_id"):
-                ops.append(MarkProcessed("extraction.completed", payload["event_id"]))
             result = self.storage.write(
                 [
                     *ops,
@@ -397,7 +369,6 @@ class ExtractionService:
             "model_calls": calls,
             "lease_until": None,
             "retry_at": format_utc(self.clock() + timedelta(seconds=self.retry_seconds)),
-            "completed_at": format_utc(self.clock()) if status in TERMINAL else None,
         }
         self.storage.write(
             [PutSystemRecord("extraction_run", id, final, expected_revision=revision)],
