@@ -11,6 +11,8 @@ based-on: services/extraction/ai-docs/mvp-design.md, docs/design/design-v1.1.md,
 > 本文记录已恢复的初版 MVP（`f3c28db`），用于演示，不代表已完成当前 v1.2 设计。
 
 
+网页模拟入口与 VS Code 端口转发步骤见[网页演示指南](web-demo.md)。
+
 ## 运行演示
 
 在仓库根目录运行：

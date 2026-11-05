@@ -7,6 +7,7 @@ dependencies = ["ear-contracts", "ear-storage-client", "httpx>=0.28"]
 
 [project.scripts]
 ear-extraction-demo = "ear_extraction.demo:main"
+ear-extraction-web-demo = "ear_extraction.web_demo:main"
 
 [tool.uv.sources]
 ear-contracts = { workspace = true }
