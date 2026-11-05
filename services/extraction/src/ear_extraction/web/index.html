@@ -1,30 +1,30 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Ear · 活动提取演示</title><link rel="stylesheet" href="/style.css"></head>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Ear · 我的活动</title><link rel="stylesheet" href="/style.css"></head>
 <body>
 <div class="shell">
   <aside class="sidebar">
     <a class="brand" href="/" aria-label="Ear 首页"><span class="brand-icon">e</span> Ear<span class="brand-dot">.</span></a>
     <div class="caption">ECHO AS RECORD</div>
-    <div class="nav-label">演示工作台</div>
-    <div class="nav-item selected"><span>◉</span> 活动提取 <span class="nav-number">04</span></div>
-    <div class="sidebar-note"><span class="live-dot"></span> 模拟环境<br><p>合成数据 · 固定模型回复<br>不会操作真实手机或日历</p></div>
-    <div class="sidebar-bottom">把日常片段，整理成行动。<br><span>EAR / MVP DEMO</span></div>
+    <div class="nav-label">我的空间</div>
+    <a class="nav-item selected" href="#today"><span>◉</span> 我的活动</a><a class="nav-item" href="#notes"><span>≋</span> 活动笔记</a><a class="nav-item" href="#reminders"><span>◷</span> 提醒事项</a>
+    <div class="sidebar-note"><span class="live-dot"></span> 个人空间<br><p>记录、回顾，安排下一步。</p></div>
+    <div class="sidebar-bottom">把日常片段，整理成行动。<br><span>ECHO AS RECORD</span></div>
   </aside>
   <main>
-    <header class="topbar"><div><span class="muted">工作台</span><span class="slash">/</span>活动提取</div><span class="environment">● 本地模拟</span></header>
-    <section class="intro"><div><div class="eyebrow">FROM MOMENTS TO ACTIONS</div><h1>一次组会，成为一条待办。</h1><p>从原始转写开始，体验提取、纠正归属与建议审核的完整流程。</p></div><button class="button subtle" data-action="reset" disabled>↻ 重置演示</button></section>
-    <div class="notice"><span>演示说明</span> 本页运行初版 MVP 的真实提取逻辑；输入、模型回复及外部执行均为模拟。刷新保留当前场景，重置后重新开始。</div>
+    <header class="topbar"><div><span class="muted">我的空间</span><span class="slash">/</span>我的活动</div><span class="environment">2026 年 11 月 5 日</span></header>
+    <section class="intro" id="today"><div><div class="eyebrow">THURSDAY, NOVEMBER 05</div><h1>回顾今天，安排接下来。</h1><p>把记录整理为活动笔记，值得跟进的事情留在提醒里。</p></div><button class="button subtle" data-action="reset" disabled>↻ 重新开始</button></section>
     <div id="message" role="status" aria-live="polite"></div>
-    <section class="progress" aria-label="演示进度" id="progress"></section>
+    <section class="progress" aria-label="当日概览" id="progress"></section>
     <div class="workspace">
-      <section class="card source"><div class="card-top"><div class="eyebrow">01 / INPUT</div><span class="tag">合成场景</span></div><h2>实验组会</h2><p class="time">2026.11.05 · 09:00—10:00 UTC</p><div class="audio-line" aria-hidden="true">▂ ▅ ▃ ▇ ▄ ▂ ▆ ▄ ▇ ▂ ▅ ▃ ▆ ▄ ▂ ▅ ▇ ▃ ▅ ▂ ▄ ▇ ▃ ▂</div><div class="transcript-label">转写片段 <span>09:00—09:01</span></div><blockquote>“我在11月6日UTC九点前整理实验结果。”</blockquote><div class="speaker"><span class="avatar">A</span><div><small>说话人 A · 当前归属</small><strong id="speaker">加载中…</strong></div></div><div class="rule"><span class="rule-icon">✳</span><div><strong>提取规则</strong><p>组会中明确的待办及截止日期，生成提醒建议。</p></div></div><button class="button primary full" data-action="extract" id="extract" disabled>生成活动与待办 <span>→</span></button><p class="helper">固定演示内容，不支持上传真实录音。</p></section>
-      <section class="card results"><div class="card-top"><div class="eyebrow">02 / EXTRACT</div><span class="tag" id="result-badge">等待提取</span></div><h2>活动与笔记</h2><div id="results"><div class="empty"><div class="empty-symbol">≋</div><h3>让片段有条理</h3><p>点击左侧“生成活动与待办”，<br>在这里查看活动及提取出的 Markdown。</p></div></div><div class="correction"><div><strong>如果说话人认错了？</strong><p>把 A 从甲纠正为乙，观察待办更新。活动划分保持不变。</p></div><button class="button" data-action="correct" id="correct" disabled>纠正为乙 ↗</button></div></section>
-      <section class="card actions"><div class="card-top"><div class="eyebrow">03 / REVIEW</div><span class="tag" id="suggestion-count">0 条</span></div><h2>提醒建议</h2><p class="muted small">先审核，再执行。每一步由你决定。</p><div id="suggestions"><div class="empty"><div class="empty-symbol">⌁</div><h3>建议将在这里出现</h3><p>提取完成后，可通过或拒绝提醒建议。</p></div></div><div id="executed"></div></section>
+      <section class="card source"><div class="card-top"><div class="eyebrow">记录</div><span class="tag">转写记录</span></div><h2>实验组会</h2><p class="time">2026.11.05 · 09:00—10:00 UTC</p><div class="audio-line" aria-hidden="true">▂ ▅ ▃ ▇ ▄ ▂ ▆ ▄ ▇ ▂ ▅ ▃ ▆ ▄ ▂ ▅ ▇ ▃ ▅ ▂ ▄ ▇ ▃ ▂</div><div class="transcript-label">转写片段 <span>09:00—09:01</span></div><blockquote>“我在11月6日UTC九点前整理实验结果。”</blockquote><div class="speaker"><span class="avatar">A</span><div><small>说话人 A · 当前归属</small><strong id="speaker">加载中…</strong></div></div><div class="rule"><span class="rule-icon">✳</span><div><strong>提取规则</strong><p>组会中明确的待办及截止日期，生成提醒事项。</p></div></div><button class="button primary full" data-action="extract" id="extract" disabled>整理这段记录 <span>→</span></button><p class="helper">根据上方规则生成笔记与提醒事项。</p></section>
+      <section class="card results" id="notes"><div class="card-top"><div class="eyebrow">笔记</div><span class="tag" id="result-badge">待整理</span></div><h2>活动笔记</h2><div id="results"><div class="empty"><div class="empty-symbol">≋</div><h3>让片段有条理</h3><p>整理记录后，待办与要点会出现在这里。</p></div></div><div class="correction"><div><strong>参与人物</strong><p>人物不对？修正说话人后，EAR 会更新相关笔记和未确认的提醒。</p></div><button class="button" id="correct" disabled>修正说话人</button></div></section>
+      <section class="card actions" id="reminders"><div class="card-top"><div class="eyebrow">待确认</div><span class="tag" id="suggestion-count">0 条</span></div><h2>提醒事项</h2><p class="muted small">确认要跟进的事项，再加入提醒。</p><div id="suggestions"><div class="empty"><div class="empty-symbol">⌁</div><h3>建议将在这里出现</h3><p>提取完成后，可通过或拒绝提醒事项。</p></div></div><div id="executed"></div></section>
     </div>
-    <section class="card trace"><div class="trace-heading"><div><div class="eyebrow">BEHIND THE SCENES</div><h2>本次演示记录</h2></div><span id="run-count" class="tag">等待操作</span></div><ol id="steps"></ol><details><summary>查看任务状态与原始数据</summary><div id="runs"></div><pre id="raw"></pre></details></section>
-    <footer>仅当前浏览器的临时场景 · 关闭服务后数据清空<span>Ear — Echo As Record</span></footer>
+    <section class="card trace" id="history"><div class="trace-heading"><div><div class="eyebrow">最近更新</div><h2>记录动态</h2></div><span class="tag">11 月 5 日</span></div><ol id="steps"></ol></section>
+    <footer>示例记录 · 提醒暂未连接手机，仅保存在当前会话<span>Ear — Echo As Record</span></footer>
   </main>
 </div>
+<dialog id="person-dialog"><form method="dialog"><div class="eyebrow">参与人物</div><h2>修正说话人 A</h2><p class="muted">选择这段录音中实际说话的人。</p><div class="person-choice"><span class="avatar">陈</span><div><strong>陈默</strong><p>替换当前归属：林舟</p></div><span>✓</span></div><p class="small muted">保存后会更新相关笔记和未确认提醒。已确认的提醒将保留。</p><div class="dialog-actions"><button class="button" value="cancel">取消</button><button type="button" class="button primary" data-action="correct">保存并更新</button></div></form></dialog>
 <script src="/app.js"></script>
 </body></html>

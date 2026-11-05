@@ -67,7 +67,7 @@ def test_http_sessions_assets_and_action_boundary(server_url):
     ):
         page = first.get("/")
         assert page.status_code == 200
-        assert "活动提取演示" in page.text
+        assert "我的活动" in page.text
         assert first.get("/app.js").status_code == 200
         assert first.get("/style.css").status_code == 200
         assert first.get("/web_demo.py").status_code == 404
