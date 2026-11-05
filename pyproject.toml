@@ -8,6 +8,7 @@ dependencies = []
 [dependency-groups]
 dev = [
     "ear-adapter",
+    "ear-extraction",
     "ear-contracts",
     "ear-storage-client",
     "jsonschema[format-nongpl]>=4.23",
@@ -23,10 +24,11 @@ package = false
 
 [tool.uv.workspace]
 # 新建模块包时加到这里。
-members = ["libs/ear_contracts", "libs/ear_storage_client", "services/adapters"]
+members = ["libs/ear_contracts", "libs/ear_storage_client", "services/adapters", "services/extraction"]
 
 [tool.uv.sources]
 ear-adapter = { workspace = true }
+ear-extraction = { workspace = true }
 ear-contracts = { workspace = true }
 ear-storage-client = { workspace = true }
 
@@ -46,8 +48,8 @@ venv = ".venv"
 extraPaths = ["tools"]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
-include = ["tools", "tests", "libs", "services"]
+include = ["tools", "tests", "libs", "services/adapters", "services/extraction"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "libs", "services"]
+testpaths = ["tests", "libs", "services/adapters/tests", "services/extraction/tests"]
 addopts = ["--import-mode=importlib"]
