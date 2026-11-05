@@ -272,7 +272,7 @@ def test_foreign_same_module_expiry_descriptor_release_and_bounded_sweep(env):
         "byte_count",
     }
     assert descriptor["expires_at"].endswith("Z")
-    assert descriptor["item_count"] == 1  # Empty-but-authorized type scope is captured.
+    assert descriptor["item_count"] == 2  # Registry scope plus collection revision, even empty.
     for sid in (lease.snapshot_id, new_id(), "malformed"):
         for fn in (service.read_snapshot, service.release_snapshot):
             with pytest.raises(SnapshotUnavailable, match=r"^snapshot unavailable$"):
@@ -338,7 +338,7 @@ def test_history_limit_not_only_current_rows_and_canonical_items(env):
             (lease.snapshot_id,),
         ).fetchall()
         assert all(text == canonical_json(json.loads(text)) for (text,) in texts)
-    assert lease.item_count == 13
+    assert lease.item_count == 14  # Twelve versions, registry scope and collection revision.
     assert len(service.read_snapshot(issued.token, lease.snapshot_id).history(id)) == 12
 
 
@@ -510,7 +510,7 @@ def test_late_creation_failure_rolls_back_inserted_lease_and_items(env, monkeypa
     monkeypatch.setattr(snapshots, "validate_lease", expire_before_return)
     with pytest.raises(SnapshotUnavailable):
         service.create_snapshot(issued.token)
-    assert observed == [(1,)]  # Failure after durable rows were inserted, before commit.
+    assert observed == [(2,)]  # Registry and counter inserted before the late failure.
     assert counts(dsn) == (0, 0)
 
 

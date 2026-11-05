@@ -10,10 +10,10 @@ import re
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
 
 from ear_contracts import Cause, NewRawRecord, VersionRef, is_id
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ear_storage_client.errors import InvalidRequest
 
@@ -277,8 +277,35 @@ class MarkProcessed:
         _check_id(self.event_id, "event_id")
 
 
+TypeRevision = Annotated[int, Field(strict=True, ge=0)]
+"""Per-type mutation counter, NOT a timestamp, record version or snapshot watermark."""
+
+
+@dataclass(frozen=True, slots=True)
+class AssertTypeRevision:
+    """Commit-only collection guard; requires read permission, never emits an event/edge.
+
+    Both committed-start and final batch counters must equal expected_revision.
+    Mutating this type anywhere in the same batch therefore fails atomically.
+    Capture revision AND query results using the same snapshot Reader; separate
+    live reads do not promise a common consistency point. Unchanged writes and
+    dependency refreshes do not advance the counter; all actual raw, versioned
+    and system record changes do, including terminal versions.
+    """
+
+    data_type: str
+    expected_revision: TypeRevision
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.data_type, str) or not _SNAKE.fullmatch(self.data_type):
+            raise InvalidRequest("invalid collection data_type")
+        if type(self.expected_revision) is not int or self.expected_revision < 0:
+            raise InvalidRequest("expected_revision must be a nonnegative integer")
+
+
 WriteOp = (
-    AppendRaw
+    AssertTypeRevision
+    | AppendRaw
     | Create
     | Update
     | Supersede

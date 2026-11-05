@@ -33,7 +33,15 @@ from ear_storage_client.queries import DependencySet
 from psycopg import sql
 
 from ear_storage.auth import Principal, can_use_consumer
-from ear_storage.schema import ProjectionLimit, check_schema, connection, one, table, writer
+from ear_storage.schema import (
+    ProjectionLimit,
+    check_schema,
+    connection,
+    has_type_revisions,
+    one,
+    table,
+    writer,
+)
 
 
 class SnapshotUnavailable(PermissionDenied):
@@ -102,6 +110,14 @@ def _sources(conn: psycopg.Connection, principal: Principal):
         ),
         [reads],
     )
+    if has_type_revisions(conn):
+        yield (
+            sql.SQL(
+                "SELECT 'type_revision',data_type,data_type,revision::text "
+                "FROM storage.type_revisions WHERE data_type=ANY(%s)"
+            ),
+            [reads],
+        )
     modules = conn.execute(
         "SELECT DISTINCT module FROM storage.identity WHERE data_type=ANY(%s)", (reads,)
     )
@@ -247,6 +263,15 @@ class MaterializedReader(_StateReader):
             blocked,
         )
 
+    def type_revision(self, data_type: str) -> int:
+        self.principal.require_read([data_type])
+        if data_type not in self._registry.data_types:
+            raise PermissionDenied("access denied")
+        if data_type not in self._s.type_revisions:
+            # A v8 lease has no revision metadata; never fabricate zero.
+            raise SnapshotUnavailable("snapshot lacks collection revisions; create a new snapshot")
+        return self._s.type_revisions[data_type]
+
     def system_history(self, id: str) -> list[SystemRecord]:
         return [r.model_copy(deep=True) for r in self.systems.get(id, [])]
 
@@ -259,6 +284,8 @@ class MaterializedReader(_StateReader):
         return super().dependency_set(dependent_id, version)
 
     def authorized_read(self, method: str, *args: Any, **kwargs: Any) -> Any:
+        if method == "type_revision":
+            return self.type_revision(args[0])
         if method in {"query", "count"}:
             query = args[0]
             required = {query.data_type}
@@ -313,6 +340,11 @@ def load_reader(
             specs[dtype] = DataTypeSpec.from_json(dtype, json.loads(spec_text))
             if is_core:
                 core.add(dtype)
+        elif kind == "type_revision":
+            revision = json.loads(text)
+            if type(revision) is not int or revision < 0:
+                raise SnapshotUnavailable("invalid collection revision metadata")
+            state.type_revisions[dtype] = revision
         elif kind == "raw":
             raw = RawRecord.model_validate_json(text)
             state.raw[raw.id] = raw

@@ -1,7 +1,7 @@
 ---
 audience: human
 doc-type: reference
-based-on: 设计v1.2、动态插件MVP与ADR-0001；项目负责人本轮逐项确认及同步授权；代码基线origin/dev 6cea0b7；本分支P0a(a6a1c5a)、P0b(cf337d1)提交及本分支实现的P1（提交记录为准，未合并），状态见services/storage/ai-docs/progress.md
+based-on: 设计v1.2、动态插件MVP与ADR-0001；项目负责人本轮逐项确认及同步授权；代码基线origin/dev 6cea0b7；本分支P0a(a6a1c5a)、P0b(cf337d1)、P1(d7c9919)、P2/P3后端(d0d8875)提交及合并提交b7307e9，PR8未合并，状态见services/storage/ai-docs/progress.md
 ---
 
 # ① 存储与事件：职责和接口目标
@@ -50,10 +50,13 @@ based-on: 设计v1.2、动态插件MVP与ADR-0001；项目负责人本轮逐项�
 本轮决定已通过[确认索引](../decisions/mvp-confirmed-decisions.md)闭合，不再把R1/R4/R5/R6列为未决产品问题。下面是分支 `storage/implementation-preparation` 上的实现状态：**纳入分支、本地检查通过都不等于合并前人工审核通过，也不等于目标已达成**；逐项边界见[进度](../../services/storage/ai-docs/progress.md)。
 
 - **契约、模型与内存实现（P0a、P0b，已提交于本分支）**：字段依赖、同批强制登记、防环、核心不依赖插件。内置核心类型的“需要依赖”能力项目前全为 false，强制登记尚未对任何内置类型生效，须③④提供实际输入并迁移验证后按类型启用。
-- **持久化服务与远程 SDK（P1，本分支实现，提交记录为准，未合并）**：PostgreSQL 事务（Outbox 行已持久写入）、token 可信身份与全部读取路径授权、请求 ID 重放、有界持久 snapshot、HTTP 接口、同步远程 SDK。提交前在本地启用真实 PostgreSQL（独立 Docker 临时库，测试夹具拒绝外部 DSN）的完整 `pytest` 为 644 passed、0 skipped；这是一次本地运行，CI 尚未在远程运行这批代码，也不代表已部署或可用于生产。
-- **尚未做**：Outbox Relay、NATS JetStream 持久消费者与远程订阅（P2；目前没有进程把 Outbox 投递出去）；动态持久注册、凭据轮换/撤销与管理入口、①管理反馈处理器与可恢复阶段（P3）；为③④⑤⑦提供的所属方接口——结果/完成记录、多起因、规则集合等（P4）；插件历史交接与多层集成（P5）。部署 Compose 与运行环境由 I 协作。阶段划分见[实施计划](../../ai-docs/plans/mvp-implementation.md)。
+- **持久化服务与远程 SDK（P1，提交 d7c9919，未合并）**：PostgreSQL 事务（Outbox 行已持久写入）、token 可信身份与全部读取路径授权、请求 ID 重放、有界持久 snapshot、HTTP 接口、同步远程 SDK。提交前在本地启用真实 PostgreSQL（独立 Docker 临时库，测试夹具拒绝外部 DSN）的完整 `pytest` 为 644 passed、0 skipped；这是一次本地运行，CI 尚未在远程运行这批代码，也不代表已部署或可用于生产。
+- **事件交接与订阅（P2，已实现，PR8 未合并）**：按提交顺序把 Outbox 事件发布到总线；各模块经存储服务代理的持久订阅接收事件，只收到自己有读与订阅权限的类型，重判请求只给该类型的写入方。确认、重试、死信与重放到同一订阅都已实现；注册默认只收未来事件。这是至少一次交接，去重只在有限时间窗内有效，不是恰好一次，消费方仍须按事件 ID 去重。总线流满时拒收新消息并持续重试，目前没有清理与生产保留策略。本地真实 PostgreSQL 与隔离 NATS 的完整测试已通过（各阶段结果及对应提交见[①进度](../../services/storage/ai-docs/progress.md)），合并 dev 后尚未完整重跑，也未在远程 CI 运行。
+- **动态管理（P3，后端已实现，PR8 未合并）**：管理请求以 `plugin_management_feedback` 记录提交，由①处理并写 `plugin_management_result`；只有绑定可信管理员角色的 `api` 身份可提交；支持注册、启停、权限替换、状态、失败任务重试，以及凭据轮换/撤销。轮换沿用同一身份，旧凭据在阶段提交时即失效；新凭据只能由原提交的有效管理员一次性领取，明文只出现在领取响应中，响应丢失须重新提交轮换；领取不自动启用模块、不恢复权限；撤销保留历史。部署内应急轮换（含核心 worker）不是日常管理入口。状态表示管理进度，不表示插件在线。订阅范围变更走完整重配置：新增类型只收切换之后的事件，原有类型的积压不丢；切换原子完成，已撤销的身份不会因此恢复凭据或权限；收缩立即关闭授权。⑥管理页尚未对接。
+- **与模块④的合并（b7307e9）**：本分支已合入 dev 4afeae0 的模块④实现，①未改其代码或文档。④的说明注明它是演示基线、不代表已完成 v1.2（见[④实现记录](../../services/extraction/ai-docs/implementation.md)），合入不等于 v1.2 已全部完成。
+- **尚未做**：⑥管理页（P3 余项）；为③④⑤⑦提供的所属方接口——结果/完成记录、多起因、③④对规则集合守护的接入等（P4；①侧守护原语已实现，schema revision 9，见[进度](../../services/storage/ai-docs/progress.md)）；插件历史补/跳、多层集成与示例插件（P5）。部署 Compose 与运行环境由 I 协作。阶段划分见[实施计划](../../ai-docs/plans/mvp-implementation.md)。
 
-`StorageClient` / `MemoryStorage` 提供同步接口、基础原子写入、版本、查询、依赖和进程内消费工具；P1 另有同步 `RemoteStorageClient`，结果未知时抛 `CommitUnknown`，由调用方用同一请求 ID 重放，远程 `subscribe` 尚未实现。这些接口不能被当作完整新目标。订阅协议、插件外部动作交接、规则集合并发保护、参数默认值属于实施任务而非已存在契约；P1 的 HTTP 线路和 snapshot 参数是工程选择（见[P1 工程指南](../../services/storage/ai-docs/persistent-service-plan.md)），不是已冻结的公共契约。
+`StorageClient` / `MemoryStorage` 提供同步接口、基础原子写入、版本、查询、依赖和进程内消费工具；P1 另有同步 `RemoteStorageClient`，结果未知时抛 `CommitUnknown`，由调用方用同一请求 ID 重放，远程 `subscribe` / `poll_once` / `run_until_idle` 已在 P2 实现（至少一次）。这些接口不能被当作完整新目标。订阅协议、插件外部动作交接、规则集合并发保护、参数默认值属于实施任务而非已存在契约；P1 的 HTTP 线路和 snapshot 参数是工程选择（见[P1 工程指南](../../services/storage/ai-docs/persistent-service-plan.md)），不是已冻结的公共契约。
 
 ## 5. 验收和交付顺序
 

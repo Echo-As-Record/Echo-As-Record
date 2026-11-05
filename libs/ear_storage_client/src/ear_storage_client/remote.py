@@ -71,6 +71,9 @@ class RemoteReader:
         except (ValueError, KeyError, TypeError):
             raise ProtocolError("invalid read response") from None
 
+    def type_revision(self, data_type: str) -> int:
+        return self._read("type_revision", data_type)
+
     def get(self, id: str) -> Record | None:
         return self._read("get", id)
 

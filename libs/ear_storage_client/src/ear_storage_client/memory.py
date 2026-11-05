@@ -78,6 +78,10 @@ class _StateReader:
         except UnknownDataTypeError as exc:
             raise InvalidRequest(str(exc)) from None
 
+    def type_revision(self, data_type: str) -> int:
+        self._spec(data_type)
+        return self._s.type_revisions.get(data_type, 0)
+
     def get(self, id: str) -> Record | None:
         record = self._s.current(id)
         return None if record is None else _copy(record)
@@ -483,6 +487,9 @@ class MemoryClient:
         self._storage._subscribe(self._module, consumer, handler, event_types, from_beginning)
 
     # -- 读 --
+
+    def type_revision(self, data_type: str) -> int:
+        return self._reader().type_revision(data_type)
 
     def get(self, id: str) -> Record | None:
         return self._reader().get(id)

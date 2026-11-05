@@ -12,7 +12,7 @@ from ear_contracts import DEFAULT_REGISTRY, Registry
 from ear_storage_client.engine import canonical_json
 from psycopg import sql
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 WRITER_GATE = 0x45415253544F5245
 
 
@@ -282,6 +282,15 @@ _REQUIRED_V8_COLUMNS = {
 }
 
 
+# Explicit v9: counters are independent of record versions and lease watermarks.
+# snapshot_items.kind had no CHECK/enum in v8; a new kind is additive.
+DDL_V9 = (
+    "CREATE TABLE storage.type_revisions (data_type text PRIMARY KEY "
+    "REFERENCES storage.registry(name), revision bigint NOT NULL DEFAULT 0 CHECK(revision>=0))",
+    "INSERT INTO storage.type_revisions(data_type) SELECT name FROM storage.registry",
+)
+
+
 # A revision number is not proof of a complete schema. Never repair local old-v5 implicitly.
 _REQUIRED_V5_COLUMNS = {
     "meta": "singleton schema_revision commit_seq",
@@ -359,12 +368,16 @@ def check_schema(conn: psycopg.Connection) -> None:
             for name, required in _REQUIRED_V8_COLUMNS.items():
                 if any((name, column) not in present for column in required.split()):
                     raise SchemaMismatch("incomplete schema: " + name)
+        if SCHEMA_VERSION >= 9 and any(
+            ("type_revisions", c) not in present for c in ("data_type", "revision")
+        ):
+            raise SchemaMismatch("incomplete schema: type_revisions")
         if ("consumer_deliveries", "queue_seq", "a") not in columns:
             raise SchemaMismatch("incomplete schema: consumer_deliveries queue identity")
 
 
 def migrate(dsn: str) -> None:
-    """Explicit atomic v1 through v8 upgrade; retain data and internal replay scopes."""
+    """Explicit atomic v1 through v9 upgrade; retain data and internal replay scopes."""
     with connection(dsn) as conn, writer(conn):
         if one(conn, "SELECT to_regnamespace('storage')")[0] is None:
             for statement in DDL:
@@ -399,6 +412,23 @@ def migrate(dsn: str) -> None:
             for statement in DDL_V8:
                 conn.execute(statement)
             conn.execute("UPDATE storage.meta SET schema_revision=8 WHERE singleton")
+        if SCHEMA_VERSION >= 9 and revision in range(1, 9):
+            for statement in DDL_V9:
+                conn.execute(statement)
+            # MAX commit sequence is a monotonic migration starting point, never
+            # SUM(object versions), and never exposed as a snapshot watermark.
+            for (module,) in conn.execute("SELECT module FROM storage.modules").fetchall():
+                for name in ("raw_records", "versions", "system_records"):
+                    conn.execute(
+                        sql.SQL(
+                            "UPDATE storage.type_revisions t "
+                            "SET revision=greatest(t.revision,q.revision) "
+                            "FROM (SELECT data_type,max(commit_seq) AS revision "
+                            "FROM {} GROUP BY data_type) q "
+                            "WHERE t.data_type=q.data_type"
+                        ).format(table(module, name))
+                    )
+            conn.execute("UPDATE storage.meta SET schema_revision=9 WHERE singleton")
         check_schema(conn)
 
 
@@ -432,6 +462,10 @@ def bootstrap(dsn: str, registry: Registry = DEFAULT_REGISTRY) -> None:
                 raise SchemaMismatch("registry bootstrap conflict: " + name)
             if row is None:
                 conn.execute("INSERT INTO storage.registry VALUES (%s,%s,%s)", (name, text, core))
+                if SCHEMA_VERSION >= 9:
+                    conn.execute(
+                        "INSERT INTO storage.type_revisions(data_type) VALUES (%s)", (name,)
+                    )
         for event, publishers in sorted(registry.event_publishers.items()):
             text = canonical_json(publishers)
             row = conn.execute(
@@ -441,6 +475,14 @@ def bootstrap(dsn: str, registry: Registry = DEFAULT_REGISTRY) -> None:
                 raise SchemaMismatch("publisher bootstrap conflict")
             if row is None:
                 conn.execute("INSERT INTO storage.publishers VALUES (%s,%s)", (event, text))
+
+
+def has_type_revisions(conn: psycopg.Connection) -> bool:
+    """Internal compatibility for genuine pre-v9 migration fixtures.
+
+    Public service paths check_schema first: a missing v9 table still fails closed.
+    """
+    return one(conn, "SELECT to_regclass('storage.type_revisions')")[0] is not None
 
 
 def create_module(conn: psycopg.Connection, module: str) -> None:

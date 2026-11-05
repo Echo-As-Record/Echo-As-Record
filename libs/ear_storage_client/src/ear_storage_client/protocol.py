@@ -31,6 +31,14 @@ EventHandler = Callable[[Event], None]
 class Reader(Protocol):
     """读取接口。返回的对象是副本，修改它不影响 ①。"""
 
+    def type_revision(self, data_type: str) -> int:
+        """Monotonic actual-record-change counter (initially zero), not a watermark.
+
+        Use the SAME snapshot Reader for this counter and the candidate query.
+        Separate live reads do not capture a common consistency point.
+        """
+        ...
+
     def get(self, id: str) -> Record | None:
         """按 id 读当前版本（原始数据或有版本的数据）。已被整体替代的对象也能读到，
         其 status 为 superseded。系统记录用 get_system_record。"""

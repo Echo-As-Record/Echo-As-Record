@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from ear_storage_client import (
     AppendRaw,
+    AssertTypeRevision,
     Context,
     Create,
     DependencyInput,
@@ -47,6 +48,7 @@ OP_ADAPTERS = {
     cls.__name__: TypeAdapter(cls)
     for cls in (
         AppendRaw,
+        AssertTypeRevision,
         Create,
         Update,
         Supersede,
@@ -81,6 +83,7 @@ def encode_request(ops: Sequence[WriteOp], context: Context) -> str:
             name = type(op).__name__
             if name not in OP_ADAPTERS or type(op) not in (
                 AppendRaw,
+                AssertTypeRevision,
                 Create,
                 Update,
                 Supersede,
@@ -207,6 +210,7 @@ def utc_fields(body: dict[str, Any], names: tuple[str, ...]) -> None:
 def validate_operation(name: str, body: dict[str, Any]) -> None:
     classes = (
         AppendRaw,
+        AssertTypeRevision,
         Create,
         Update,
         Supersede,
@@ -241,6 +245,7 @@ def validate_operation(name: str, body: dict[str, Any]) -> None:
 
 
 class ReadMethod(StrEnum):
+    TYPE_REVISION = "type_revision"
     GET = "get"
     GET_VERSION = "get_version"
     HISTORY = "history"
@@ -258,6 +263,10 @@ class ReadMethod(StrEnum):
 
 class ClosedModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class TypeArgs(ClosedModel):
+    data_type: Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]*$")]
 
 
 class IdArgs(ClosedModel):
@@ -309,6 +318,7 @@ class SnapshotRequest(ClosedModel):
 
 
 READ_ARGS: dict[str, type[ClosedModel]] = {
+    "type_revision": TypeArgs,
     "get": IdArgs,
     "get_version": VersionArgs,
     "history": IdArgs,
@@ -324,6 +334,7 @@ READ_ARGS: dict[str, type[ClosedModel]] = {
     "is_processed": ProcessedArgs,
 }
 READ_RESULTS: dict[str, Any] = {
+    "type_revision": Annotated[int, Field(strict=True, ge=0)],
     "get": Record | None,
     "get_version": Record | None,
     "history": list[SemanticRecord],

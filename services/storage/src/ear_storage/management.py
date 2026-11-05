@@ -33,7 +33,14 @@ from ear_storage.consumers import ConsumerService, approved_filters
 from ear_storage.management_input import ManagementInput
 from ear_storage.reader import ConnectionBoundReader
 from ear_storage.repository import registry_from_db
-from ear_storage.schema import check_schema, connection, create_module, one, writer
+from ear_storage.schema import (
+    check_schema,
+    connection,
+    create_module,
+    has_type_revisions,
+    one,
+    writer,
+)
 
 FEEDBACK = "plugin_management_feedback"
 RESULT = "plugin_management_result"
@@ -599,6 +606,10 @@ class ManagementProcessor:
                     "INSERT INTO storage.registry VALUES (%s,%s,false)",
                     (item.name, canonical_json(item.spec(body.module).to_json())),
                 )
+                if has_type_revisions(conn):
+                    conn.execute(
+                        "INSERT INTO storage.type_revisions(data_type) VALUES (%s)", (item.name,)
+                    )
             conn.execute(
                 "INSERT INTO storage.module_lifecycle(module,resources_ready) VALUES (%s,true)",
                 (body.module,),

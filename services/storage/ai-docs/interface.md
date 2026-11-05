@@ -1,7 +1,7 @@
 ---
 audience: ai
 doc-type: guide
-based-on: docs/modules/storage.md；contracts/；libs/ear_storage_client 与 libs/ear_contracts（origin/dev 48d3c51）；原接口说明 v0.2 的职责拆分；设计v1.2同步（代码仍为原基线）；P0a 修复（基于 6cea0b7，首个提交 a6a1c5a）；P0b 字段依赖与登记表能力（cf337d1）；本分支实现的 P1 实际代码（提交记录为准，未合并；services/storage/src/ear_storage，ear_storage_client 的 engine/wire/remote/remote_errors）
+based-on: docs/modules/storage.md；contracts/；libs/ear_storage_client 与 libs/ear_contracts（origin/dev 48d3c51）；原接口说明 v0.2 的职责拆分；设计v1.2同步（代码仍为原基线）；P0a 修复（基于 6cea0b7，首个提交 a6a1c5a）；P0b 字段依赖与登记表能力（cf337d1）；P1 实际代码（提交 d7c9919；services/storage/src/ear_storage，ear_storage_client 的 engine/wire/remote/remote_errors）；P2/P3 后端提交 d0d8875（relay.py、consumers.py、consumer_broker.py、consumer_wire.py 与远程 subscribe；management.py、management_input.py、credentials.py、reconfiguration.py）；合并提交 b7307e9；均在 PR8，未合并
 ---
 
 # ① SDK 使用与实现导航
@@ -10,14 +10,16 @@ based-on: docs/modules/storage.md；contracts/；libs/ear_storage_client 与 lib
 
 ## 0. 当前代码与新目标不能混淆
 
-本页示例描述现有 SDK，不是 v1.2 的完整接口。P0b（cf337d1）已提交：字段依赖、按能力强制登记、批末新鲜度与当前图无环（内存）。P1 由本分支实现（提交记录为准，**未合并**）：PostgreSQL 后端、可信 token 身份与读授权、请求 ID 重放、有界 snapshot、HTTP `/v1` 与同步 `RemoteStorageClient`（工程细节见[P1 工程指南](persistent-service-plan.md)，状态见 [progress](progress.md)）。**仍未实现**：Relay/JetStream/远程订阅（P2）、动态插件注册/凭据生命周期/管理反馈消费（P3）、通用完成记录与多起因（P4）、插件历史（P5）。均未经合并前审核。跟进[实施计划](../../../ai-docs/plans/mvp-implementation.md)，不要因下文旧接口可以调用就跳过新目标。
+本页示例描述现有 SDK，不是 v1.2 的完整接口。P0b（cf337d1）：字段依赖、按能力强制登记、批末新鲜度与当前图无环（内存）。P1（d7c9919）：PostgreSQL 后端、可信 token 身份与读授权、请求 ID 重放、有界 snapshot、HTTP `/v1` 与同步 `RemoteStorageClient`（工程细节见[P1 工程指南](persistent-service-plan.md)，状态见 [progress](progress.md)）。P2（d0d8875）：有序 Outbox Relay → JetStream、服务端授权的持久消费者（经 HTTP `/v1/consumers/*` 代理）与远程 `subscribe`。P3 后端（d0d8875）：管理反馈 `/v1/management/requests` 与 `manage-worker`；凭据动作 `rotate_credentials` / `revoke_credentials` 与一次性领取 `POST /v1/management/credentials/{feedback_id}/claim`（schema revision 7）；订阅范围变更由①经管理反馈做完整重配置（revision 8：新增类型只收切换后的事件，原有积压保留），模块不能靠重新注册扩大订阅。规则与验证见 [progress](progress.md)。以上均在 PR8，**未合并**、未经合并前审核。P4 ①侧集合守护（schema revision 9）同在本分支实现，见第 4 节。**仍未实现**：⑥管理页（P3 余项）；P4 的通用完成记录与多起因；插件历史补/跳（P5）。跟进[实施计划](../../../ai-docs/plans/mvp-implementation.md)，不要因下文旧接口可以调用就跳过新目标。
 
 远程客户端调用规则（以 `libs/ear_storage_client/src/ear_storage_client/remote.py`、`remote_errors.py` 为准）：
 
 - 模块身份只来自部署签发的 token；不读环境变量，没有隐藏重试。token 由部署内 `AuthOperator` 签发，不要在业务代码里签发或保存明文。
 - `write(ops, context, request_id=None)` 默认生成 UUIDv7。遇到 `CommitUnknown` 时**不要重新计算**，用 `e.request_id` 与相同 ops、context 重放；`write_with_retry` 不会替你重放。冲突仍按第 3 节处理。
 - `snapshot()` 创建有界持久租约（默认 TTL 300 s，上限见指南），超限报 `ResourceLimit`，过期/不可用报 `SnapshotUnavailable`；不要依赖长时间持有。
-- `subscribe` 在远程客户端抛 `NotImplementedError`（P2 前没有远程事件）。
+- 远程 `subscribe`（P2，d0d8875；签名以 `remote.py` 为准）向服务注册持久 consumer；事件只在调用 `poll_once()` 或 `run_until_idle(max_deliveries=100)`（1–10 000，也限制轮询轮数）时投递，是调用方驱动的有界泵，没有后台线程替你拉取。
+- 只投递有读权限且带 `can_subscribe` 的类型的 `data_changed`；`reevaluation_requested` 只投给该类型的 writer 且类型 `supports_reevaluation`。注册默认**只收未来事件**；模块重新注册不能改变已有订阅配置，扩大或收缩订阅须经①管理反馈做完整重配置（P3，schema revision 8：新增类型只收切换后的事件，原有积压保留）。
+- 语义是有限去重的**至少一次**：同一事件可能重投，handler 必须把业务写入与 `MarkProcessed` 放同一批；consumer 名必须属于本 principal。租约过期的确认得到确定的 `DeliveryExpired`（HTTP 410），之后会重投同一事件；超过最大尝试次数入死信，`replay` 只放回同一 consumer。
 - 读取须有显式 grant（包括读本模块类型）；无权与不存在不可区分。
 
 ## 1. 先定位代码
@@ -31,12 +33,12 @@ based-on: docs/modules/storage.md；contracts/；libs/ear_storage_client 与 lib
 | Context 与反馈传播 | `context.py`（同包） |
 | 参考实现、进程内事件队列 | `memory.py`（同包） |
 | 合成数据工具 | `testing.py`（同包，仅开发/测试） |
-| 远程 SDK（P1，提交记录为准） | `remote.py`、`remote_errors.py`、`wire.py`；共享校验逻辑 `engine.py`（同包） |
-| 服务实现（P1，提交记录为准） | `services/storage/src/ear_storage/`（`schema`、`repository`、`backend`、`auth`、`service`、`snapshots`、`reader`、`http`、`cli`）；测试 `services/storage/tests/` |
+| 远程 SDK（P1，d7c9919；订阅为 P2 d0d8875） | `remote.py`、`remote_errors.py`、`wire.py`、`consumer_wire.py`；共享校验逻辑 `engine.py`（同包） |
+| 服务实现（P1 d7c9919；P2/P3 后端 d0d8875） | `services/storage/src/ear_storage/`（`schema`、`repository`、`backend`、`auth`、`service`、`snapshots`、`reader`、`http`、`cli`、`relay`、`consumers`、`consumer_broker`、`management`、`management_input`、`credentials`、`reconfiguration`）；测试 `services/storage/tests/`（Relay：`test_relay*.py`；消费者：`test_consumer*.py`、`test_marker_identity.py`、`test_p2b_mustfix.py`；管理：`test_management*.py`；凭据：`test_credentials*.py`；重配置：`test_reconfiguration.py`） |
 | 公共模型与注册表 | `libs/ear_contracts/src/ear_contracts/` |
 | 行为测试 | `libs/ear_storage_client/tests/test_memory.py`；P0a 回归 `test_memory_regressions.py`；P0b `test_p0_sdk_models.py`、`test_p0_memory_dependencies.py`（同目录）；契约模型 `libs/ear_contracts/tests/test_p0_contract_models.py` |
 
-业务模块依赖 `StorageClient`，不要依赖 `MemoryStorage` 的内部状态。PostgreSQL 服务与 HTTP 路由由本分支实现（提交记录为准，未合并），实际路由、表与限制见[P1 工程指南](persistent-service-plan.md)；生产总线与远程订阅尚不存在。业务代码不要依赖服务内部表。
+业务模块依赖 `StorageClient`，不要依赖 `MemoryStorage` 的内部状态。PostgreSQL 服务与 HTTP 路由已提交（d7c9919，PR8 未合并），实际路由、表、Relay 与限制见[工程指南](persistent-service-plan.md)；远程持久消费者由服务经 HTTP 代理（P2，d0d8875），业务模块不直接连接 NATS；部署用 NATS 环境由 I 提供。业务代码不要依赖服务内部表。
 
 ## 2. 最小可运行示例（合成数据）
 
@@ -104,6 +106,8 @@ assert seen == [record.id]
 
 当前内存实现的写入提交后立即可读，事件在提交后入队；消费者读取时可能已看到更新的版本，复核事件版本应使用 get_version。get_many 的各项基于同一时刻，snapshot 内的多次读取基于同一视图；这不表示持久化后端已实现这些保证。
 
+**集合守护（P4，schema revision 9）**：需要“某类型的集合在提交时未变”时，在同一 snapshot 内执行 `Query` 并调用 `type_revision(data_type)`（两次独立的实时调用不构成一致的一对），再在写入批中加入 `AssertTypeRevision(data_type, expected_revision)`。守护只在提交期于批开始与批末原子校验，不产生事件或依赖边；不匹配返回可重试冲突 `collection_changed`，应在新 snapshot 中重查重算。实际业务写入与终止版本使 revision 增加；unchanged、去重、依赖登记刷新、重放与回滚不增加。需要读权限而非所有权，未知类型与无权类型失败相同。守护不扫描历史，规则编辑不会自动重判历史。revision 8 时的旧 snapshot 缺 revision 元数据时 `type_revision` 明确失败，不返回当前计数。验证见 [progress](progress.md)。
+
 表中 rng/pid/vid 为调用方变量。涉及的 payload 字段应与③④确认，不将示例当成已定的完整 payload schema。
 
 ## 5. 依赖登记：当前实现的调用注意事项
@@ -122,7 +126,7 @@ assert seen == [record.id]
 
 两种事件的模型位于 [ear_contracts/events.py](../../../libs/ear_contracts/src/ear_contracts/events.py)；未知事件由 parse_event 返回 None，调用方忽略。不要新增未经决策的第三种事件。
 
-`subscribe(consumer, handler, event_types=None, from_beginning=False)` 的 consumer 必须为本模块名或以“模块名.”开头。handler 抛异常触发重投，超过次数进入 dead_letters。
+`subscribe(consumer, handler, event_types=None, from_beginning=False)` 的 consumer 必须为本模块名或以“模块名.”开头。handler 抛异常触发重投，超过次数进入 dead_letters。以上是内存实现；远程订阅的规则见第 0 节，状态见 [progress](progress.md)。
 
 handler 内写入的固定处理方式（见第 2 节示例）：先单独判断 `already_processed`（说明之前已提交，正常 return）；其余情况调用 `result.check()`，把冲突转成异常以触发重投。其他冲突应重算或显式失败，不能默默确认。总线无法发现 handler 忽略了 `write()` 的返回值；与本 consumer 无关的事件可以直接 return。
 
@@ -134,6 +138,8 @@ handler 内写入的固定处理方式（见第 2 节示例）：先单独判断
 uv run pytest libs/ear_storage_client/tests/test_memory.py libs/ear_storage_client/tests/test_memory_regressions.py
 uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest && uv run python tools/check_docs.py
 ```
+
+真实 PostgreSQL/NATS 测试需同时设 `EAR_RUN_POSTGRES_TESTS=1` 与 `EAR_RUN_NATS_TESTS=1`，夹具只起本机临时 Docker 容器（loopback 随机端口）；设置 `EAR_POSTGRES_TEST_DSN` 或 `EAR_NATS_TEST_DSN` 会被拒绝，不要指向任何外部库。
 
 当前实现以排序键的 json.dumps 比较 payload，不是 RFC 8785/JCS 实现。修改比较算法时注意数值、数组、字符串及事件时间的一致性。
 

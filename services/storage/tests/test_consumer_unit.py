@@ -182,7 +182,7 @@ def test_reconfiguration_static_generation_fences_and_per_type_watermarks():
 def test_schema8_static_additive_migration_preserves_history():
     from ear_storage.schema import _REQUIRED_V8_COLUMNS, DDL_V8, SCHEMA_VERSION
 
-    assert SCHEMA_VERSION == 8
+    assert SCHEMA_VERSION >= 8
     ddl = " ".join(DDL_V8)
     assert "DROP " not in ddl.upper() and "DELETE " not in ddl.upper()
     assert "historical_filtered" not in ddl

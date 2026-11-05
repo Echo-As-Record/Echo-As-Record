@@ -24,11 +24,13 @@ from ear_contracts import (
 )
 from ear_storage_client import (
     AppendRaw,
+    AssertTypeRevision,
     Create,
     MarkProcessed,
     PublishReevaluation,
     PutSystemRecord,
     RegisterDependencies,
+    Supersede,
     Update,
     WriteOp,
 )
@@ -36,7 +38,7 @@ from ear_storage_client.engine import State, Transaction, canonical_json
 from ear_storage_client.queries import DependencySet
 from psycopg import sql
 
-from ear_storage.schema import ProjectionLimit, table
+from ear_storage.schema import ProjectionLimit, SchemaMismatch, has_type_revisions, table
 
 
 @dataclass(frozen=True)
@@ -108,6 +110,20 @@ class Projection:
 
     def load(self, ops: Sequence[WriteOp], registry: Registry) -> State:
         s = State()
+        needed = {
+            op.record.data_type if isinstance(op, AppendRaw) else op.data_type
+            for op in ops
+            if isinstance(
+                op, AppendRaw | AssertTypeRevision | Create | Update | Supersede | PutSystemRecord
+            )
+        }
+        if has_type_revisions(self.conn):
+            s.type_revisions = dict(
+                self.conn.execute(
+                    "SELECT data_type,revision FROM storage.type_revisions WHERE data_type=ANY(%s)",
+                    (sorted(needed),),
+                )
+            )
         modules = [r[0] for r in self.conn.execute("SELECT module FROM storage.modules")]
         for module in modules:
             query = sql.SQL(
@@ -260,6 +276,16 @@ class Projection:
 
 def persist(conn: psycopg.Connection, before: State, txn: Transaction, seq: int) -> None:
     s = txn.s
+    if has_type_revisions(conn):
+        for dtype, revision in s.type_revisions.items():
+            delta = revision - before.type_revisions.get(dtype, 0)
+            if delta:
+                updated = conn.execute(
+                    "UPDATE storage.type_revisions SET revision=revision+%s WHERE data_type=%s",
+                    (delta, dtype),
+                )
+                if updated.rowcount != 1:
+                    raise SchemaMismatch("missing collection revision")
     records: list[RawRecord | SemanticRecord | SystemRecord] = list(
         r for id, r in s.raw.items() if id not in before.raw
     )

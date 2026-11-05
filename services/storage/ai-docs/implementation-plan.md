@@ -1,12 +1,12 @@
 ---
 audience: ai
 doc-type: guide
-based-on: origin/dev 6cea0b7 的实际代码、契约与测试；已采纳的 docs/design/design-v1.2.md、signals-supplement.md、plugins-mvp.md、decisions/mvp-confirmed-decisions.md、ADR-0001；全局实施计划；①负责人“按当前设计开始准备模块1实现”的授权（准备阶段只写文档）；此后用户授权实现 P0a（已在本分支实现并验证，提交与合并状态以提交历史和 PR 为准）；项目负责人（用户）随后明确“采用推荐方案，允许在功能分支持续实现并分批提交、推送和提 PR；I 审核由我负责，合并前再审核”，据此 P0 契约提案为 accepted；此后 P0b 已在本分支实现（首个 P0a 提交 a6a1c5a，P0b 提交以分支历史为准），P1 工程方案见 persistent-service-plan.md
+based-on: origin/dev 6cea0b7 的实际代码、契约与测试；已采纳的 docs/design/design-v1.2.md、signals-supplement.md、plugins-mvp.md、decisions/mvp-confirmed-decisions.md、ADR-0001；全局实施计划；①负责人“按当前设计开始准备模块1实现”的授权（准备阶段只写文档）；此后用户授权实现 P0a（已在本分支实现并验证，提交与合并状态以提交历史和 PR 为准）；项目负责人（用户）随后明确“采用推荐方案，允许在功能分支持续实现并分批提交、推送和提 PR；I 审核由我负责，合并前再审核”，据此 P0 契约提案为 accepted；此后 P0b 已在本分支实现（首个 P0a 提交 a6a1c5a，P0b 提交以分支历史为准），P1 工程方案见 persistent-service-plan.md；P1 已提交 d7c9919；P2/P3 后端已提交 d0d8875（日志 /tmp/ear-p2b-mustfix/closing-*.log、/tmp/ear-p3-reliability-*.log、/tmp/ear-p3-credentials-*.log、/tmp/ear-p3-checkpoint-validation.log）；b7307e9 合并 dev 4afeae0
 ---
 
 # ① 实施准备：P0 首批 PR 与阶段出入口
 
-本页原为①的**实施准备**。第 1、2 节和第 3 节的探针证据是准备阶段（基于 6cea0b7，当时没有改代码、测试、contracts、部署或依赖）的历史记录，不代表此后没有代码改动。**当前状态：P0a（a6a1c5a）、P0b（cf337d1）已提交；P1 核心（PostgreSQL 后端、可信身份与读授权、请求 ID 重放、有界持久 snapshot、HTTP 与同步远程 SDK）由本分支实现并通过提交前的本地完整检查（提交记录为准，未合并），见 [progress](progress.md) 与按实际实现修订的 [P1 工程指南](persistent-service-plan.md)；三者均未经合并前审核。P2–P5 未做。第 7 节记录当前已验证与未完成项（含 P1 本地验证，纳入本分支和本地检查通过都不等于合并前审核通过），逐项边界以 progress 为准。** 其余能力都不因本页存在而视为已完成。目标语义以[设计 v1.2](../../../docs/design/design-v1.2.md)、[插件 MVP](../../../docs/design/plugins-mvp.md)和[决策索引](../../../docs/decisions/mvp-confirmed-decisions.md)为准；阶段编号沿用[全局实施计划](../../../ai-docs/plans/mvp-implementation.md)的 P0–P5；P0b 的契约选择见已采纳（accepted）的[P0 契约提案](../../../docs/proposals/storage-p0-contracts.md)。采纳依据是用户明确采用推荐方案并授权在功能分支持续实现、分批提交、推送和提 PR；这不等于合并前审核已完成：合并前由负责人兼 I 审核，AI 不代填 `reviewed-by` / `reviewed-at`。
+本页原为①的**实施准备**。第 1、2 节和第 3 节的探针证据是准备阶段（基于 6cea0b7，当时没有改代码、测试、contracts、部署或依赖）的历史记录，不代表此后没有代码改动。**当前状态：P0a（a6a1c5a）、P0b（cf337d1）、P1 核心（d7c9919：PostgreSQL 后端、可信身份与读授权、请求 ID 重放、有界持久 snapshot、HTTP 与同步远程 SDK）已提交；P2（Relay 与服务代理的持久消费者、远程订阅）与 P3 后端（管理反馈、凭据、订阅完整重配置）已提交 d0d8875，b7307e9 合并 dev 4afeae0，见 [progress](progress.md) 与按实际实现修订的[工程指南](persistent-service-plan.md)；均在 PR8，未合并、未经合并前审核。P3 只余⑥管理页；P4 仅①侧集合守护（schema revision 9）已在本分支实现并定向验证，其余 P4（完成记录、多起因）与 P5 未做。第 7 节记录当前已验证与未完成项（含 P1、P2 Relay 部分早期本地验证；P2 完整、P3 目标组、merge 前检查点与合并后验证见 progress，纳入本分支和本地检查通过都不等于合并前审核通过），逐项边界以 progress 为准。** 其余能力都不因本页存在而视为已完成。目标语义以[设计 v1.2](../../../docs/design/design-v1.2.md)、[插件 MVP](../../../docs/design/plugins-mvp.md)和[决策索引](../../../docs/decisions/mvp-confirmed-decisions.md)为准；阶段编号沿用[全局实施计划](../../../ai-docs/plans/mvp-implementation.md)的 P0–P5；P0b 的契约选择见已采纳（accepted）的[P0 契约提案](../../../docs/proposals/storage-p0-contracts.md)。采纳依据是用户明确采用推荐方案并授权在功能分支持续实现、分批提交、推送和提 PR；这不等于合并前审核已完成：合并前由负责人兼 I 审核，AI 不代填 `reviewed-by` / `reviewed-at`。
 
 ## 1. 基线
 
@@ -81,13 +81,15 @@ based-on: origin/dev 6cea0b7 的实际代码、契约与测试；已采纳的 do
 | P4 | 可以在 P0 内存基线上与早期阶段并行 | ①为③④⑤⑦提供结果记录、调用记录、多因与规则集合所需的类型、依赖和事务支持；不包办它们的业务 | 归属/提取/调度逻辑 |
 | P5 | P1–P4 | 插件历史交接（快照/游标）、停用恢复、多层集成；配合 I 和示例插件 | — |
 
-**P1 当前状态（①视角）**：PostgreSQL 后端、可信身份与读授权、请求 ID 重放、有界持久 snapshot、HTTP 服务和同步远程 SDK 由本分支实现并在提交前本地验证（提交记录为准，未合并；此处不写 P1 SHA）。上表 P1 行的多连接真实并发测试，独立进程竞争部分位于 `services/storage/tests/test_p1a_regressions.py`，覆盖范围以 progress 为准。启用真实 PostgreSQL 的本地完整 `pytest` 为 644 passed、0 skipped；这是一次本地运行，CI 尚未在远程运行，未经合并前人工审核，不代表已部署或生产上线。订阅授权的实际按授权投递与远程订阅仍属 P2；P2 Relay/JetStream、P3 动态管理、P4 所属方接口、P5 历史交接尚待。
+**P1 当前状态（①视角）**：PostgreSQL 后端、可信身份与读授权、请求 ID 重放、有界持久 snapshot、HTTP 服务和同步远程 SDK 已提交（d7c9919，未合并），提交前本地验证。上表 P1 行的多连接真实并发测试，独立进程竞争部分位于 `services/storage/tests/test_p1a_regressions.py`，覆盖范围以 progress 为准。启用真实 PostgreSQL 的本地完整 `pytest` 为 644 passed、0 skipped；这是一次本地运行，CI 尚未在远程运行，未经合并前人工审核，不代表已部署或生产上线。按授权投递与远程订阅（P2）及 P3 后端已提交 d0d8875；P4 所属方接口、P5 历史交接尚待。
+
+**P2 当前状态（①视角）**：P2 已提交 d0d8875（PR8，未合并；持久消费者与 P3 见 [progress](progress.md)）。其中 Relay 部分：有序 Outbox Relay（数据库全局租约与 fence、认领后在事务外发布、PubAck 后标记、失败队首阻塞并无限退避重试、可查询与暂停）、显式 schema revision 4、`relay*` CLI。它只把事件发布到 JetStream，是至少一次交接；`Nats-Msg-Id` 只在去重时间窗内去重，不是外部恰好一次。上表 P2 行的持久消费者、确认/退避/死信/重放、最小权限过滤与授权投递、远程订阅也已实现（revision 5），模块经存储服务代理接收事件；本段早先“消费者未做”的说法是 Relay 阶段的历史状态，已被取代。本地验证见第 7 节与 progress。
 
 插件动态注册、权限、管理页、多层传播和历史处理都属于 MVP，不能因阶段靠后就移出 MVP。从 P1 开始，逐步把内存测试抽取成内存与持久化后端共用的契约测试，P0 不强制大规模重构测试。
 
 ## 6. 阻塞项与交接
 
-- **①+I**：合并前审核 P0 实现 PR（核对清单见 P0 契约提案第 4 节）；随 P1 PR 审核 [P1 工程方案](persistent-service-plan.md)中的三项设计；提供部署用 PostgreSQL/NATS 环境与 Compose（I 负责部署；本地隔离测试用已有镜像，不依赖 I 的部署环境）。
+- **①+I**：合并前审核 P0 实现 PR（核对清单见 P0 契约提案第 4 节）；随 P1 PR 审核 [P1 工程方案](persistent-service-plan.md)中的三项设计；提供部署用 PostgreSQL/NATS 环境与 Compose（I 负责部署；本地隔离测试用已有镜像 `postgres:17-alpine`、`nats:2.11-alpine`，不依赖 I 的部署环境）；P2 另需与 I 确定 `EAR_NATS_*` 凭据注入、流容量与监控、Relay 进程编排。
 - **③④负责人**：确认 `attribution`、`artifact`、`rule_selection` 等候选类型的实际输入以及是否需要强制依赖；④描述规则候选集合的业务一致性需求，由①与④共同确定提交期的集合校验方式，①负责提供存储原语，⑤遵守不扫描历史的门控。①不替他们决定业务规则。
 - **后续接口队列（不进 P0）**：多 cause 与跨 root 的兼容表达（不能改变旧 `root_feedback_id` 的含义，也不把“只合并同 root”当作已决定）；完成记录按所属模块分类型单写（不把“按行记录写入方”当作合法替代）；外部动作恢复标识；插件建议的交接方式。
 - 本页和提案都不冻结服务 HTTP 协议、API、凭据或数据库版本；P1 的工程选择见 [P1 工程方案](persistent-service-plan.md)，精确依赖版本以 `uv.lock` 为准，不是产品承诺。
@@ -95,6 +97,7 @@ based-on: origin/dev 6cea0b7 的实际代码、契约与测试；已采纳的 do
 ## 7. 已验证与未测
 
 - 已验证（准备阶段）：第 1 节的基线命令（主代理运行）；第 2、3 节的探针（只读调用，没有修改仓库）。P0b 后全量 426 passed（P0a 后为 301）当时只验证内存实现。
-- 已验证（P1，本地）：PostgreSQL 后端、可信身份与读授权、请求 ID 重放、有界持久 snapshot、HTTP 服务和同步远程 SDK 由本分支实现，并在提交前、启用真实 PostgreSQL（`EAR_RUN_POSTGRES_TESTS=1`，独立 Docker 临时库 `postgres:17-alpine`；设置外部 `EAR_POSTGRES_TEST_DSN` 会被测试夹具拒绝）下通过本地完整检查：`pytest` 644 passed、0 skipped、1 warning；ruff check、ruff format --check、pyright、`check_docs.py`（含 `--base origin/dev`）、`git diff --check` 均通过（日志 `/tmp/ear-p1http-full-OK7Aeg.log`，exit 0）。不设该环境变量时 PostgreSQL 测试会明确 skip（skip 数以实际运行输出为准），不能与“644 passed、0 skipped”混称；`uv lock --check` 实测 exit 0。
-- P1 的边界：提交记录为准、未合并；这是一次提交前的本地运行，CI 尚未在远程运行这批代码；纳入本分支和本地检查通过都不等于合并前人工审核通过（负责人兼 I），也不代表已部署或生产上线。
-- 仍未测或未实现：Outbox Relay、JetStream 持久消费者与远程订阅（P2）；动态持久注册、凭据轮换/撤销与管理入口、管理反馈处理器（P3）；③④⑤⑦所属方接口（P4）；插件历史交接与多层集成（P5）；`dependency_cycle` 旧客户端兼容测试；核心类型启用强制登记；幂等回执保留策略、`sweep_expired` 调度与部署 Compose（与 I 确定）。
+- 已验证（P1，本地）：PostgreSQL 后端、可信身份与读授权、请求 ID 重放、有界持久 snapshot、HTTP 服务和同步远程 SDK 已提交（d7c9919），并在提交前、启用真实 PostgreSQL（`EAR_RUN_POSTGRES_TESTS=1`，独立 Docker 临时库 `postgres:17-alpine`；设置外部 `EAR_POSTGRES_TEST_DSN` 会被测试夹具拒绝）下通过本地完整检查：`pytest` 644 passed、0 skipped、1 warning；ruff check、ruff format --check、pyright、`check_docs.py`（含 `--base origin/dev`）、`git diff --check` 均通过（日志 `/tmp/ear-p1http-full-OK7Aeg.log`，exit 0）。不设该环境变量时 PostgreSQL 测试会明确 skip（skip 数以实际运行输出为准），不能与“644 passed、0 skipped”混称；`uv lock --check` 实测 exit 0。
+- P1 的边界：提交 d7c9919、未合并；这是一次提交前的本地运行，CI 尚未在远程运行这批代码；纳入本分支和本地检查通过都不等于合并前人工审核通过（负责人兼 I），也不代表已部署或生产上线。
+- 早期分组验证（P2 Relay 部分，已被 P2 完整 802 项运行取代，见 progress）：按组分别运行、各组 exit 0、0 skip，合计 693 项（等于全量收集数）：其余测试 552（`/tmp/ear-p2-units-final.log`）、`test_auth.py` 42（`ear-p2-auth-final.log`）、`test_postgres.py` + `test_http_postgres.py` 29（`ear-p2-pg-http-final.log`）、`test_p1a_regressions.py` 14（`ear-p2-p1a-final.log`）、`test_snapshots.py` 37（`ear-p2-snapshots-final.log`）、`test_relay.py` + `test_relay_schema.py` 19（`ear-p2-relay-real-final.log`，真实 PostgreSQL + 隔离 NATS），合计 552 + 42 + 29 + 14 + 37 + 19 = 693。默认不设环境变量的 `pytest` 为 561 passed、132 skipped、1 warning（`/tmp/ear-p2-default.log`）；ruff、format、pyright、`uv lock --check`、`check_docs.py`、`git diff --check` 通过（`/tmp/ear-p2-final-checks.log`）。**没有**完整启用的单次 693 项运行（该次运行中断）。NATS 测试只用隔离临时容器，设置 `EAR_NATS_TEST_DSN` 会被夹具拒绝。
+- 仍未测或未实现：P2/P3（d0d8875）的远程 CI；b7307e9 合并后的完整真实运行（merge 前检查点 916 项见 progress）；⑥管理页（P3 余项）；③④⑤⑦所属方接口（P4 其余部分；①侧集合守护已实现，schema revision 9，定向验证见 progress，不是完整 P4）；插件历史交接与多层集成（P5）；`dependency_cycle` 旧客户端兼容测试；核心类型启用强制登记；幂等回执保留策略、`sweep_expired` 调度与部署 Compose（与 I 确定）。

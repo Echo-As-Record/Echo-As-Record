@@ -28,6 +28,7 @@ from ear_contracts import (
 )
 from ear_storage_client import (
     AppendRaw,
+    AssertTypeRevision,
     Context,
     InvalidRequest,
     MarkProcessed,
@@ -98,6 +99,12 @@ def _write_permissions(
     reads: set[str] = set()
     referenced_ids: list[str] = []
     for op in ops:
+        if isinstance(op, AssertTypeRevision):
+            principal.require_read([op.data_type])
+            if op.data_type not in registry.data_types:
+                raise PermissionDenied("access denied")
+            reads.add(op.data_type)
+            continue
         if isinstance(op, MarkProcessed):
             if not principal.owns_consumer(op.consumer):
                 raise PermissionDenied("access denied")
@@ -171,6 +178,9 @@ class StorageService:
 class AuthorizedReaderMethods:
     def _read(self, method: str, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError
+
+    def type_revision(self, data_type: str) -> int:
+        return self._read("type_revision", data_type)
 
     def get(self, id: str) -> Record | None:
         return self._read("get", id)
@@ -268,7 +278,11 @@ class AuthenticatedClient(AuthorizedReaderMethods):
                     if dtype in principal.read_types
                 }
 
-            if method in {"query", "count"}:
+            if method == "type_revision":
+                principal.require_read([args[0]])
+                if args[0] not in registry_from_db(conn).data_types:
+                    raise PermissionDenied("access denied")
+            elif method in {"query", "count"}:
                 query = args[0]
                 principal.require_read([query.data_type])
                 if query.unreferenced_by is not None:
@@ -398,13 +412,15 @@ class AuthenticatedClient(AuthorizedReaderMethods):
                     scope="principal:" + principal.id,
                     required_types=required,
                     authorize_replay=principal.require_read,
+                    after_write=lambda result: attach_feedback(
+                        conn, self._backend, principal, ops, result
+                    ),
                 )
             except PermissionDenied:
                 raise PermissionDenied("access denied") from None
             except InvalidRequest:
                 # Validator diagnostics can contain foreign owners, ids or payload values.
                 raise InvalidRequest("invalid write request") from None
-            attach_feedback(conn, self._backend, principal, ops, result)
             if result.conflict is not None:
                 conflict = result.conflict
                 result = replace(

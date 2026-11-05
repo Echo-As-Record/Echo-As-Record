@@ -21,7 +21,7 @@ from ear_storage_client.queries import DependencySet, Page, QueryItem, StaleDepe
 from psycopg import sql
 
 from ear_storage.repository import registry_from_db, table_name
-from ear_storage.schema import connection, one, table
+from ear_storage.schema import connection, has_type_revisions, one, table
 
 
 @contextmanager
@@ -111,6 +111,17 @@ class PostgresReader:
 
     def _connection(self):
         return read_connection(self._dsn)
+
+    def type_revision(self, data_type: str) -> int:
+        with self._connection() as conn:
+            if not has_type_revisions(conn):
+                raise InvalidRequest("collection revisions require schema migration")
+            row = conn.execute(
+                "SELECT revision FROM storage.type_revisions WHERE data_type=%s", (data_type,)
+            ).fetchone()
+            if row is None:
+                raise InvalidRequest("unknown data type")
+            return row[0]
 
     def record_types(self, ids: Sequence[str]) -> dict[str, str]:
         """Internal auth preflight metadata only; no payloads, credentials or DB config."""

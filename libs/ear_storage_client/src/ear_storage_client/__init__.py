@@ -14,6 +14,7 @@ from ear_storage_client.errors import (
 from ear_storage_client.memory import DeadLetter, MemoryBus, MemoryClient, MemoryStorage
 from ear_storage_client.ops import (
     AppendRaw,
+    AssertTypeRevision,
     Create,
     DependencyInput,
     MarkProcessed,
@@ -21,6 +22,7 @@ from ear_storage_client.ops import (
     PutSystemRecord,
     RegisterDependencies,
     Supersede,
+    TypeRevision,
     Update,
     WriteOp,
 )
@@ -61,6 +63,7 @@ __all__ = [
     "MAX_LIMIT",
     "RETRYABLE",
     "AppendRaw",
+    "AssertTypeRevision",
     "AuthenticationError",
     "CommitUnknown",
     "Conflict",
@@ -96,6 +99,7 @@ __all__ = [
     "StorageError",
     "Supersede",
     "TimeRange",
+    "TypeRevision",
     "Update",
     "WriteOp",
     "WriteResult",

@@ -33,6 +33,7 @@ from ear_storage_client.context import Context
 from ear_storage_client.errors import InvalidRequest, PermissionDenied
 from ear_storage_client.ops import (
     AppendRaw,
+    AssertTypeRevision,
     Create,
     DependencyInput,
     MarkProcessed,
@@ -93,6 +94,7 @@ class State:
 
     prior: dict[tuple[str, int], Record] = field(default_factory=dict)
     occupied: set[str] = field(default_factory=set)
+    type_revisions: dict[str, int] = field(default_factory=dict)
 
     def copy(self) -> State:
         return State(
@@ -107,6 +109,7 @@ class State:
             dict(self.published),
             dict(self.prior),
             set(self.occupied),
+            dict(self.type_revisions),
         )
 
     def current(self, id: str) -> Record | None:
@@ -335,7 +338,17 @@ class Transaction:
     # -- 操作 --
 
     def run(self, ops: Sequence[WriteOp]) -> None:
+        # Authorize every guard before ANY conflict (including already_processed).
+        guards = [(index, op) for index, op in enumerate(ops) if isinstance(op, AssertTypeRevision)]
+        inputs = frozenset(op.data_type for _, op in guards)
+        if self.authorize_inputs is not None:
+            self.authorize_inputs(inputs)
+        self.used_input_types |= inputs
+        for self.index, guard in guards:
+            self.spec(guard.data_type)
+            self.check_type_revision(guard)
         handlers: dict[type, Callable[[Any], None]] = {
+            AssertTypeRevision: self.assert_type_revision,
             AppendRaw: self.append_raw,
             Create: self.create,
             Update: self.update,
@@ -350,14 +363,33 @@ class Transaction:
             if handler is None:
                 self.invalid(f"未知的操作：{type(op).__name__}")
             handler(op)
+            if isinstance(op, AppendRaw | Create | Update | Supersede | PutSystemRecord):
+                result = self.results[-1]
+                if result.outcome == "written":
+                    dtype = result.data_type
+                    assert dtype is not None
+                    self.s.type_revisions[dtype] = self.s.type_revisions.get(dtype, 0) + 1
             if isinstance(op, PutSystemRecord) and self.results[-1].outcome == "written":
                 self.system_writes.append(self.s.system[op.id])
             if isinstance(op, Create | Update):
                 version = self.results[-1].version
                 assert version is not None
                 self.recomputed[(op.id, version)] = self.index
+        for self.index, guard in guards:
+            self.check_type_revision(guard)
         self.check_constraints()
         self.check_dependencies()
+
+    def check_type_revision(self, op: AssertTypeRevision) -> None:
+        if self.s.type_revisions.get(op.data_type, 0) != op.expected_revision:
+            self.conflict(
+                "collection_changed",
+                "collection changed; read again and recompute",
+                data_type=op.data_type,
+            )
+
+    def assert_type_revision(self, op: AssertTypeRevision) -> None:
+        self.result("unchanged", op.data_type, None, None)
 
     def append_raw(self, op: AppendRaw) -> None:
         rec = op.record

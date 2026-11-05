@@ -31,6 +31,7 @@ ConflictReason = Literal[
     "revision_mismatch",
     "already_processed",
     "dependency_cycle",
+    "collection_changed",
 ]
 """冲突原因。公共枚举只增不改义；新增的 dependency_cycle 表示本批登记的依赖边会使当前有效
 对象的最终依赖图成环（details 给出环路径），默认不可重试：重读不会让环消失。旧客户端对未知
@@ -45,6 +46,7 @@ RETRYABLE: Final[frozenset[str]] = frozenset(
         "unique_field_taken",
         "member_taken",
         "stale_dependency",
+        "collection_changed",
         "revision_mismatch",
     }
 )

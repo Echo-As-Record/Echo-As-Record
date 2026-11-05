@@ -1,14 +1,14 @@
 ---
 audience: ai
 doc-type: guide
-based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisions/mvp-confirmed-decisions.md；docs/adr/0001-storage-and-runtime-modules.md；代码契约基线origin/dev 48d3c51；其后①在 storage/implementation-preparation 分支实现 P0a（首个提交 a6a1c5a）与 P0b（cf337d1），以及本分支实现的 P1（提交记录为准）与提交前本地检查日志 /tmp/ear-p1http-full-OK7Aeg.log；均未合并
+based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisions/mvp-confirmed-decisions.md；docs/adr/0001-storage-and-runtime-modules.md；代码契约基线origin/dev 48d3c51；其后①在 storage/implementation-preparation 分支实现 P0a（首个提交 a6a1c5a）与 P0b（cf337d1），P1（d7c9919）与提交前本地检查日志 /tmp/ear-p1http-full-OK7Aeg.log，P2/P3 后端 d0d8875（日志 /tmp/ear-p2b-mustfix/closing-*.log、/tmp/ear-p3-*.log、/tmp/ear-p3-checkpoint-validation.log）及合并提交 b7307e9（同步 dev 4afeae0）；PR8 未合并
 ---
 
 # 已采纳 MVP 的契约与实施计划
 
 ## 0. 这不是实现完成报告
 
-负责人已明确采纳目标并授权设计同步，那一轮不改contracts、业务代码、依赖或部署；此后①按授权在功能分支 `storage/implementation-preparation` 提交 P0a（a6a1c5a）、P0b（cf337d1），并在本分支实现 P1 核心（提交记录为准）；均未合并、未经合并前审核，见[①进度](../../services/storage/ai-docs/progress.md)。现有内存行为与新目标不同是显式待实现差距，不因测试绿就认定完成。目标定义见[设计](../../docs/design/design-v1.2.md)、[插件](../../docs/design/plugins-mvp.md)及[决策来源](../../docs/decisions/mvp-confirmed-decisions.md)。
+负责人已明确采纳目标并授权设计同步，那一轮不改contracts、业务代码、依赖或部署；此后①按授权在功能分支 `storage/implementation-preparation` 提交 P0a（a6a1c5a）、P0b（cf337d1）、P1 核心（d7c9919）、P2（Relay、持久消费者与远程订阅）与 P3 后端（管理反馈、凭据、订阅重配置；d0d8875），并以 b7307e9 合并 dev 4afeae0；均在 PR8，未合并、未经合并前审核，见[①进度](../../services/storage/ai-docs/progress.md)。现有内存行为与新目标不同是显式待实现差距，不因测试绿就认定完成。目标定义见[设计](../../docs/design/design-v1.2.md)、[插件](../../docs/design/plugins-mvp.md)及[决策来源](../../docs/decisions/mvp-confirmed-decisions.md)。
 
 ①的首批PR拆分、6cea0b7代码证据与阶段出入口见[①实施准备](../../services/storage/ai-docs/implementation-plan.md)。本页是工程执行顺序和风险清单，新增字段/类型名除已讨论术语外只是待设计项；不替代公共契约审核。协议、索引、超时等细节可由实施者提出，不反复问产品负责人；会改变已确认行为时再请求决策。
 
@@ -20,10 +20,10 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 | `contracts/registry/data-types.json` | 核心类型/单写者、约束；P0b 分支 Schema 新增能力项（缺省 false，核心类型当前全 false） | 持久热注册、可信身份、完整插件生命周期、已启用的强制登记 |
 | `contracts/events/` | 两类事件、单cause及追踪字段 | 多cause/多root调度、完成信号的新Schema |
 | `libs/ear_contracts/src/ear_contracts/` | 模型/UUIDv7/UTC/注册表 | 新结果、管理、外部未知状态已同步 |
-| `libs/ear_storage_client/src/ear_storage_client/protocol.py` | 同步Reader/StorageClient/snapshot/subscribe及重试helper；P1 另有同包 `remote.py` 同步远程客户端与 `wire.py`（本分支实现，提交记录为准） | 远程订阅（P2）、可长期持有的快照 |
+| `libs/ear_storage_client/src/ear_storage_client/protocol.py` | 同步Reader/StorageClient/snapshot/subscribe及重试helper；P1（d7c9919）另有同包 `remote.py` 同步远程客户端与 `wire.py` | 可长期持有的快照（远程订阅已在 P2 实现，d0d8875） |
 | 同包 `ops.py`、`memory.py` | 批次、版本、依赖整体覆盖、内存总线；P0b 分支：`DependencyInput` 字段依赖、按能力强制登记、批末新鲜度、当前图无环（内存全局锁） | 持久化并发正确性、可信身份/动态权限、生产可靠投递 |
 | 同包 `queries.py`、`results.py` | 查询分页与冲突；P0b 分支 `DependencySet`、`dependency_cycle` | 远程游标一致性、所有读路径访问控制 |
-| `services/storage/` | 文档入口；P1 服务包 `ear_storage`（PostgreSQL、身份授权、snapshot、HTTP、CLI；本分支实现，提交记录为准） | Relay/JetStream、动态注册与管理反馈、部署 Compose |
+| `services/storage/` | 文档入口；P1 服务包 `ear_storage`（PostgreSQL、身份授权、snapshot、HTTP、CLI；d7c9919）；P2 `relay.py`、`consumers.py`（有序 Relay 与服务代理的持久消费者）与 P3 后端 `management.py`、`credentials.py`、`reconfiguration.py`（d0d8875，PR8 未合并） | ⑥管理页、流保留/清理、部署 Compose |
 | `deploy/compose.yaml`、`tests/e2e/` | 空部署服务和E2E骨架 | 部署或插件端到端完成 |
 
 先复用正确的基础行为，不从零定义另一套category/ULID/事件命名。UUIDv7、data_type/payload、system根源、两类事件和单写者等保持既有公共约定。
@@ -59,7 +59,7 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 
 ### P1 独立服务与持久事务
 
-- 工程方案见[①P1 持久化服务方案](../../services/storage/ai-docs/persistent-service-plan.md)（未实现）。
+- 工程方案见[①P1 持久化服务方案](../../services/storage/ai-docs/persistent-service-plan.md)（已按实际实现修订；P1 已提交 d7c9919，未合并）。
 - 建正式storage包、迁移与PostgreSQL实现，同库模块schema+公共storage设施，不一类型强制一表。
 - 可信凭据绑定模块；所有读取路径做授权，批次写入检查所有权，不信任传参module。
 - 实现版本锁/唯一性、完整依赖、新鲜度和DAG的并发安全提交；不同事务分别添加边也不能并发形成环。
@@ -68,12 +68,15 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 
 ### P2 JetStream与可靠交接
 
+- **当前状态**：P2 已提交 d0d8875（PR8 未合并）：持久 Outbox、可恢复有序 Relay、服务端授权的持久消费者（HTTP 代理）、ack/重试/死信/同 consumer 重放、SDK `subscribe` 有界泵；有限去重的至少一次，不是恰好一次；流满拒收且无清理，生产保留与历史补/跳（P5）仍欠。真实完整测试 802 项在 P2 工作区快照上两次通过；merge 前 P3 检查点 916 项全真实通过；b7307e9 合并后尚未完整真实运行。见[①进度](../../services/storage/ai-docs/progress.md)。
 - 持久Outbox和可恢复Relay，明确发送成功但标记前崩溃如何重投；不将自增序号自动等同于全局提交顺序。
 - 持久消费者、确认策略、退避、失败记录/死信、管理员检查和重放。跨消费者各自进度，授权投递不能共享错误的工作队列吞掉其他模块通知。
 - `write()`冲突不是默认异常；handler必须检查最终结果，失败不能正常返回当ack。already_processed是特例，不盲重试业务结果。
 - 最小必要事件内容；请求描述不得成为绕过权限传送未授权数据的通道。
 
 ### P3 动态注册、权限和管理页
+
+- **当前状态**：后端已提交 d0d8875（PR8 未合并）：管理反馈/结果类型、可信管理员角色、运行时登记表与动态 namespace、启停与权限、`retry_task`、凭据经管理反馈轮换/撤销与一次性领取（schema 7）、订阅完整重配置（schema 8：新增类型只收未来事件、原积压保留、原子切换，已撤销身份不复活）；⑥管理页未完成。merge 前检查点全真实 916 passed、0 skipped；b7307e9 后只有默认检查，见[①进度](../../services/storage/ai-docs/progress.md)。
 
 - 核心配置初始化+动态持久模块注册，校验身份/命名空间/类型唯一、读取/订阅权限、重判和依赖能力，完成记录类型不能只固定③④。
 - ①管理反馈消费者调用内部逻辑；⑥轻量页面提交反馈和查询阶段。管理HTTP入口如需存在也只是受控内部能力，不能取代已定日常反馈流程。
@@ -83,6 +86,7 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 
 ### P4 ③④⑤⑦业务与传播对齐（可在内存基线上并行）
 
+- **当前状态**：未完成。①侧规则集合守护（`type_revision` / `AssertTypeRevision`，schema revision 9）已在存储分支实现并定向验证，③④尚未接入；完成记录、多起因等未做。b7307e9 合入的模块④是演示基线，其说明注明不代表已完成 v1.2（见[④实现记录](../../services/extraction/ai-docs/implementation.md)），④的 v1.2 对齐仍属本阶段。
 - ③仅参考匹配时登记references，不因名字字段变化重归属；保留用户确认保护。
 - ④活动仅原始数据；纯Markdown；选择结果按当前规则集合更新，自动/手动来源分离；最新规则或规则失效处理。
 - ③④及插件提交完成记录，⑤查询无变化/失败/不适用，等待已知相关上游、合并原因并保留追溯；不再写死md终点。

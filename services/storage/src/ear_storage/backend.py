@@ -8,8 +8,16 @@ from collections.abc import Callable, Sequence
 
 import psycopg
 from ear_contracts import Event, Registry, is_id, new_id, utcnow
-from ear_storage_client import Context, InvalidRequest, RegisterDependencies, WriteOp, WriteResult
+from ear_storage_client import (
+    AssertTypeRevision,
+    Context,
+    InvalidRequest,
+    RegisterDependencies,
+    WriteOp,
+    WriteResult,
+)
 from ear_storage_client.engine import Abort, Transaction, canonical_json
+from ear_storage_client.results import Conflict
 
 from ear_storage.codec import (
     EVENT_ADAPTER,
@@ -129,6 +137,7 @@ class PostgresClient(PostgresReader):
         scope: str | None = None,
         required_types: frozenset[str] | None = None,
         authorize_replay: Callable[[frozenset[str]], None] | None = None,
+        after_write: Callable[[WriteResult], None] | None = None,
     ) -> WriteResult:
         """Internal only: caller owns WRITER_GATE and authenticates AFTER acquiring it."""
         limits = self._storage.limits
@@ -169,12 +178,45 @@ class PostgresClient(PostgresReader):
             result = WriteResult(
                 batch_id=txn.batch_id, results=tuple(txn.results), events=tuple(txn.events)
             )
-        seq = one(
-            conn,
-            "UPDATE storage.meta SET commit_seq=commit_seq+1 WHERE singleton RETURNING commit_seq",
-        )[0]
-        if result.ok:
-            persist(conn, before, txn, seq)
+        try:
+            # Include storage-owned effects (management accepted/result records)
+            # in the guarded batch. A savepoint rolls back ALL effects, while the
+            # outer transaction can still retain an idempotent conflict receipt.
+            with conn.transaction():
+                seq = one(
+                    conn,
+                    "UPDATE storage.meta SET commit_seq=commit_seq+1 "
+                    "WHERE singleton RETURNING commit_seq",
+                )[0]
+                if result.ok:
+                    persist(conn, before, txn, seq)
+                    if after_write is not None:
+                        after_write(result)
+                    for index, op in enumerate(ops):
+                        if not isinstance(op, AssertTypeRevision):
+                            continue
+                        row = conn.execute(
+                            "SELECT revision FROM storage.type_revisions WHERE data_type=%s",
+                            (op.data_type,),
+                        ).fetchone()
+                        if row is None:
+                            raise SchemaMismatch("missing collection revision")
+                        if row[0] != op.expected_revision:
+                            raise Abort(
+                                Conflict(
+                                    index,
+                                    "collection_changed",
+                                    "collection changed; read again and recompute",
+                                    data_type=op.data_type,
+                                )
+                            )
+        except Abort as abort:
+            result = WriteResult(batch_id=None, conflict=abort.conflict)
+            seq = one(
+                conn,
+                "UPDATE storage.meta SET commit_seq=commit_seq+1 "
+                "WHERE singleton RETURNING commit_seq",
+            )[0]
         required = set()
         for op in ops:
             for attr in ("data_type", "dependent_type", "target_type"):
