@@ -1,0 +1,18 @@
+[project]
+name = "ear-extraction"
+version = "0.1.0"
+description = "Ear activity extraction MVP"
+requires-python = ">=3.12"
+dependencies = ["ear-contracts", "ear-storage-client", "httpx>=0.28"]
+
+[project.scripts]
+ear-extraction-demo = "ear_extraction.demo:main"
+ear-extraction-web-demo = "ear_extraction.web_demo:main"
+
+[tool.uv.sources]
+ear-contracts = { workspace = true }
+ear-storage-client = { workspace = true }
+
+[build-system]
+requires = ["uv_build>=0.8,<0.14"]
+build-backend = "uv_build"
