@@ -1,9 +1,16 @@
 [project]
 name = "ear-storage"
 version = "0.1.0"
-description = "PostgreSQL storage service with authenticated HTTP and persistent snapshot leases"
+description = "PostgreSQL storage service with authenticated HTTP, snapshot leases and an outbox relay"
 requires-python = ">=3.12"
-dependencies = ["ear-contracts", "ear-storage-client", "psycopg[binary]>=3.2,<4", "fastapi>=0.115,<1", "uvicorn>=0.30,<1"]
+dependencies = [
+    "ear-contracts",
+    "ear-storage-client",
+    "psycopg[binary]>=3.2,<4",
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
+    "nats-py>=2,<3",
+]
 
 [project.scripts]
 ear-storage = "ear_storage.cli:main"

@@ -9,6 +9,8 @@
     "gps_point": { "kind": "raw_record", "writer": "adapter", "description": "GPS 点" },
     "phone_info": { "kind": "raw_record", "writer": "adapter", "description": "手机信息" },
     "feedback": { "kind": "raw_record", "writer": "api", "description": "用户反馈" },
+    "plugin_management_feedback": { "kind": "raw_record", "writer": "api", "description": "插件管理反馈" },
+    "plugin_management_result": { "kind": "system_record", "writer": "storage", "description": "插件管理结果" },
     "person": {
       "kind": "semantic",
       "writer": "attribution",

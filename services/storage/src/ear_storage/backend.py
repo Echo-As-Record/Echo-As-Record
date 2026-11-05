@@ -58,7 +58,7 @@ class PostgresStorage(PostgresReader):
     def outbox(
         self, *, after: int = 0, limit: int = 100
     ) -> tuple[tuple[int, tuple[Event, ...]], ...]:
-        """Page by complete commit groups; no partial boundary. No relay/ack yet."""
+        """Page complete commit groups, independently of relay delivery metadata."""
         if not 1 <= limit <= 1000 or after < 0:
             raise InvalidRequest("invalid outbox page")
         with read_connection(self._dsn) as conn:
@@ -218,4 +218,4 @@ class PostgresClient(PostgresReader):
         raise NotImplementedError("persistent snapshot leases are a later P1 slice")
 
     def subscribe(self, *args, **kwargs):
-        raise NotImplementedError("remote subscription and relay belong to P2")
+        raise NotImplementedError("P2 authorized remote subscription is not yet implemented")

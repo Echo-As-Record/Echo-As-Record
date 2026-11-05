@@ -42,6 +42,7 @@ from ear_storage_client.queries import (
 from ear_storage_client.remote_errors import (
     AuthenticationError,
     CommitUnknown,
+    DeliveryExpired,
     ProtocolError,
     ResourceLimit,
     ServiceUnavailable,
@@ -68,6 +69,7 @@ __all__ = [
     "Context",
     "Create",
     "DeadLetter",
+    "DeliveryExpired",
     "DependencyInput",
     "DependencySet",
     "EventHandler",

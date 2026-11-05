@@ -392,7 +392,10 @@ def test_retry_helper_recomputes_releases_and_preserves_exception(env):
     assert sweep_expired(dsn) == 1
 
 
-def test_genuine_v2_upgrade_preserves_auth_business_receipts_and_versions(pg_dsn, monkeypatch):
+@pytest.mark.parametrize("receipt_reads", [False, True])
+def test_genuine_v2_upgrade_preserves_auth_business_receipts_and_versions(
+    pg_dsn, monkeypatch, receipt_reads
+):
     with connection(pg_dsn) as conn, writer(conn):
         for statement in (*DDL, *DDL_V2):
             conn.execute(statement)
@@ -422,7 +425,7 @@ def test_genuine_v2_upgrade_preserves_auth_business_receipts_and_versions(pg_dsn
                     request,
                     fingerprint(ops, SYS),
                     encode_result(result),
-                    "[]",
+                    canonical_json(["activity"] if receipt_reads else []),
                     9,
                     "principal:" + issued.principal_id,
                 ),
@@ -431,7 +434,34 @@ def test_genuine_v2_upgrade_preserves_auth_business_receipts_and_versions(pg_dsn
         StorageService(pg_dsn)
     migrate(pg_dsn)
     migrate(pg_dsn)
-    client = StorageService(pg_dsn).client(issued.token)
+    service = StorageService(pg_dsn)
+    client = service.client(issued.token)
+    operator = AuthOperator(pg_dsn)
+    other = operator.issue_principal("extraction", read_types=["activity"])
+    with connection(pg_dsn) as conn:
+        assert conn.execute("SELECT count(*) FROM storage.consumer_identities").fetchone() == (0,)
+    with pytest.raises(PermissionDenied):
+        client.write(ops, SYS, request_id=request)
+    with pytest.raises(InvalidRequest):
+        operator.reserve_consumer_identity("extraction", issued.principal_id)
+    operator.adopt_consumer_markers("extraction", issued.principal_id)
+    for denied_ops, denied_request in [
+        (ops, new_id()),
+        ([*ops[:-1], MarkProcessed("extraction", new_id())], request),
+    ]:
+        with pytest.raises(PermissionDenied):
+            client.write(denied_ops, SYS, request_id=denied_request)
+    with pytest.raises(PermissionDenied):
+        service.client(other.token).write(ops, SYS, request_id=request)
+    assert client.write(ops, SYS, request_id=request) == result
+    operator.set_grants(issued.principal_id)
+    if receipt_reads:
+        with pytest.raises(PermissionDenied):
+            client.write(ops, SYS, request_id=request)
+    else:
+        # Original P1 metadata-only receipt has no read requirements; do not narrow it.
+        assert client.write(ops, SYS, request_id=request) == result
+    operator.set_grants(issued.principal_id, read_types=["activity"])
     assert client.write(ops, SYS, request_id=request) == result
     assert len(client.history(id)) == 2 and client.is_processed("extraction", event)
     group = client.dependency_set(id)

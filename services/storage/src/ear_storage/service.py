@@ -10,6 +10,7 @@ Write receipts (including replay) are metadata, not a read of the owner's payloa
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import replace
@@ -40,10 +41,18 @@ from ear_storage_client import (
 from ear_storage_client.queries import DependencySet, Page, StaleDependency
 from ear_storage_client.results import Conflict
 
-from ear_storage.auth import AuthenticationError, Principal, authenticate, token_digest
+from ear_storage.auth import (
+    AuthenticationError,
+    Principal,
+    authenticate,
+    can_use_consumer,
+    token_digest,
+)
 from ear_storage.backend import PostgresClient, PostgresStorage
-from ear_storage.codec import decode_request, encode_request
+from ear_storage.codec import EVENT_ADAPTER, decode_request, encode_request
+from ear_storage.consumers import ConsumerPolicy, ConsumerService, approved_filters, authorize_event
 from ear_storage.reader import ConnectionBoundReader
+from ear_storage.relay import RelayConfig
 from ear_storage.repository import Limits, registry_from_db
 from ear_storage.schema import ProjectionLimit, check_schema, connection, writer
 from ear_storage.snapshots import (
@@ -54,6 +63,33 @@ from ear_storage.snapshots import (
     load_reader,
     validate_lease,
 )
+
+
+def _adopted_marker_replay(
+    conn: psycopg.Connection, principal: Principal, op: MarkProcessed, request_id: str, digest: str
+) -> bool:
+    """Only replay an exact existing receipt after deployment-attested legacy ownership.
+
+    This never grants permission to execute a new marker or bypass receipt read checks.
+    The caller holds WRITER_GATE and has checked any registered consumer's enabled owner.
+    """
+    return (
+        conn.execute(
+            "SELECT 1 FROM storage.consumer_identities c "
+            "JOIN storage.processed p ON p.consumer=c.name "
+            "JOIN storage.idempotency i ON i.scope=%s AND i.request_id=%s "
+            "WHERE c.name=%s AND c.principal_id=%s AND p.event_id=%s AND i.fingerprint=%s",
+            (
+                "principal:" + principal.id,
+                request_id,
+                op.consumer,
+                principal.id,
+                op.event_id,
+                digest,
+            ),
+        ).fetchone()
+        is not None
+    )
 
 
 def _write_permissions(
@@ -110,7 +146,12 @@ class StorageService:
         *,
         limits: Limits | None = None,
         snapshot_limits: SnapshotLimits | None = None,
+        relay_config: RelayConfig | None = None,
+        consumer_policy: ConsumerPolicy | None = None,
     ) -> None:
+        self.consumers = (
+            ConsumerService(dsn, relay_config, consumer_policy) if relay_config else None
+        )
         self._backend = PostgresStorage(dsn, limits=limits)
         self._snapshot_limits = snapshot_limits or SnapshotLimits()
 
@@ -218,7 +259,7 @@ class AuthenticatedClient(AuthorizedReaderMethods):
             return Registry(types, publishers, registry.core_types & frozenset(types))
 
     def _read(self, method: str, *args: Any, **kwargs: Any) -> Any:
-        with self._session() as (_conn, principal, reader):
+        with self._session() as (conn, principal, reader):
 
             def visible(ids: Sequence[str]) -> set[str]:
                 return {
@@ -233,7 +274,7 @@ class AuthenticatedClient(AuthorizedReaderMethods):
                 if query.unreferenced_by is not None:
                     principal.require_read([query.unreferenced_by[0]])
             elif method == "is_processed":
-                if not principal.owns_consumer(args[0]):
+                if not can_use_consumer(conn, principal, args[0]):
                     return False
             elif method == "get_many":
                 args = (list(visible(args[0])),)
@@ -242,6 +283,18 @@ class AuthenticatedClient(AuthorizedReaderMethods):
                 args = ([id for id in args[0] if id in allowed],)
             elif not visible([args[0]]):
                 return [] if method in {"history", "system_history", "dependents_of"} else None
+            # Live management status must not remain pending after a worker's
+            # final nack/lease crash. Snapshots deliberately retain their snapshot.
+            from ear_storage.management import RESULT, ManagementProcessor
+
+            if RESULT in principal.read_types:
+                if method in {"query", "count"} and args[0].data_type == RESULT:
+                    ManagementProcessor(self._backend).reconcile(conn)
+                elif method in {"get", "get_system_record", "system_history"}:
+                    ManagementProcessor(self._backend).reconcile(conn, args[0])
+                elif method == "get_many":
+                    for rid in args[0]:
+                        ManagementProcessor(self._backend).reconcile(conn, rid)
             result = getattr(reader, method)(*args, **kwargs)
             if method == "dependency_set" and result is not None:
                 # Never pretend a redacted set is complete (especially an empty set).
@@ -271,6 +324,69 @@ class AuthenticatedClient(AuthorizedReaderMethods):
         ops, context = decode_request(text)
         digest = hashlib.sha256(text.encode()).hexdigest()
         with self._session() as (conn, principal, reader):
+            from ear_storage.management import attach_feedback, prepare_feedback
+
+            prepare_feedback(conn, principal, ops)
+            for op in ops:
+                if isinstance(op, MarkProcessed):
+                    recovery = conn.execute(
+                        "SELECT recovery_pending FROM storage.module_lifecycle WHERE module=%s",
+                        (principal.module,),
+                    ).fetchone()
+                    if recovery and recovery[0]:
+                        raise PermissionDenied("need_recovery_decision")
+                    owner = conn.execute(
+                        "SELECT principal_id,enabled,config_text FROM storage.consumers "
+                        "WHERE name=%s",
+                        (op.consumer,),
+                    ).fetchone()
+                    if owner is None:
+                        reserved = conn.execute(
+                            "SELECT principal_id FROM storage.consumer_identities WHERE name=%s",
+                            (op.consumer,),
+                        ).fetchone()
+                        if reserved is None or reserved[0] != principal.id:
+                            raise PermissionDenied("access denied")
+                        event = conn.execute(
+                            "SELECT event_text FROM storage.outbox WHERE event_id=%s",
+                            (op.event_id,),
+                        ).fetchone()
+                        if event is None:
+                            if _adopted_marker_replay(conn, principal, op, request_id, digest):
+                                continue
+                            raise PermissionDenied("access denied")
+                        registry = registry_from_db(conn)
+                        kinds = ["data_changed", "reevaluation_requested"]
+                        prefix = "ear.events"
+                        cfg = {
+                            "event_types": kinds,
+                            "filters": approved_filters(principal, registry, kinds, prefix),
+                        }
+                        authorize_event(
+                            principal, registry, cfg, EVENT_ADAPTER.validate_json(event[0]), prefix
+                        )
+                    else:
+                        if owner[0] != principal.id or not owner[1]:
+                            raise PermissionDenied("access denied")
+                        event = conn.execute(
+                            "SELECT event_text FROM storage.outbox WHERE event_id=%s "
+                            "AND delivered_at IS NOT NULL",
+                            (op.event_id,),
+                        ).fetchone()
+                        if event is None:
+                            if _adopted_marker_replay(conn, principal, op, request_id, digest):
+                                continue
+                            raise PermissionDenied("access denied")
+                        # Recheck current rights for the marker in the business transaction too.
+                        cfg = json.loads(owner[2])
+                        prefix = cfg["filters"][0].rsplit(".", 3)[0]
+                        authorize_event(
+                            principal,
+                            registry_from_db(conn),
+                            cfg,
+                            EVENT_ADAPTER.validate_json(event[0]),
+                            prefix,
+                        )
             required = _write_permissions(principal, reader, registry_from_db(conn), ops)
             try:
                 result = PostgresClient(self._backend, principal.module)._write_locked(
@@ -288,6 +404,7 @@ class AuthenticatedClient(AuthorizedReaderMethods):
             except InvalidRequest:
                 # Validator diagnostics can contain foreign owners, ids or payload values.
                 raise InvalidRequest("invalid write request") from None
+            attach_feedback(conn, self._backend, principal, ops, result)
             if result.conflict is not None:
                 conflict = result.conflict
                 result = replace(
@@ -332,7 +449,7 @@ class AuthenticatedClient(AuthorizedReaderMethods):
                 self.release_snapshot(lease.snapshot_id)
 
     def subscribe(self, *args, **kwargs):
-        raise NotImplementedError("authorized remote subscription and relay belong to P2")
+        raise NotImplementedError("P2 authorized remote subscription is not yet implemented")
 
 
 class SnapshotReader(AuthorizedReaderMethods):

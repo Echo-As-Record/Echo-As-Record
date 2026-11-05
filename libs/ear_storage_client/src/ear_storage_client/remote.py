@@ -24,18 +24,22 @@ from ear_contracts import (
 )
 
 from ear_storage_client import Context, InvalidRequest, Query, WriteOp, WriteResult
+from ear_storage_client.consumer_wire import RegisterConsumer
 from ear_storage_client.engine import canonical_json
-from ear_storage_client.errors import PermissionDenied
+from ear_storage_client.errors import ConflictError, PermissionDenied
+from ear_storage_client.protocol import EventHandler
 from ear_storage_client.queries import DependencySet, Page, StaleDependency
 from ear_storage_client.remote_errors import (
     AuthenticationError,
     CommitUnknown,
+    DeliveryExpired,
     ProtocolError,
     ResourceLimit,
     ServiceUnavailable,
     SnapshotUnavailable,
 )
 from ear_storage_client.wire import (
+    EVENT_ADAPTER,
     READ_ARGS,
     _value,
     decode_read,
@@ -154,6 +158,8 @@ class RemoteStorageClient(RemoteReader):
             timeout=timeout,
             headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
         )
+        self._handlers: dict[str, EventHandler] = {}
+        self._completions: dict[str, tuple[str, str]] = {}
         super().__init__(self)
         if module is not None:
             try:
@@ -184,6 +190,15 @@ class RemoteStorageClient(RemoteReader):
             if request_id is not None:
                 raise CommitUnknown(request_id) from None
             raise ServiceUnavailable("storage transport unavailable") from None
+        if response.status_code == 409 and path in {"/v1/consumers/ack", "/v1/consumers/nack"}:
+            try:
+                data = load_json(response.text)
+                if not isinstance(data, dict):
+                    raise ValueError
+            except (InvalidRequest, ValueError):
+                raise ProtocolError("invalid completion error") from None
+            if data.get("code") == "delivery_expired":
+                raise DeliveryExpired("delivery expired")
         errors = {
             401: (AuthenticationError, "invalid credentials"),
             403: (PermissionDenied, "access denied"),
@@ -282,5 +297,151 @@ class RemoteStorageClient(RemoteReader):
             with suppress(SnapshotUnavailable, AuthenticationError, ServiceUnavailable):
                 self.release_snapshot(lease["snapshot_id"])
 
-    def subscribe(self, *args: Any, **kwargs: Any) -> None:
-        raise NotImplementedError("remote subscribe requires P2 relay and delivery protocol")
+    def _consumer(self, operation: str, consumer: str, **values: Any) -> dict[str, Any]:
+        response = self._request(
+            "POST",
+            "/v1/consumers/" + operation,
+            canonical_json({"codec": 1, "consumer": consumer, **values}),
+        )
+        try:
+            data = load_json(response.text)
+            if type(data.get("codec")) is not int or data["codec"] != 1:
+                raise ValueError
+            statuses = {
+                "register": {"ready", "pending"},
+                "fetch": {"delivery", "idle", "busy", "pending", "progress"},
+                "ack": {"acked"},
+                "nack": {"retry", "dead"},
+                "replay": {"queued"},
+            }
+            if operation == "deadletters":
+                if not isinstance(data.get("deadletters"), list):
+                    raise ValueError
+            elif data.get("status") not in statuses[operation]:
+                raise ValueError
+            if operation == "fetch" and (
+                "delivery" not in data
+                or (data["status"] == "delivery") != isinstance(data["delivery"], dict)
+            ):
+                raise ValueError
+            if operation == "replay" and not is_id(data.get("delivery_id")):
+                raise ValueError
+            return data
+        except (ValueError, KeyError, TypeError, AttributeError):
+            raise ProtocolError("invalid consumer response") from None
+
+    def subscribe(
+        self,
+        consumer: str,
+        handler: EventHandler,
+        *,
+        event_types: Sequence[str] | None = None,
+        from_beginning: bool = False,
+    ) -> None:
+        """Register only; explicit poll_once/run_until_idle drives handlers, no threads.
+
+        Handlers MUST read current state and call WriteResult.check() after atomically
+        writing results + MarkProcessed. Normal return acks; a swallowed write conflict
+        cannot be detected by this SDK. Registration pending raises ServiceUnavailable;
+        repeating the same registration resumes the persisted server intent.
+        """
+        if consumer in self._handlers or not callable(handler):
+            raise InvalidRequest("consumer already registered or invalid handler")
+        try:
+            parsed = RegisterConsumer.model_validate(
+                {
+                    "consumer": consumer,
+                    "event_types": list(event_types)
+                    if event_types is not None
+                    else ["data_changed", "reevaluation_requested"],
+                    "from_beginning": from_beginning,
+                }
+            )
+        except ValueError:
+            raise InvalidRequest("invalid consumer registration") from None
+        data = self._consumer(
+            "register", consumer, event_types=parsed.event_types, from_beginning=from_beginning
+        )
+        if data.get("status") != "ready":
+            raise ServiceUnavailable("consumer initialization pending; retry registration")
+        self._handlers[consumer] = handler
+
+    def _poll(self, consumer: str) -> tuple[int, bool]:
+        if consumer not in self._handlers:
+            raise InvalidRequest("consumer has no local handler")
+        completion = self._completions.get(consumer)
+        if completion is not None:
+            operation, delivery_token = completion
+            # Only this authenticated, explicitly expired receipt is discarded.
+            with suppress(DeliveryExpired):
+                self._consumer(operation, consumer, delivery_token=delivery_token)
+            del self._completions[consumer]
+            return 0, True
+        data = self._consumer("fetch", consumer)
+        delivery = data.get("delivery")
+        if delivery is None:
+            return 0, data.get("status") == "progress"
+        try:
+            event = EVENT_ADAPTER.validate_python(delivery["event"])
+            delivery_token = delivery["delivery_token"]
+            if (
+                not isinstance(delivery_token, str)
+                or re.fullmatch(r"[A-Za-z0-9_-]{43}", delivery_token) is None
+            ):
+                raise ValueError
+        except (ValueError, KeyError, TypeError):
+            raise ProtocolError("invalid delivery response") from None
+        operation = "ack"
+        try:
+            if not self.is_processed(consumer, event.event_id):
+                self._handlers[consumer](event)
+        except ConflictError as exc:
+            if exc.conflict.reason != "already_processed" or not self.is_processed(
+                consumer, event.event_id
+            ):
+                operation = "nack"
+        except Exception:
+            operation = "nack"
+        # Retain receipt until HTTP completion succeeds; lost ack response never
+        # reruns a handler within this client. Restart relies on committed markers.
+        self._completions[consumer] = (operation, delivery_token)
+        # Next poll rechecks processed state; never replay business writes here.
+        with suppress(DeliveryExpired):
+            self._consumer(operation, consumer, delivery_token=delivery_token)
+        del self._completions[consumer]
+        return 1, True
+
+    def poll_once(self, consumer: str | None = None) -> int:
+        """At most one delivery per selected consumer. Exceptions persist a server retry."""
+        return sum(
+            self._poll(name)[0] for name in ([consumer] if consumer else list(self._handlers))
+        )
+
+    def run_until_idle(self, max_deliveries: int = 100) -> int:
+        """Bounded round-robin pump; returns on idle/backoff, never sleeps or spins forever.
+
+        max_deliveries also bounds polling rounds (e.g. filtering a historic backlog).
+        A delivery is never fetched then dropped when the budget is exhausted.
+        """
+        if type(max_deliveries) is not int or not 1 <= max_deliveries <= 10000:
+            raise InvalidRequest("invalid delivery budget")
+        count = 0
+        for _ in range(max_deliveries):
+            progress = False
+            for name in list(self._handlers):
+                if count >= max_deliveries:
+                    return count
+                delivered, advanced = self._poll(name)
+                count += delivered
+                progress |= advanced
+            if not progress:
+                break
+        return count
+
+    def deadletters(self, consumer: str) -> list[dict[str, Any]]:
+        return self._consumer("deadletters", consumer)["deadletters"]
+
+    def replay_deadletter(self, consumer: str, delivery_id: str) -> str:
+        if not is_id(delivery_id):
+            raise InvalidRequest("invalid delivery id")
+        return self._consumer("replay", consumer, delivery_id=delivery_id)["delivery_id"]

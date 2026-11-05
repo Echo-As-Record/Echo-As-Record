@@ -237,6 +237,13 @@ _BUILTIN = Registry(
                 _raw("gps_point", "adapter", "GPS 点"),
                 _raw("phone_info", "adapter", "手机信息"),
                 _raw("feedback", "api", "用户反馈"),
+                _raw("plugin_management_feedback", "api", "插件管理反馈"),
+                DataTypeSpec(
+                    "plugin_management_result",
+                    "system_record",
+                    "storage",
+                    description="插件管理结果",
+                ),
                 _semantic(
                     "person", "attribution", "人物（含参考）", exclusive_members=("references",)
                 ),

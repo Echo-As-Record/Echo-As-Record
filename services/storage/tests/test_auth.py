@@ -38,6 +38,7 @@ from ear_storage_client import (
     RegisterDependencies,
     Supersede,
     Update,
+    WriteOp,
     WriteResult,
 )
 from ear_storage_client.engine import State, Transaction
@@ -249,7 +250,15 @@ def test_dependency_input_publish_cause_target_and_consumer_checks(env):
     client.write(
         [RegisterDependencies("activity", target, [reference("person", cause)])], SYS
     ).check()
-    event = new_id()
+    operator.reserve_consumer_identity("extraction.worker", issued.principal_id)
+    operator.set_grants(issued.principal_id, read_types=["person"], subscribe_types=["person"])
+    event = (
+        store.client("attribution")
+        .write([Create("person", new_id(), {})], SYS)
+        .check()
+        .events[0]
+        .event_id
+    )
     client.write([MarkProcessed("extraction.worker", event)], SYS).check()
     assert client.is_processed("extraction.worker", event)
     assert not client.is_processed("extraction_other", event)
@@ -444,7 +453,9 @@ def test_genuine_v1_ddl_upgrade_preserves_records_edges_outbox_and_replay(pg_dsn
     assert store.client("extraction").write(ops, SYS, request_id=request) == result
     assert store.commit_seq == 7
     with connection(pg_dsn) as conn:
-        assert conn.execute("SELECT schema_revision FROM storage.meta").fetchone() == (3,)
+        assert conn.execute("SELECT schema_revision FROM storage.meta").fetchone() == (
+            schema.SCHEMA_VERSION,
+        )
         assert conn.execute("SELECT scope FROM storage.idempotency").fetchone() == (
             "internal:extraction",
         )
@@ -538,7 +549,7 @@ def test_reused_input_revocation_denies_before_result(reused_input, changed, mix
         store.client("attribution").write([Update("person", source, 1, {"n": 2})], SYS).check()
     operator.set_grants(issued.principal_id)
     created, system, event, request = (new_id() for _ in range(4))
-    ops = [Update("activity", target, 1, {})]
+    ops: list[WriteOp] = [Update("activity", target, 1, {})]
     if mixed:
         ops = [
             Create("activity", created, {}),
@@ -546,6 +557,18 @@ def test_reused_input_revocation_denies_before_result(reused_input, changed, mix
             MarkProcessed("extraction", event),
             *ops,
         ]
+    if mixed:
+        # Keep the marker independently authorized, so failure still tests reused inputs.
+        event = (
+            store.client("extraction")
+            .write([Create("rule", new_id(), {})], SYS)
+            .check()
+            .events[0]
+            .event_id
+        )
+        operator.reserve_consumer_identity("extraction", issued.principal_id)
+        operator.set_grants(issued.principal_id, read_types=["rule"], subscribe_types=["rule"])
+        ops[2] = MarkProcessed("extraction", event)
     before = store.commit_seq, store.outbox(), receipt_count(dsn)
     error = None
     try:

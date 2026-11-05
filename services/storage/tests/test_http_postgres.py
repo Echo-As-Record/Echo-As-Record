@@ -143,18 +143,25 @@ def test_live_all_commands_fields_numeric_and_request_identity(env):
     _dsn, _store, service, operator = env
     reads = ["activity", "person", "voiceprint", "extraction_run"]
     principals = {
-        module: operator.issue_principal(module, read_types=reads)
+        module: operator.issue_principal(
+            module, read_types=reads, subscribe_types=["person"] if module == "extraction" else []
+        )
         for module in ("adapter", "attribution", "extraction", "dependency")
     }
+    operator.reserve_consumer_identity("extraction.http", principals["extraction"].principal_id)
     with live_server(service) as url:
         clients = {module: RemoteStorageClient(p.token, url) for module, p in principals.items()}
         try:
-            source, target, system, event = (new_id() for _ in range(4))
+            source, target, system = (new_id() for _ in range(3))
             raw = make_raw("voiceprint", {"nested": [1, 1.0, True]}, start="2026-10-30T00:00:00Z")
             clients["adapter"].write([AppendRaw(raw)], SYS).check()
-            clients["attribution"].write(
-                [Create("person", source, {"x": [1, {"v": 1.0}]})], SYS
-            ).check()
+            event = (
+                clients["attribution"]
+                .write([Create("person", source, {"x": [1, {"v": 1.0}]})], SYS)
+                .check()
+                .events[0]
+                .event_id
+            )
             sdk = clients["extraction"]
             ref = VersionRef(data_type="person", id=source, version=1)
             ops = [

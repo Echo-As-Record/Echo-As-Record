@@ -50,5 +50,5 @@ include = ["tools", "tests", "libs", "services/storage"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "libs", "services/storage/tests"]
-markers = ["postgres: real PostgreSQL integration (EAR_RUN_POSTGRES_TESTS=1)"]
+markers = ["nats: isolated real JetStream (EAR_RUN_NATS_TESTS=1)", "postgres: real PostgreSQL integration (EAR_RUN_POSTGRES_TESTS=1)"]
 addopts = ["--import-mode=importlib"]

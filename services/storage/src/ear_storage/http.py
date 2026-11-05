@@ -1,6 +1,6 @@
 """HTTP wire-v1 boundary: closed commands, fresh authentication, sanitized failures.
 
-No admin routes, DSN discovery, implicit migration, request-header/body logging or
+No direct admin CRUD, DSN discovery, implicit migration, request-header/body logging or
 cached principals. Sync endpoints run in FastAPI's worker pool, not the event loop.
 """
 
@@ -13,7 +13,14 @@ from typing import Any
 import psycopg
 from ear_contracts import is_id
 from ear_storage_client import InvalidRequest, PermissionDenied
+from ear_storage_client.consumer_wire import (
+    ConsumerRequest,
+    DeliveryCommand,
+    RegisterConsumer,
+    ReplayCommand,
+)
 from ear_storage_client.engine import canonical_json
+from ear_storage_client.remote_errors import DeliveryExpired
 from ear_storage_client.wire import (
     SnapshotRequest,
     check_keys,
@@ -29,6 +36,9 @@ from pydantic import ValidationError
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from ear_storage.auth import AuthenticationError
+from ear_storage.consumer_broker import ConsumerUnavailable
+from ear_storage.consumers import ConsumerPolicy
+from ear_storage.relay import RelayConfig
 from ear_storage.schema import ProjectionLimit, SchemaMismatch
 from ear_storage.service import StorageService
 from ear_storage.snapshots import SnapshotUnavailable
@@ -91,6 +101,8 @@ class BoundaryMiddleware:
             scope["ear.body"] = bytes(chunks)
             await self.app(scope, receive, safe_send)
             return
+        except DeliveryExpired:
+            error = failure(409, "delivery_expired", "delivery expired")
         except SnapshotUnavailable:
             error = failure(410, "snapshot_unavailable", "snapshot unavailable")
         except AuthenticationError:
@@ -103,7 +115,12 @@ class BoundaryMiddleware:
             error = failure(422, "invalid_input", "invalid request")
         except TimeoutError:
             error = failure(408, "request_timeout", "request body timed out")
-        except (psycopg.OperationalError, psycopg.InterfaceError, SchemaMismatch):
+        except (
+            psycopg.OperationalError,
+            psycopg.InterfaceError,
+            SchemaMismatch,
+            ConsumerUnavailable,
+        ):
             error = failure(503, "unavailable", "storage unavailable")
         except Exception:
             error = failure(500, "internal_error", "storage request failed")
@@ -142,6 +159,25 @@ def create_app(
         return json_response(
             {"codec": 1, "registry": value.to_json(), "core_types": sorted(value.core_types)}
         )
+
+    @app.post("/v1/management/requests")
+    def management_request(request: Request):
+        from ear_storage.management import submit
+        from ear_storage.management_input import ManagementInput
+
+        _token, client, _module = authenticated(request)
+        body = ManagementInput.model_validate(load_json(request.scope["ear.body"]))
+        return json_response(submit(client, body), 202)
+
+    @app.post("/v1/management/credentials/{feedback_id}/claim")
+    def credential_claim(feedback_id: str, request: Request):
+        from ear_storage.credentials import claim_credentials
+
+        _token, client, _module = authenticated(request)
+        if request.scope["ear.body"] not in (b"", b"{}"):
+            raise InvalidRequest("claim takes no parameters")
+        issued = claim_credentials(client, feedback_id)
+        return json_response({"principal_id": issued.principal_id, "token": issued.token})
 
     @app.post("/v1/batches")
     def batches(request: Request):
@@ -184,9 +220,45 @@ def create_app(
         service.release_snapshot(token, snapshot_id)
         return json_response({"codec": 1, "released": True})
 
+    @app.post("/v1/consumers/{operation}")
+    def consumer_command(operation: str, request: Request):
+        token, _client, _module = authenticated(request)
+        models = {
+            "register": RegisterConsumer,
+            "fetch": ConsumerRequest,
+            "ack": DeliveryCommand,
+            "nack": DeliveryCommand,
+            "deadletters": ConsumerRequest,
+            "replay": ReplayCommand,
+        }
+        model = models.get(operation)
+        if model is None:
+            raise InvalidRequest("unknown consumer command")
+        data = load_json(request.scope["ear.body"])
+        if not isinstance(data, dict) or type(data.get("codec")) is not int:
+            raise InvalidRequest("invalid consumer command")
+        parsed = model.model_validate(data)
+        consumers = getattr(service, "consumers", None)
+        if consumers is None:
+            raise ConsumerUnavailable("consumer broker not configured")
+        if operation in {"ack", "nack"}:
+            assert isinstance(parsed, DeliveryCommand)
+            result = consumers.finish(token, parsed, nack=operation == "nack")
+        else:
+            result = getattr(consumers, operation)(token, parsed)
+        return json_response(result)
+
     return app
 
 
-def create_app_from_dsn(dsn: str, **kwargs: Any) -> FastAPI:
+def create_app_from_dsn(
+    dsn: str,
+    *,
+    relay_config: RelayConfig | None = None,
+    consumer_policy: ConsumerPolicy | None = None,
+    **kwargs: Any,
+) -> FastAPI:
     """Deployment-only composition; never reads .env or exposes configuration."""
-    return create_app(StorageService(dsn), **kwargs)
+    return create_app(
+        StorageService(dsn, relay_config=relay_config, consumer_policy=consumer_policy), **kwargs
+    )

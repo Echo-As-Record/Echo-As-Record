@@ -1,4 +1,4 @@
-"""Persistent storage, authenticated HTTP clients and leases; relay is not yet implemented."""
+"""Persistent storage, authenticated HTTP, snapshot leases and an internal outbox relay."""
 
 from ear_storage.auth import AuthenticationError, AuthOperator
 from ear_storage.backend import PostgresClient, PostgresStorage

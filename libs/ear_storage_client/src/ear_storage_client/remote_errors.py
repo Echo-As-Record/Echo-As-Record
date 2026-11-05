@@ -11,6 +11,10 @@ class SnapshotUnavailable(PermissionDenied):
     pass
 
 
+class DeliveryExpired(StorageError):
+    """Authenticated receipt is no longer actionable; reconcile with a fresh fetch."""
+
+
 class ResourceLimit(StorageError):
     pass
 

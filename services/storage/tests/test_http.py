@@ -320,7 +320,7 @@ def test_lost_transport_and_unknown_future_conflict():
     with RemoteStorageClient(TOKEN, "http://test", transport=httpx.MockTransport(future)) as sdk:
         with pytest.raises(CommitUnknown):
             sdk.write([], Context.system())
-        with pytest.raises(NotImplementedError, match="P2"):
+        with pytest.raises(ProtocolError):
             sdk.subscribe("extraction", lambda _: None)
 
 

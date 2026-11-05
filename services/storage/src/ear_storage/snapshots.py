@@ -32,7 +32,7 @@ from ear_storage_client.memory import _StateReader
 from ear_storage_client.queries import DependencySet
 from psycopg import sql
 
-from ear_storage.auth import Principal
+from ear_storage.auth import Principal, can_use_consumer
 from ear_storage.schema import ProjectionLimit, check_schema, connection, one, table, writer
 
 
@@ -140,13 +140,22 @@ def _sources(conn: psycopg.Connection, principal: Principal):
         ),
         [reads, reads],
     )
+    # New snapshots must not even count another principal's registered progress.
+    registered = conn.execute("SELECT to_regclass('storage.consumers')").fetchone() != (None,)
+    owner_filter = (
+        " AND NOT EXISTS (SELECT 1 FROM storage.consumers c WHERE c.name=p.consumer "
+        "AND (c.principal_id<>%s OR NOT c.enabled))"
+        if registered
+        else ""
+    )
     yield (
         sql.SQL(
             "SELECT 'processed',consumer||'/'||event_id,''::text,"
-            "json_build_array(consumer,event_id)::text FROM storage.processed "
-            "WHERE consumer=%s OR starts_with(consumer,%s)"
-        ),
-        [principal.module, principal.module + "."],
+            "json_build_array(consumer,event_id)::text FROM storage.processed p "
+            "WHERE (consumer=%s OR starts_with(consumer,%s))"
+        )
+        + sql.SQL(owner_filter),
+        [principal.module, principal.module + ".", *([principal.id] if registered else [])],
     )
 
 
@@ -327,7 +336,7 @@ def load_reader(
             ) | {group_key}
         elif kind == "processed":
             consumer, event = json.loads(text)
-            if principal.owns_consumer(consumer):
+            if can_use_consumer(conn, principal, consumer):
                 state.processed[(consumer, event)] = None
     state.versions = {id: tuple(sorted(vs, key=lambda r: r.version)) for id, vs in versions.items()}
     for id, history in systems.items():

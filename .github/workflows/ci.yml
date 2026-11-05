@@ -34,9 +34,13 @@ jobs:
       - name: Prepare isolated PostgreSQL test image
         run: docker pull postgres:17-alpine
 
-      - name: Tests (including real PostgreSQL)
+      - name: Prepare isolated NATS test image
+        run: timeout 90 docker pull nats:2.11-alpine
+
+      - name: Tests (including real PostgreSQL and NATS)
         env:
           EAR_RUN_POSTGRES_TESTS: "1"
+          EAR_RUN_NATS_TESTS: "1"
         run: uv run pytest
 
       - name: 文档结构与链接检查

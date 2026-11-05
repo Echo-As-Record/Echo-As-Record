@@ -325,6 +325,7 @@ def persist(conn: psycopg.Connection, before: State, txn: Transaction, seq: int)
         conn.execute("INSERT INTO storage.published VALUES (%s,%s)", (event, seq))
     for ordinal, event in enumerate(txn.events):
         conn.execute(
-            "INSERT INTO storage.outbox VALUES (%s,%s,%s,%s)",
+            "INSERT INTO storage.outbox (commit_seq,ordinal,event_id,event_text) "
+            "VALUES (%s,%s,%s,%s)",
             (seq, ordinal, event.event_id, canonical_json(event.model_dump(mode="json"))),
         )
