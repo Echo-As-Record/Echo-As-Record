@@ -3,7 +3,7 @@ name = "ear-storage-client"
 version = "0.1.0"
 description = "① 存储与事件的客户端接口，以及供各模块开发和测试使用的内存实现"
 requires-python = ">=3.12"
-dependencies = ["ear-contracts"]
+dependencies = ["ear-contracts", "httpx>=0.27,<1"]
 
 [tool.uv.sources]
 ear-contracts = { workspace = true }

@@ -1,7 +1,7 @@
 ---
 audience: ai
 doc-type: guide
-based-on: docs/modules/storage.md；contracts/；libs/ear_storage_client 与 libs/ear_contracts（origin/dev 48d3c51）；原接口说明 v0.2 的职责拆分；设计v1.2同步（代码仍为原基线）；P0a 修复（基于 6cea0b7，首个提交 a6a1c5a）；P0b 字段依赖与登记表能力（本分支，提交以分支历史为准）
+based-on: docs/modules/storage.md；contracts/；libs/ear_storage_client 与 libs/ear_contracts（origin/dev 48d3c51）；原接口说明 v0.2 的职责拆分；设计v1.2同步（代码仍为原基线）；P0a 修复（基于 6cea0b7，首个提交 a6a1c5a）；P0b 字段依赖与登记表能力（cf337d1）；本分支实现的 P1 实际代码（提交记录为准，未合并；services/storage/src/ear_storage，ear_storage_client 的 engine/wire/remote/remote_errors）
 ---
 
 # ① SDK 使用与实现导航
@@ -10,7 +10,15 @@ based-on: docs/modules/storage.md；contracts/；libs/ear_storage_client 与 lib
 
 ## 0. 当前代码与新目标不能混淆
 
-本页示例描述现有 SDK，不是 v1.2 的完整接口。①独立服务、PostgreSQL同库多schema、JetStream/Outbox、通用完成记录、动态插件/权限/管理反馈消费已获批准，**但未实现**。字段依赖、按能力强制登记、批末新鲜度与当前图无环已在内存实现中完成（P0b，本分支，未经合并前审核），持久化版本未实现；P1 计划见[持久化服务工程方案](persistent-service-plan.md)。跟进[实施计划](../../../ai-docs/plans/mvp-implementation.md)，不要因下文旧接口可以调用就跳过新目标。
+本页示例描述现有 SDK，不是 v1.2 的完整接口。P0b（cf337d1）已提交：字段依赖、按能力强制登记、批末新鲜度与当前图无环（内存）。P1 由本分支实现（提交记录为准，**未合并**）：PostgreSQL 后端、可信 token 身份与读授权、请求 ID 重放、有界 snapshot、HTTP `/v1` 与同步 `RemoteStorageClient`（工程细节见[P1 工程指南](persistent-service-plan.md)，状态见 [progress](progress.md)）。**仍未实现**：Relay/JetStream/远程订阅（P2）、动态插件注册/凭据生命周期/管理反馈消费（P3）、通用完成记录与多起因（P4）、插件历史（P5）。均未经合并前审核。跟进[实施计划](../../../ai-docs/plans/mvp-implementation.md)，不要因下文旧接口可以调用就跳过新目标。
+
+远程客户端调用规则（以 `libs/ear_storage_client/src/ear_storage_client/remote.py`、`remote_errors.py` 为准）：
+
+- 模块身份只来自部署签发的 token；不读环境变量，没有隐藏重试。token 由部署内 `AuthOperator` 签发，不要在业务代码里签发或保存明文。
+- `write(ops, context, request_id=None)` 默认生成 UUIDv7。遇到 `CommitUnknown` 时**不要重新计算**，用 `e.request_id` 与相同 ops、context 重放；`write_with_retry` 不会替你重放。冲突仍按第 3 节处理。
+- `snapshot()` 创建有界持久租约（默认 TTL 300 s，上限见指南），超限报 `ResourceLimit`，过期/不可用报 `SnapshotUnavailable`；不要依赖长时间持有。
+- `subscribe` 在远程客户端抛 `NotImplementedError`（P2 前没有远程事件）。
+- 读取须有显式 grant（包括读本模块类型）；无权与不存在不可区分。
 
 ## 1. 先定位代码
 
@@ -23,10 +31,12 @@ based-on: docs/modules/storage.md；contracts/；libs/ear_storage_client 与 lib
 | Context 与反馈传播 | `context.py`（同包） |
 | 参考实现、进程内事件队列 | `memory.py`（同包） |
 | 合成数据工具 | `testing.py`（同包，仅开发/测试） |
+| 远程 SDK（P1，提交记录为准） | `remote.py`、`remote_errors.py`、`wire.py`；共享校验逻辑 `engine.py`（同包） |
+| 服务实现（P1，提交记录为准） | `services/storage/src/ear_storage/`（`schema`、`repository`、`backend`、`auth`、`service`、`snapshots`、`reader`、`http`、`cli`）；测试 `services/storage/tests/` |
 | 公共模型与注册表 | `libs/ear_contracts/src/ear_contracts/` |
 | 行为测试 | `libs/ear_storage_client/tests/test_memory.py`；P0a 回归 `test_memory_regressions.py`；P0b `test_p0_sdk_models.py`、`test_p0_memory_dependencies.py`（同目录）；契约模型 `libs/ear_contracts/tests/test_p0_contract_models.py` |
 
-业务模块依赖 `StorageClient`，不要依赖 `MemoryStorage` 的内部状态。正式后端尚未实现，不要假设存在 HTTP 路由、生产总线或 SQL 表。
+业务模块依赖 `StorageClient`，不要依赖 `MemoryStorage` 的内部状态。PostgreSQL 服务与 HTTP 路由由本分支实现（提交记录为准，未合并），实际路由、表与限制见[P1 工程指南](persistent-service-plan.md)；生产总线与远程订阅尚不存在。业务代码不要依赖服务内部表。
 
 ## 2. 最小可运行示例（合成数据）
 

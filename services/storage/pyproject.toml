@@ -1,0 +1,17 @@
+[project]
+name = "ear-storage"
+version = "0.1.0"
+description = "PostgreSQL storage service with authenticated HTTP and persistent snapshot leases"
+requires-python = ">=3.12"
+dependencies = ["ear-contracts", "ear-storage-client", "psycopg[binary]>=3.2,<4", "fastapi>=0.115,<1", "uvicorn>=0.30,<1"]
+
+[project.scripts]
+ear-storage = "ear_storage.cli:main"
+
+[tool.uv.sources]
+ear-contracts = { workspace = true }
+ear-storage-client = { workspace = true }
+
+[build-system]
+requires = ["uv_build>=0.8,<0.14"]
+build-backend = "uv_build"

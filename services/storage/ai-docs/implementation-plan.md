@@ -6,7 +6,7 @@ based-on: origin/dev 6cea0b7 的实际代码、契约与测试；已采纳的 do
 
 # ① 实施准备：P0 首批 PR 与阶段出入口
 
-本页原为①的**实施准备**。第 1、2 节和第 3 节的探针证据是准备阶段（基于 6cea0b7，当时没有改代码、测试、contracts、部署或依赖）的历史记录，不代表此后没有代码改动。**当前状态：P0a、P0b 均已在本分支实现并验证（首个 P0a 提交 a6a1c5a，其余以分支提交历史和 PR 为准；见第 3、4 节末尾和 [progress](progress.md)），尚未经合并前审核；P1 只有[工程方案](persistent-service-plan.md)，未实现。** 其余能力都不因本页存在而视为已完成。目标语义以[设计 v1.2](../../../docs/design/design-v1.2.md)、[插件 MVP](../../../docs/design/plugins-mvp.md)和[决策索引](../../../docs/decisions/mvp-confirmed-decisions.md)为准；阶段编号沿用[全局实施计划](../../../ai-docs/plans/mvp-implementation.md)的 P0–P5；P0b 的契约选择见已采纳（accepted）的[P0 契约提案](../../../docs/proposals/storage-p0-contracts.md)。采纳依据是用户明确采用推荐方案并授权在功能分支持续实现、分批提交、推送和提 PR；这不等于合并前审核已完成：合并前由负责人兼 I 审核，AI 不代填 `reviewed-by` / `reviewed-at`。
+本页原为①的**实施准备**。第 1、2 节和第 3 节的探针证据是准备阶段（基于 6cea0b7，当时没有改代码、测试、contracts、部署或依赖）的历史记录，不代表此后没有代码改动。**当前状态：P0a（a6a1c5a）、P0b（cf337d1）已提交；P1 核心（PostgreSQL 后端、可信身份与读授权、请求 ID 重放、有界持久 snapshot、HTTP 与同步远程 SDK）由本分支实现并通过提交前的本地完整检查（提交记录为准，未合并），见 [progress](progress.md) 与按实际实现修订的 [P1 工程指南](persistent-service-plan.md)；三者均未经合并前审核。P2–P5 未做。第 7 节记录当前已验证与未完成项（含 P1 本地验证，纳入本分支和本地检查通过都不等于合并前审核通过），逐项边界以 progress 为准。** 其余能力都不因本页存在而视为已完成。目标语义以[设计 v1.2](../../../docs/design/design-v1.2.md)、[插件 MVP](../../../docs/design/plugins-mvp.md)和[决策索引](../../../docs/decisions/mvp-confirmed-decisions.md)为准；阶段编号沿用[全局实施计划](../../../ai-docs/plans/mvp-implementation.md)的 P0–P5；P0b 的契约选择见已采纳（accepted）的[P0 契约提案](../../../docs/proposals/storage-p0-contracts.md)。采纳依据是用户明确采用推荐方案并授权在功能分支持续实现、分批提交、推送和提 PR；这不等于合并前审核已完成：合并前由负责人兼 I 审核，AI 不代填 `reviewed-by` / `reviewed-at`。
 
 ## 1. 基线
 
@@ -81,6 +81,8 @@ based-on: origin/dev 6cea0b7 的实际代码、契约与测试；已采纳的 do
 | P4 | 可以在 P0 内存基线上与早期阶段并行 | ①为③④⑤⑦提供结果记录、调用记录、多因与规则集合所需的类型、依赖和事务支持；不包办它们的业务 | 归属/提取/调度逻辑 |
 | P5 | P1–P4 | 插件历史交接（快照/游标）、停用恢复、多层集成；配合 I 和示例插件 | — |
 
+**P1 当前状态（①视角）**：PostgreSQL 后端、可信身份与读授权、请求 ID 重放、有界持久 snapshot、HTTP 服务和同步远程 SDK 由本分支实现并在提交前本地验证（提交记录为准，未合并；此处不写 P1 SHA）。上表 P1 行的多连接真实并发测试，独立进程竞争部分位于 `services/storage/tests/test_p1a_regressions.py`，覆盖范围以 progress 为准。启用真实 PostgreSQL 的本地完整 `pytest` 为 644 passed、0 skipped；这是一次本地运行，CI 尚未在远程运行，未经合并前人工审核，不代表已部署或生产上线。订阅授权的实际按授权投递与远程订阅仍属 P2；P2 Relay/JetStream、P3 动态管理、P4 所属方接口、P5 历史交接尚待。
+
 插件动态注册、权限、管理页、多层传播和历史处理都属于 MVP，不能因阶段靠后就移出 MVP。从 P1 开始，逐步把内存测试抽取成内存与持久化后端共用的契约测试，P0 不强制大规模重构测试。
 
 ## 6. 阻塞项与交接
@@ -92,5 +94,7 @@ based-on: origin/dev 6cea0b7 的实际代码、契约与测试；已采纳的 do
 
 ## 7. 已验证与未测
 
-- 已验证：第 1 节的基线命令（主代理运行）；第 2、3 节的探针（只读调用，没有修改仓库）。
-- 未测或未实现：PostgreSQL 和真实多进程并发；远程服务；可信身份与读授权；请求 ID；远程 snapshot；可靠投递；动态注册；`dependency_cycle` 旧客户端兼容测试；核心类型启用强制登记。P0b 后全量 426 passed（P0a 后为 301）只验证内存实现，不能证明持久化服务或上述目标已经实现。
+- 已验证（准备阶段）：第 1 节的基线命令（主代理运行）；第 2、3 节的探针（只读调用，没有修改仓库）。P0b 后全量 426 passed（P0a 后为 301）当时只验证内存实现。
+- 已验证（P1，本地）：PostgreSQL 后端、可信身份与读授权、请求 ID 重放、有界持久 snapshot、HTTP 服务和同步远程 SDK 由本分支实现，并在提交前、启用真实 PostgreSQL（`EAR_RUN_POSTGRES_TESTS=1`，独立 Docker 临时库 `postgres:17-alpine`；设置外部 `EAR_POSTGRES_TEST_DSN` 会被测试夹具拒绝）下通过本地完整检查：`pytest` 644 passed、0 skipped、1 warning；ruff check、ruff format --check、pyright、`check_docs.py`（含 `--base origin/dev`）、`git diff --check` 均通过（日志 `/tmp/ear-p1http-full-OK7Aeg.log`，exit 0）。不设该环境变量时 PostgreSQL 测试会明确 skip（skip 数以实际运行输出为准），不能与“644 passed、0 skipped”混称；`uv lock --check` 实测 exit 0。
+- P1 的边界：提交记录为准、未合并；这是一次提交前的本地运行，CI 尚未在远程运行这批代码；纳入本分支和本地检查通过都不等于合并前人工审核通过（负责人兼 I），也不代表已部署或生产上线。
+- 仍未测或未实现：Outbox Relay、JetStream 持久消费者与远程订阅（P2）；动态持久注册、凭据轮换/撤销与管理入口、管理反馈处理器（P3）；③④⑤⑦所属方接口（P4）；插件历史交接与多层集成（P5）；`dependency_cycle` 旧客户端兼容测试；核心类型启用强制登记；幂等回执保留策略、`sweep_expired` 调度与部署 Compose（与 I 确定）。

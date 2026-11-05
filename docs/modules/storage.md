@@ -1,7 +1,7 @@
 ---
 audience: human
 doc-type: reference
-based-on: 设计v1.2、动态插件MVP与ADR-0001；项目负责人本轮逐项确认及同步授权；代码基线origin/dev 48d3c51
+based-on: 设计v1.2、动态插件MVP与ADR-0001；项目负责人本轮逐项确认及同步授权；代码基线origin/dev 6cea0b7；本分支P0a(a6a1c5a)、P0b(cf337d1)提交及本分支实现的P1（提交记录为准，未合并），状态见services/storage/ai-docs/progress.md
 ---
 
 # ① 存储与事件：职责和接口目标
@@ -45,11 +45,15 @@ based-on: 设计v1.2、动态插件MVP与ADR-0001；项目负责人本轮逐项�
 | ⑦ | 调用系统记录统一保存查询 | 模型选择、调用、限流与重试 |
 | 插件 | 获权读/订阅、自有类型写、完成记录、依赖与命名空间 | 插件计算、进程安装/启动、任意代码沙箱 |
 
-## 4. 已决定但未实现的变化
+## 4. 已决定的变化与当前实现状态
 
-本轮决定已通过[确认索引](../decisions/mvp-confirmed-decisions.md)闭合，不再把R1/R4/R5/R6列为未决产品问题。新能力尚未同步到Schema和代码：字段依赖、强制登记、防环、动态权限/注册、通用完成记录、多起因、管理反馈消费、远程服务和正式总线。
+本轮决定已通过[确认索引](../decisions/mvp-confirmed-decisions.md)闭合，不再把R1/R4/R5/R6列为未决产品问题。下面是分支 `storage/implementation-preparation` 上的实现状态：**纳入分支、本地检查通过都不等于合并前人工审核通过，也不等于目标已达成**；逐项边界见[进度](../../services/storage/ai-docs/progress.md)。
 
-现有 `StorageClient` / `MemoryStorage` 提供同步接口、基础原子写入、版本、查询、版本级依赖和进程内消费工具；其当前接口不能被当作完整新目标。准确新字段/类型名、服务快照与订阅协议、插件外部动作交接、规则集合并发保护、参数默认值属于实施任务而非已存在契约。
+- **契约、模型与内存实现（P0a、P0b，已提交于本分支）**：字段依赖、同批强制登记、防环、核心不依赖插件。内置核心类型的“需要依赖”能力项目前全为 false，强制登记尚未对任何内置类型生效，须③④提供实际输入并迁移验证后按类型启用。
+- **持久化服务与远程 SDK（P1，本分支实现，提交记录为准，未合并）**：PostgreSQL 事务（Outbox 行已持久写入）、token 可信身份与全部读取路径授权、请求 ID 重放、有界持久 snapshot、HTTP 接口、同步远程 SDK。提交前在本地启用真实 PostgreSQL（独立 Docker 临时库，测试夹具拒绝外部 DSN）的完整 `pytest` 为 644 passed、0 skipped；这是一次本地运行，CI 尚未在远程运行这批代码，也不代表已部署或可用于生产。
+- **尚未做**：Outbox Relay、NATS JetStream 持久消费者与远程订阅（P2；目前没有进程把 Outbox 投递出去）；动态持久注册、凭据轮换/撤销与管理入口、①管理反馈处理器与可恢复阶段（P3）；为③④⑤⑦提供的所属方接口——结果/完成记录、多起因、规则集合等（P4）；插件历史交接与多层集成（P5）。部署 Compose 与运行环境由 I 协作。阶段划分见[实施计划](../../ai-docs/plans/mvp-implementation.md)。
+
+`StorageClient` / `MemoryStorage` 提供同步接口、基础原子写入、版本、查询、依赖和进程内消费工具；P1 另有同步 `RemoteStorageClient`，结果未知时抛 `CommitUnknown`，由调用方用同一请求 ID 重放，远程 `subscribe` 尚未实现。这些接口不能被当作完整新目标。订阅协议、插件外部动作交接、规则集合并发保护、参数默认值属于实施任务而非已存在契约；P1 的 HTTP 线路和 snapshot 参数是工程选择（见[P1 工程指南](../../services/storage/ai-docs/persistent-service-plan.md)），不是已冻结的公共契约。
 
 ## 5. 验收和交付顺序
 
