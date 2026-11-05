@@ -24,6 +24,7 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 | 同包 `ops.py`、`memory.py` | 批次、版本、依赖整体覆盖、内存总线；P0b 分支：`DependencyInput` 字段依赖、按能力强制登记、批末新鲜度、当前图无环（内存全局锁） | 持久化并发正确性、可信身份/动态权限、生产可靠投递 |
 | 同包 `queries.py`、`results.py` | 查询分页与冲突；P0b 分支 `DependencySet`、`dependency_cycle` | 远程游标一致性、所有读路径访问控制 |
 | `services/storage/` | 文档入口；P1 服务包 `ear_storage`（PostgreSQL、身份授权、snapshot、HTTP、CLI；d7c9919）；P2 `relay.py`、`consumers.py`（有序 Relay 与服务代理的持久消费者）与 P3 后端 `management.py`、`credentials.py`、`reconfiguration.py`（d0d8875，PR8 未合并） | ⑥管理页、流保留/清理、部署 Compose |
+| `services/adapters/` | ②：旧 Ear Evidence → 原始数据的转换、导入规则、内存试运行（[实现说明](../../services/adapters/ai-docs/implementation.md)） | 真实落库、旧 Ear 的列录音接口、GPS 采样密度 |
 | `deploy/compose.yaml`、`tests/e2e/` | 空部署服务和E2E骨架 | 部署或插件端到端完成 |
 
 先复用正确的基础行为，不从零定义另一套category/ULID/事件命名。UUIDv7、data_type/payload、system根源、两类事件和单写者等保持既有公共约定。
