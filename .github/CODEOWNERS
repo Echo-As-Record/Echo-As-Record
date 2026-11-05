@@ -4,7 +4,7 @@
 # 默认
 *                       @ay-tony
 
-# 已审定文档、公共约定：需要 ① 负责人与 I 一起审核（会后补上）
+# 面向人的设计与公共契约：按影响范围审核；contracts 需要 ① 与 I 共同审核（会后补上）
 /docs/                  @ay-tony
 /contracts/             @ay-tony
 /AGENTS.md              @ay-tony
