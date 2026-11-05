@@ -1,9 +1,10 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.12"
 
 [manifest]
 members = [
+    "ear-adapter",
     "ear-contracts",
     "ear-storage-client",
     "echo-as-record",
@@ -68,6 +69,23 @@ wheels = [
 ]
 
 [[package]]
+name = "ear-adapter"
+version = "0.1.0"
+source = { editable = "services/adapters" }
+dependencies = [
+    { name = "ear-contracts" },
+    { name = "ear-storage-client" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "ear-contracts", editable = "libs/ear_contracts" },
+    { name = "ear-storage-client", editable = "libs/ear_storage_client" },
+    { name = "pydantic", specifier = ">=2.9" },
+]
+
+[[package]]
 name = "ear-contracts"
 version = "0.1.0"
 source = { editable = "libs/ear_contracts" }
@@ -96,6 +114,7 @@ source = { virtual = "." }
 
 [package.dev-dependencies]
 dev = [
+    { name = "ear-adapter" },
     { name = "ear-contracts" },
     { name = "ear-storage-client" },
     { name = "jsonschema", extra = ["format-nongpl"] },
@@ -109,6 +128,7 @@ dev = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "ear-adapter", editable = "services/adapters" },
     { name = "ear-contracts", editable = "libs/ear_contracts" },
     { name = "ear-storage-client", editable = "libs/ear_storage_client" },
     { name = "jsonschema", extras = ["format-nongpl"], specifier = ">=4.23" },

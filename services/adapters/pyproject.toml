@@ -1,0 +1,17 @@
+[project]
+name = "ear-adapter"
+version = "0.1.0"
+description = "② 适配器：把旧 Ear 的 Evidence（录音、转写、局部说话人、声纹、环境声、GPS、手机信息）转成统一输入格式写入 ①"
+requires-python = ">=3.12"
+dependencies = ["ear-contracts", "ear-storage-client", "pydantic>=2.9"]
+
+[project.scripts]
+ear-adapter = "ear_adapter.__main__:main"
+
+[tool.uv.sources]
+ear-contracts = { workspace = true }
+ear-storage-client = { workspace = true }
+
+[build-system]
+requires = ["uv_build>=0.8,<0.14"]
+build-backend = "uv_build"

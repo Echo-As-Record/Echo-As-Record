@@ -24,6 +24,7 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 | 同包 `ops.py`、`memory.py` | 批次、版本、依赖整体覆盖、内存总线 | 强制依赖/字段比较/无环/动态权限/生产可靠投递 |
 | 同包 `queries.py`、`results.py` | 查询分页与冲突 | 远程游标一致性、所有读路径访问控制 |
 | `services/storage/` | 文档入口 | 正式服务包 |
+| `services/adapters/` | ②：旧 Ear Evidence → 原始数据的转换、导入规则、内存试运行（[实现说明](../../services/adapters/ai-docs/implementation.md)） | 真实落库、旧 Ear 的列录音接口、GPS 采样密度 |
 | `deploy/compose.yaml`、`tests/e2e/` | 空部署服务和E2E骨架 | 部署或插件端到端完成 |
 
 先复用正确的基础行为，不从零定义另一套category/ULID/事件命名。UUIDv7、data_type/payload、system根源、两类事件和单写者等保持既有公共约定。
