@@ -34,6 +34,8 @@
     "artifact": { "kind": "semantic", "writer": "extraction", "description": "md 产物" },
     "action_suggestion": { "kind": "semantic", "writer": "extraction", "description": "外部动作建议" },
     "rule": { "kind": "rule", "writer": "extraction", "description": "提取规则（含只改这一次的提取）" },
+    "attribution_completion": { "kind": "system_record", "writer": "attribution", "reevaluation_result": true },
+    "extraction_completion": { "kind": "system_record", "writer": "extraction", "reevaluation_result": true },
     "extraction_run": { "kind": "system_record", "writer": "extraction", "description": "提取记录" },
     "propagation_record": { "kind": "system_record", "writer": "dependency", "description": "传播记录" }
   },

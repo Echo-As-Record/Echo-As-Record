@@ -4,6 +4,7 @@
 接口说明见 services/storage/ai-docs/interface.md。
 """
 
+from ear_storage_client.completion import reevaluation_result
 from ear_storage_client.context import Context
 from ear_storage_client.errors import (
     ConflictError,
@@ -17,6 +18,7 @@ from ear_storage_client.ops import (
     AssertTypeRevision,
     Create,
     DependencyInput,
+    FinishReevaluation,
     MarkProcessed,
     PublishReevaluation,
     PutSystemRecord,
@@ -76,6 +78,7 @@ __all__ = [
     "DependencyInput",
     "DependencySet",
     "EventHandler",
+    "FinishReevaluation",
     "InvalidRequest",
     "MarkProcessed",
     "MemoryBus",
@@ -104,5 +107,6 @@ __all__ = [
     "WriteOp",
     "WriteResult",
     "iter_query",
+    "reevaluation_result",
     "write_with_retry",
 ]

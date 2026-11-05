@@ -11,6 +11,7 @@ from ear_contracts import Event, Registry, is_id, new_id, utcnow
 from ear_storage_client import (
     AssertTypeRevision,
     Context,
+    FinishReevaluation,
     InvalidRequest,
     RegisterDependencies,
     WriteOp,
@@ -219,6 +220,9 @@ class PostgresClient(PostgresReader):
             )[0]
         required = set()
         for op in ops:
+            if isinstance(op, FinishReevaluation):
+                required.add(op.result.target_type)
+                required.update(c.data_type for c in op.result.extra_causes)
             for attr in ("data_type", "dependent_type", "target_type"):
                 value = getattr(op, attr, None)
                 if value:

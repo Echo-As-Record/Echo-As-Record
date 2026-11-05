@@ -28,6 +28,7 @@ from ear_contracts import (
     DependencyRecord,
     Event,
     Record,
+    ReevaluationResult,
     Registry,
     SemanticRecord,
     SystemRecord,
@@ -36,6 +37,7 @@ from ear_contracts import (
     utcnow,
 )
 
+from ear_storage_client.completion import _indexed_result
 from ear_storage_client.context import Context
 from ear_storage_client.engine import (
     Abort as _Abort,
@@ -100,6 +102,21 @@ class _StateReader:
             if record is not None:
                 found[id] = _copy(record)
         return found
+
+    def get_reevaluation_result(self, request_event_id: str) -> ReevaluationResult | None:
+        dtype = self._s.completions.get(request_event_id)
+        if dtype is None:
+            return None
+        result = _indexed_result(
+            self._registry, request_event_id, dtype, self._s.system.get(request_event_id)
+        )
+        request = self._s.requests.get(request_event_id)
+        if request is None or (result.target_type, result.target_id) != (
+            request.target_type,
+            request.target_id,
+        ):
+            raise InvalidRequest("invalid completion request metadata")
+        return result
 
     def get_system_record(self, id: str) -> SystemRecord | None:
         record = self._s.system.get(id)
@@ -508,6 +525,9 @@ class MemoryClient:
 
     def count(self, query: Query) -> int:
         return self._reader().count(query)
+
+    def get_reevaluation_result(self, request_event_id: str) -> ReevaluationResult | None:
+        return self._reader().get_reevaluation_result(request_event_id)
 
     def get_system_record(self, id: str) -> SystemRecord | None:
         return self._reader().get_system_record(id)

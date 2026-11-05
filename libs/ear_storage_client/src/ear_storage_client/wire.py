@@ -15,6 +15,7 @@ from ear_contracts import (
     Event,
     NewRawRecord,
     Record,
+    ReevaluationResult,
     SemanticRecord,
     SystemRecord,
     format_utc,
@@ -28,6 +29,7 @@ from ear_storage_client import (
     Context,
     Create,
     DependencyInput,
+    FinishReevaluation,
     InvalidRequest,
     MarkProcessed,
     PublishReevaluation,
@@ -49,6 +51,7 @@ OP_ADAPTERS = {
     for cls in (
         AppendRaw,
         AssertTypeRevision,
+        FinishReevaluation,
         Create,
         Update,
         Supersede,
@@ -84,6 +87,7 @@ def encode_request(ops: Sequence[WriteOp], context: Context) -> str:
             if name not in OP_ADAPTERS or type(op) not in (
                 AppendRaw,
                 AssertTypeRevision,
+                FinishReevaluation,
                 Create,
                 Update,
                 Supersede,
@@ -135,6 +139,13 @@ def decode_request(text: str) -> tuple[tuple[WriteOp, ...], Context]:
                 # Payload values remain Any: this does not coerce 1 / 1.0 / True.
                 op = AppendRaw(
                     NewRawRecord.model_validate_json(canonical_json(item["body"]["record"]))
+                )
+            elif item["op"] == "FinishReevaluation":
+                # UtcDatetime's before-validator needs contract JSON date parsing.
+                # Numeric result fields are individually strict; cause versions
+                # are checked in validate_operation before this contract decode.
+                op = FinishReevaluation(
+                    ReevaluationResult.model_validate_json(canonical_json(item["body"]["result"]))
                 )
             else:
                 op = adapter.validate_json(canonical_json(item["body"]), strict=True)
@@ -211,6 +222,7 @@ def validate_operation(name: str, body: dict[str, Any]) -> None:
     classes = (
         AppendRaw,
         AssertTypeRevision,
+        FinishReevaluation,
         Create,
         Update,
         Supersede,
@@ -234,6 +246,14 @@ def validate_operation(name: str, body: dict[str, Any]) -> None:
                 check_keys(dep["ref"], {"data_type", "id", "version"})
             else:
                 check_keys(dep, {"data_type", "id", "version"})
+    elif name == "FinishReevaluation":
+        check_keys(body["result"], set(ReevaluationResult.model_fields))
+        utc_fields(body["result"], ("completed_at",))
+        for cause in body["result"].get("extra_causes", []):
+            for key in ("old_version", "new_version"):
+                value = cause.get(key)
+                if not (key == "old_version" and value is None) and type(value) is not int:
+                    raise InvalidRequest("cause versions must be integers")
     elif name == "PublishReevaluation":
         from ear_contracts import Cause
 
@@ -251,6 +271,7 @@ class ReadMethod(StrEnum):
     HISTORY = "history"
     GET_MANY = "get_many"
     GET_SYSTEM = "get_system_record"
+    GET_REEVALUATION_RESULT = "get_reevaluation_result"
     SYSTEM_HISTORY = "system_history"
     QUERY = "query"
     COUNT = "count"
@@ -271,6 +292,10 @@ class TypeArgs(ClosedModel):
 
 class IdArgs(ClosedModel):
     id: Id
+
+
+class CompletionArgs(ClosedModel):
+    request_event_id: Id
 
 
 class VersionArgs(IdArgs):
@@ -324,6 +349,7 @@ READ_ARGS: dict[str, type[ClosedModel]] = {
     "history": IdArgs,
     "get_many": ManyArgs,
     "get_system_record": IdArgs,
+    "get_reevaluation_result": CompletionArgs,
     "system_history": IdArgs,
     "query": QueryArgs,
     "count": QueryArgs,
@@ -340,6 +366,7 @@ READ_RESULTS: dict[str, Any] = {
     "history": list[SemanticRecord],
     "get_many": dict[str, Record],
     "get_system_record": SystemRecord | None,
+    "get_reevaluation_result": ReevaluationResult | None,
     "system_history": list[SystemRecord],
     "query": Page,
     "count": int,

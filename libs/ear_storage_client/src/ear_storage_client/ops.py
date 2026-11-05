@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Annotated, Any
 
-from ear_contracts import Cause, NewRawRecord, VersionRef, is_id
+from ear_contracts import Cause, NewRawRecord, ReevaluationResult, VersionRef, is_id
 from pydantic import BaseModel, Field
 
 from ear_storage_client.errors import InvalidRequest
@@ -303,8 +303,27 @@ class AssertTypeRevision:
             raise InvalidRequest("expected_revision must be a nonnegative integer")
 
 
+@dataclass(frozen=True, slots=True)
+class FinishReevaluation:
+    """Write one terminal result, ID=request_event_id, with a matching MarkProcessed.
+
+    Validated against the persisted request and the FINAL batch target. Successful
+    active results require same-batch complete dependencies even if the type's
+    requires_dependencies flag is false. No ordinary Put may write completion types.
+    """
+
+    result: ReevaluationResult
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.result, ReevaluationResult):
+            raise InvalidRequest("result must be ReevaluationResult")
+        # Frozen dataclasses/models do not recursively freeze nested Cause extras.
+        object.__setattr__(self, "result", self.result.model_copy(deep=True))
+
+
 WriteOp = (
-    AssertTypeRevision
+    FinishReevaluation
+    | AssertTypeRevision
     | AppendRaw
     | Create
     | Update

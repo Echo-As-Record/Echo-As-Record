@@ -19,11 +19,12 @@ class PluginTypeInput(BaseModel):
     kind: DataKind
     requires_dependencies: StrictBool = False
     supports_reevaluation: StrictBool = False
+    reevaluation_result: StrictBool = False
     unique_fields: tuple[Name, ...] = ()
     exclusive_members: tuple[Name, ...] = ()
     time_from: Name | None = None
 
-    def spec(self, module: str) -> DataTypeSpec:
+    def spec(self, module: str, *, reevaluable: bool = False) -> DataTypeSpec:
         return DataTypeSpec(
             self.name,
             self.kind,
@@ -33,6 +34,8 @@ class PluginTypeInput(BaseModel):
             time_from=self.time_from,
             requires_dependencies=self.requires_dependencies,
             supports_reevaluation=self.supports_reevaluation,
+            reevaluation_result=self.reevaluation_result
+            or (reevaluable and self.name == module + "_completion"),
         )
 
 
@@ -68,10 +71,16 @@ class ManagementInput(BaseModel):
 
     def payload(self):
         # Preserve pre-retry schema6 request fingerprints, including nested nulls.
-        return self.model_dump(
+        data = self.model_dump(
             mode="json",
             exclude={"target_feedback_id"} if self.target_feedback_id is None else set(),
         )
+
+        # Preserve old feedback fingerprints when the additive capability is absent/false.
+        for item in data["types"]:
+            if not item["reevaluation_result"]:
+                item.pop("reevaluation_result")
+        return data
 
     @model_validator(mode="after")
     def validate_declaration(self) -> Self:
@@ -85,7 +94,7 @@ class ManagementInput(BaseModel):
             for item in self.types:
                 if not item.name.startswith(self.module + "_"):
                     raise ValueError("module namespace required")
-                item.spec(self.module)
+                item.spec(self.module, reevaluable=any(t.supports_reevaluation for t in self.types))
             if any(t.supports_reevaluation for t in self.types) and not any(
                 t.name == self.module + "_completion" and t.kind == "system_record"
                 for t in self.types

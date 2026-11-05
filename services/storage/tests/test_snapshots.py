@@ -272,7 +272,7 @@ def test_foreign_same_module_expiry_descriptor_release_and_bounded_sweep(env):
         "byte_count",
     }
     assert descriptor["expires_at"].endswith("Z")
-    assert descriptor["item_count"] == 2  # Registry scope plus collection revision, even empty.
+    assert descriptor["item_count"] == 3  # Registry, type revision and completion-index marker.
     for sid in (lease.snapshot_id, new_id(), "malformed"):
         for fn in (service.read_snapshot, service.release_snapshot):
             with pytest.raises(SnapshotUnavailable, match=r"^snapshot unavailable$"):
@@ -338,7 +338,7 @@ def test_history_limit_not_only_current_rows_and_canonical_items(env):
             (lease.snapshot_id,),
         ).fetchall()
         assert all(text == canonical_json(json.loads(text)) for (text,) in texts)
-    assert lease.item_count == 14  # Twelve versions, registry scope and collection revision.
+    assert lease.item_count == 15  # Twelve versions plus three snapshot metadata items.
     assert len(service.read_snapshot(issued.token, lease.snapshot_id).history(id)) == 12
 
 
@@ -486,9 +486,9 @@ def test_active_lease_limit_is_atomic_across_clients_and_principal_scoped(env):
             except ProjectionLimit:
                 outcomes.append(None)
     assert sum(result is None for result in outcomes) == 1
-    assert counts(dsn) == (1, 0)
+    assert counts(dsn) == (1, 1)  # One completion-index marker per empty lease.
     service.create_snapshot(b.token)
-    assert counts(dsn) == (2, 0)
+    assert counts(dsn) == (2, 2)
 
 
 def test_late_creation_failure_rolls_back_inserted_lease_and_items(env, monkeypatch):
@@ -510,7 +510,7 @@ def test_late_creation_failure_rolls_back_inserted_lease_and_items(env, monkeypa
     monkeypatch.setattr(snapshots, "validate_lease", expire_before_return)
     with pytest.raises(SnapshotUnavailable):
         service.create_snapshot(issued.token)
-    assert observed == [(2,)]  # Registry and counter inserted before the late failure.
+    assert observed == [(3,)]  # Registry, counter and completion-index marker before failure.
     assert counts(dsn) == (0, 0)
 
 

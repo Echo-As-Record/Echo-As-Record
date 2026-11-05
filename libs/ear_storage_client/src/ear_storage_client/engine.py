@@ -20,6 +20,7 @@ from ear_contracts import (
     RawRecord,
     Record,
     ReevaluationRequested,
+    ReevaluationResult,
     Registry,
     SemanticRecord,
     SystemRecord,
@@ -36,6 +37,7 @@ from ear_storage_client.ops import (
     AssertTypeRevision,
     Create,
     DependencyInput,
+    FinishReevaluation,
     MarkProcessed,
     PublishReevaluation,
     PutSystemRecord,
@@ -95,6 +97,8 @@ class State:
     prior: dict[tuple[str, int], Record] = field(default_factory=dict)
     occupied: set[str] = field(default_factory=set)
     type_revisions: dict[str, int] = field(default_factory=dict)
+    requests: dict[str, ReevaluationRequested] = field(default_factory=dict)
+    completions: dict[str, str] = field(default_factory=dict)
 
     def copy(self) -> State:
         return State(
@@ -110,6 +114,8 @@ class State:
             dict(self.prior),
             set(self.occupied),
             dict(self.type_revisions),
+            {key: value.model_copy(deep=True) for key, value in self.requests.items()},
+            dict(self.completions),
         )
 
     def current(self, id: str) -> Record | None:
@@ -189,6 +195,9 @@ class Transaction:
         self.recomputed: dict[tuple[str, int], int] = {}
         self.registered: dict[tuple[str, int], int] = {}
         self.index = 0
+        self.initial_versions = {id: vs[-1].version for id, vs in state.versions.items()}
+        self.initial_requests = dict(state.requests)
+        self.finishes: list[tuple[int, ReevaluationResult]] = []
 
     # -- 工具 --
 
@@ -338,17 +347,41 @@ class Transaction:
     # -- 操作 --
 
     def run(self, ops: Sequence[WriteOp]) -> None:
+        # Resolve persisted request metadata and authorize ALL its inputs before
+        # any business conflict or completion validation. Same-batch Publish is not
+        # a persisted request and cannot be finished.
+        inputs: set[str] = set()
+        for op in ops:
+            if isinstance(op, FinishReevaluation):
+                result = op.result
+                inputs.add(result.target_type)
+                inputs.update(c.data_type for c in result.extra_causes)
+                request = self.initial_requests.get(result.request_event_id)
+                if request is not None:
+                    inputs.update((request.target_type, request.cause.data_type))
+        if self.authorize_inputs is not None:
+            self.authorize_inputs(frozenset(inputs))
+        self.used_input_types |= inputs
+        # Ownership must precede conflicts too: an old marker or guard cannot
+        # turn another executor's request into an apparently processed result.
+        for op in ops:
+            if isinstance(op, FinishReevaluation):
+                self.require_writer(self.spec(op.result.target_type))
+                request = self.initial_requests.get(op.result.request_event_id)
+                if request is not None:
+                    self.require_writer(self.spec(request.target_type))
         # Authorize every guard before ANY conflict (including already_processed).
         guards = [(index, op) for index, op in enumerate(ops) if isinstance(op, AssertTypeRevision)]
-        inputs = frozenset(op.data_type for _, op in guards)
+        guard_inputs = frozenset(op.data_type for _, op in guards)
         if self.authorize_inputs is not None:
-            self.authorize_inputs(inputs)
-        self.used_input_types |= inputs
+            self.authorize_inputs(guard_inputs)
+        self.used_input_types |= guard_inputs
         for self.index, guard in guards:
             self.spec(guard.data_type)
             self.check_type_revision(guard)
         handlers: dict[type, Callable[[Any], None]] = {
             AssertTypeRevision: self.assert_type_revision,
+            FinishReevaluation: self.finish,
             AppendRaw: self.append_raw,
             Create: self.create,
             Update: self.update,
@@ -377,6 +410,7 @@ class Transaction:
                 self.recomputed[(op.id, version)] = self.index
         for self.index, guard in guards:
             self.check_type_revision(guard)
+        self.check_completions(ops)
         self.check_constraints()
         self.check_dependencies()
 
@@ -649,6 +683,13 @@ class Transaction:
 
     def put_system(self, op: PutSystemRecord) -> None:
         spec = self.spec(op.data_type)
+        self.require_writer(spec)
+        if spec.reevaluation_result:
+            self.invalid("completion records require FinishReevaluation")
+        self._put_system(op)
+
+    def _put_system(self, op: PutSystemRecord) -> None:
+        spec = self.spec(op.data_type)
         if spec.kind != "system_record":
             self.invalid(f"{op.data_type} 不是系统记录，不能用 PutSystemRecord")
         self.require_writer(spec)
@@ -755,7 +796,104 @@ class Transaction:
             depth=self.context.depth,
         )
         self.s.published[event_id] = None
+        self.s.requests[event_id] = event.model_copy(deep=True)
         self.result("written", op.target_type, op.target_id, None, None, event)
+
+    def finish(self, op: FinishReevaluation) -> None:
+        result = _build(ReevaluationResult, **op.result.model_dump())
+        if result.model_extra:
+            self.invalid("unknown completion write fields")
+        request = self.initial_requests.get(result.request_event_id)
+        if request is None:
+            self.invalid("persisted reevaluation request required")
+        spec = self.spec(request.target_type)
+        self.require_writer(spec)
+        if not spec.supports_reevaluation or not spec.versioned:
+            self.invalid("target does not support reevaluation")
+        dtype = self.module + "_completion"
+        completion = self.spec(dtype)
+        self.require_writer(completion)
+        if not completion.reevaluation_result:
+            self.invalid("completion type lacks reevaluation_result capability")
+        if (result.target_type, result.target_id) != (request.target_type, request.target_id):
+            self.invalid("completion target differs from request")
+        expected = (request.root_feedback_id, request.depth)
+        if (result.root_feedback_id, result.depth) != expected or (
+            self.context.root_feedback_id,
+            self.context.depth,
+        ) != expected:
+            self.invalid("completion must retain request context")
+        if result.completed_at < request.occurred_at:
+            self.invalid("completion predates request")
+        if result.request_event_id in self.s.completions:
+            self.conflict(
+                "already_processed", "request already terminal", id=result.request_event_id
+            )
+        self._put_system(
+            PutSystemRecord(dtype, result.request_event_id, result.model_dump(mode="json"))
+        )
+        self.s.completions[result.request_event_id] = dtype
+        self.system_writes.append(self.s.system[result.request_event_id])
+        self.s.type_revisions[dtype] = self.s.type_revisions.get(dtype, 0) + 1
+        self.finishes.append((self.index, result))
+
+    def check_completions(self, ops: Sequence[WriteOp]) -> None:
+        for index, result in self.finishes:
+            self.index = index
+            if not any(
+                isinstance(op, MarkProcessed) and op.event_id == result.request_event_id
+                for op in ops
+            ):
+                self.invalid("completion requires same-batch MarkProcessed")
+            target = self.s.current(result.target_id)
+            before = self.initial_versions.get(result.target_id)
+            after = target.version if isinstance(target, SemanticRecord) else None
+            if result.before_version != before:
+                self.conflict(
+                    "version_mismatch",
+                    "target changed; read again and recompute",
+                    data_type=result.target_type,
+                    id=result.target_id,
+                    expected_version=result.before_version,
+                    current_version=before,
+                )
+            if result.after_version != after:
+                self.invalid("completion after_version must match final target")
+            if target is not None and target.data_type != result.target_type:
+                self.invalid("completion target type mismatch")
+            terminal = isinstance(target, SemanticRecord) and target.superseded
+            active = isinstance(target, SemanticRecord) and not target.superseded
+            if result.outcome == "unchanged" and not active:
+                self.invalid("unchanged requires current active target")
+            # Owner decides retry exhaustion; storage never converts a transient
+            # exception to failure or drives model retries. Failed batches have no
+            # business output (even unrelated output cannot masquerade as failure).
+            if result.outcome == "failed" and any(
+                isinstance(op, AppendRaw | Create | Update | Supersede | RegisterDependencies)
+                for op in ops
+            ):
+                self.invalid("failed completion must not include business output")
+            if result.outcome == "not_applicable":
+                if result.disposition == "terminated":
+                    if not terminal:
+                        self.invalid("terminated requires a terminal target version")
+                elif before != after or (result.disposition == "kept_protected" and not active):
+                    self.invalid("retained disposition requires unchanged actual target")
+                # unavailable/kept_protected are explicitly NOT fresh success. No
+                # automatic status write or forced refresh of stale protected inputs.
+            if (
+                result.outcome in {"changed", "unchanged"}
+                and not terminal
+                and (not active or (result.target_id, after) not in self.registered)
+            ):
+                self.invalid("successful active completion requires same-batch dependencies")
+            for cause in result.extra_causes:
+                for version in (cause.old_version, cause.new_version):
+                    if version is None:
+                        continue
+                    record = self.s.version(cause.data_id, version)
+                    if record is None or record.data_type != cause.data_type:
+                        self.invalid("extra cause must reference an actual typed version")
 
     def mark_processed(self, op: MarkProcessed) -> None:
         if op.consumer != self.module and not op.consumer.startswith(self.module + "."):

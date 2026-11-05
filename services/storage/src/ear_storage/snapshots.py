@@ -20,6 +20,7 @@ from ear_contracts import (
     DataTypeSpec,
     DependencyRecord,
     RawRecord,
+    ReevaluationResult,
     Registry,
     SemanticRecord,
     SystemRecord,
@@ -27,6 +28,7 @@ from ear_contracts import (
     is_id,
 )
 from ear_storage_client import InvalidRequest, PermissionDenied
+from ear_storage_client.completion import _indexed_result
 from ear_storage_client.engine import State, canonical_json
 from ear_storage_client.memory import _StateReader
 from ear_storage_client.queries import DependencySet
@@ -115,6 +117,16 @@ def _sources(conn: psycopg.Connection, principal: Principal):
             sql.SQL(
                 "SELECT 'type_revision',data_type,data_type,revision::text "
                 "FROM storage.type_revisions WHERE data_type=ANY(%s)"
+            ),
+            [reads],
+        )
+    if conn.execute("SELECT to_regclass('storage.request_completions')").fetchone() != (None,):
+        # A constant marker distinguishes an empty captured index from a legacy lease.
+        yield (sql.SQL("SELECT 'completion_index','v1','','1'"), [])
+        yield (
+            sql.SQL(
+                "SELECT 'completion',event_id,result_type,to_json(result_type)::text "
+                "FROM storage.request_completions WHERE result_type=ANY(%s)"
             ),
             [reads],
         )
@@ -254,8 +266,10 @@ class MaterializedReader(_StateReader):
         systems: dict[str, list[SystemRecord]],
         denied: set[str],
         blocked: set[tuple[str, int]],
+        completion_index: bool,
     ) -> None:
         super().__init__(state, registry)
+        self.completion_index = completion_index
         self.principal, self.systems, self.denied, self.blocked = (
             principal,
             systems,
@@ -271,6 +285,16 @@ class MaterializedReader(_StateReader):
             # A v8 lease has no revision metadata; never fabricate zero.
             raise SnapshotUnavailable("snapshot lacks collection revisions; create a new snapshot")
         return self._s.type_revisions[data_type]
+
+    def get_reevaluation_result(self, request_event_id: str) -> ReevaluationResult | None:
+        if not self.completion_index:
+            raise SnapshotUnavailable("snapshot lacks completion index; create a new snapshot")
+        dtype = self._s.completions.get(request_event_id)
+        if dtype is None:
+            return None
+        return _indexed_result(
+            self._registry, request_event_id, dtype, self._s.system.get(request_event_id)
+        )
 
     def system_history(self, id: str) -> list[SystemRecord]:
         return [r.model_copy(deep=True) for r in self.systems.get(id, [])]
@@ -318,6 +342,7 @@ def load_reader(
     if count > limits.max_rows or size > limits.max_bytes:
         raise ProjectionLimit("snapshot row/byte limit exceeded")
     state = State()
+    completion_index = False
     specs: dict[str, DataTypeSpec] = {}
     core: set[str] = set()
     systems: dict[str, list[SystemRecord]] = {}
@@ -332,10 +357,18 @@ def load_reader(
         (sid,),
     ):
         if dtype and dtype not in principal.read_types:
-            if kind in {"raw", "version", "system"}:
+            if kind in {"raw", "version", "system", "completion"}:
                 denied.add(key.split("/")[0])
             continue
-        if kind == "registry":
+        if kind == "completion_index":
+            if key != "v1" or json.loads(text) != 1:
+                raise SnapshotUnavailable("invalid completion index metadata")
+            completion_index = True
+        elif kind == "completion":
+            if json.loads(text) != dtype:
+                raise SnapshotUnavailable("invalid completion index metadata")
+            state.completions[key] = dtype
+        elif kind == "registry":
             spec_text, is_core = json.loads(text)
             specs[dtype] = DataTypeSpec.from_json(dtype, json.loads(spec_text))
             if is_core:
@@ -385,7 +418,13 @@ def load_reader(
             datetime.fromisoformat(when),
         )
     return MaterializedReader(
-        state, Registry(specs, {}, frozenset(core)), principal, systems, denied, blocked
+        state,
+        Registry(specs, {}, frozenset(core)),
+        principal,
+        systems,
+        denied,
+        blocked,
+        completion_index,
     )
 
 

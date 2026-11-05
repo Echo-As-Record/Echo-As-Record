@@ -16,6 +16,7 @@ import httpx
 from ear_contracts import (
     DependencyRecord,
     Record,
+    ReevaluationResult,
     Registry,
     SemanticRecord,
     SystemRecord,
@@ -85,6 +86,9 @@ class RemoteReader:
 
     def get_many(self, ids: Sequence[str]) -> dict[str, Record]:
         return self._read("get_many", ids)
+
+    def get_reevaluation_result(self, request_event_id: str) -> ReevaluationResult | None:
+        return self._read("get_reevaluation_result", request_event_id)
 
     def get_system_record(self, id: str) -> SystemRecord | None:
         return self._read("get_system_record", id)

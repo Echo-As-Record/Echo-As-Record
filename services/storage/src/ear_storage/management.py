@@ -604,7 +604,15 @@ class ManagementProcessor:
             for item in body.types:
                 conn.execute(
                     "INSERT INTO storage.registry VALUES (%s,%s,false)",
-                    (item.name, canonical_json(item.spec(body.module).to_json())),
+                    (
+                        item.name,
+                        canonical_json(
+                            item.spec(
+                                body.module,
+                                reevaluable=any(t.supports_reevaluation for t in body.types),
+                            ).to_json()
+                        ),
+                    ),
                 )
                 if has_type_revisions(conn):
                     conn.execute(

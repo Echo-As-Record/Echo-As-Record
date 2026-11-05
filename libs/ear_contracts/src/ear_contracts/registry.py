@@ -50,6 +50,7 @@ class DataTypeSpec:
     - requires_dependencies：Create、Update（含 unchanged）须同批完整登记结果版本的依赖，
       可为显式空集。缺省 false 只为兼容旧登记表，不表示核心类型应永久为 false。
     - supports_reevaluation：writer 接收「请求重新判断」并重判这类数据。
+    - reevaluation_result：显式受保护的单写完成记录；名称后缀本身不授予能力。
     """
 
     name: str
@@ -61,8 +62,15 @@ class DataTypeSpec:
     description: str = ""
     requires_dependencies: bool = False
     supports_reevaluation: bool = False
+    reevaluation_result: bool = False
 
     def __post_init__(self) -> None:
+        if not isinstance(self.reevaluation_result, bool):
+            raise ValueError("reevaluation_result must be bool")
+        if self.reevaluation_result and (
+            self.name != self.writer + "_completion" or self.kind != "system_record"
+        ):
+            raise ValueError("completion must be an executor-owned system record")
         for capability in CAPABILITIES:
             value = getattr(self, capability)
             if not isinstance(value, bool):
@@ -94,6 +102,7 @@ class DataTypeSpec:
             description=data.get("description", ""),
             requires_dependencies=_json_bool(data, "requires_dependencies"),
             supports_reevaluation=_json_bool(data, "supports_reevaluation"),
+            reevaluation_result=_json_bool(data, "reevaluation_result"),
         )
 
     def to_json(self) -> dict[str, Any]:
@@ -111,6 +120,8 @@ class DataTypeSpec:
             data["requires_dependencies"] = True
         if self.supports_reevaluation:
             data["supports_reevaluation"] = True
+        if self.reevaluation_result:
+            data["reevaluation_result"] = True
         return data
 
 
@@ -264,6 +275,15 @@ _BUILTIN = Registry(
                     "rule", "rule", "extraction", description="提取规则（含只改这一次的提取）"
                 ),
                 DataTypeSpec(
+                    "attribution_completion",
+                    "system_record",
+                    "attribution",
+                    reevaluation_result=True,
+                ),
+                DataTypeSpec(
+                    "extraction_completion", "system_record", "extraction", reevaluation_result=True
+                ),
+                DataTypeSpec(
                     "extraction_run", "system_record", "extraction", description="提取记录"
                 ),
                 DataTypeSpec(
@@ -284,5 +304,6 @@ DEFAULT_REGISTRY = Registry(
     _BUILTIN.event_publishers,
     core_types=frozenset(_BUILTIN.data_types),
 )
-"""内置核心配置：全部类型都是核心类型。能力项全部保持缺省 false——候选类型
+"""内置核心配置：全部类型都是核心类型。
+业务重判/依赖能力保持缺省 false；完成记录能力显式启用。候选类型
 （attribution、artifact，以及尚未登记的 rule_selection）按类型取得 ③④ 实际输入后再启用。"""

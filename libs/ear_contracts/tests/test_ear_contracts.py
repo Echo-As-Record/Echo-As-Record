@@ -18,6 +18,7 @@ from ear_contracts import (
     DependencyRecord,
     RawRecord,
     ReevaluationRequested,
+    ReevaluationResult,
     Registry,
     SemanticRecord,
     SystemRecord,
@@ -38,6 +39,7 @@ MODELS: dict[str, type[BaseModel]] = {
     "dependency-record": DependencyRecord,
     "data-changed": DataChanged,
     "reevaluation-requested": ReevaluationRequested,
+    "reevaluation-result": ReevaluationResult,
 }
 EXAMPLES = sorted(
     p for p in CONTRACTS.rglob("examples/*.json") if p.name.split(".", 1)[0] in MODELS

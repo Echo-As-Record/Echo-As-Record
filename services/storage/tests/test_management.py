@@ -282,7 +282,11 @@ def test_retry_operation_is_closed_and_old_payload_compatible():
     original = declaration()
     old = original.model_dump(mode="json")
     old.pop("target_feedback_id")
+    # Reconstruct the legacy declaration before the additive completion capability.
+    for item in old["types"]:
+        item.pop("reevaluation_result")
     assert original.payload() == old
+    assert ManagementInput.model_validate(old).payload() == old
     assert old["types"][0]["time_from"] is None
     target = new_id()
     retry = command("retry_task", target_feedback_id=target)

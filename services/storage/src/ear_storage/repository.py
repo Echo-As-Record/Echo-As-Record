@@ -17,6 +17,7 @@ from ear_contracts import (
     DataTypeSpec,
     DependencyRecord,
     RawRecord,
+    ReevaluationRequested,
     Registry,
     SemanticRecord,
     SystemRecord,
@@ -26,6 +27,7 @@ from ear_storage_client import (
     AppendRaw,
     AssertTypeRevision,
     Create,
+    FinishReevaluation,
     MarkProcessed,
     PublishReevaluation,
     PutSystemRecord,
@@ -117,6 +119,11 @@ class Projection:
                 op, AppendRaw | AssertTypeRevision | Create | Update | Supersede | PutSystemRecord
             )
         }
+        needed.update(
+            registry.data_types[op.result.target_type].writer + "_completion"
+            for op in ops
+            if isinstance(op, FinishReevaluation) and op.result.target_type in registry.data_types
+        )
         if has_type_revisions(self.conn):
             s.type_revisions = dict(
                 self.conn.execute(
@@ -179,7 +186,15 @@ class Projection:
         raw_keys = set()
         processed_keys = set()
         published_ids = set()
+        request_ids = set()
         for op in ops:
+            if isinstance(op, FinishReevaluation):
+                request_ids.add(op.result.request_event_id)
+                ids.update((op.result.request_event_id, op.result.target_id))
+                for cause in op.result.extra_causes:
+                    refs.add((cause.data_id, cause.new_version))
+                    if cause.old_version is not None:
+                        refs.add((cause.data_id, cause.old_version))
             for attr in ("id", "dependent_id", "target_id"):
                 value = getattr(op, attr, None)
                 if value is not None:
@@ -228,6 +243,25 @@ class Projection:
                 for r in self.conn.execute(
                     "SELECT event_id FROM storage.published WHERE event_id=ANY(%s)",
                     (sorted(published_ids),),
+                )
+            )
+        if request_ids:
+            for text in self.texts(
+                sql.SQL(
+                    "SELECT event_text AS record_text FROM storage.outbox WHERE event_id=ANY(%s)"
+                ),
+                (sorted(request_ids),),
+                cap=len(request_ids),
+            ):
+                event = json.loads(text)
+                if event.get("event_type") == "reevaluation_requested":
+                    request = ReevaluationRequested.model_validate(event)
+                    s.requests[request.event_id] = request
+            s.completions.update(
+                self.conn.execute(
+                    "SELECT event_id,result_type FROM storage.request_completions "
+                    "WHERE event_id=ANY(%s)",
+                    (sorted(request_ids),),
                 )
             )
         ids.update(id for id, _ in refs)
@@ -349,6 +383,12 @@ def persist(conn: psycopg.Connection, before: State, txn: Transaction, seq: int)
         conn.execute("INSERT INTO storage.processed VALUES (%s,%s,%s)", (consumer, event, seq))
     for event in s.published.keys() - before.published.keys():
         conn.execute("INSERT INTO storage.published VALUES (%s,%s)", (event, seq))
+    for event_id in s.completions.keys() - before.completions.keys():
+        conn.execute(
+            "INSERT INTO storage.request_completions(event_id,result_type,commit_seq) "
+            "VALUES (%s,%s,%s)",
+            (event_id, s.completions[event_id], seq),
+        )
     for ordinal, event in enumerate(txn.events):
         conn.execute(
             "INSERT INTO storage.outbox (commit_seq,ordinal,event_id,event_text) "

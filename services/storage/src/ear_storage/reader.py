@@ -11,11 +11,13 @@ from ear_contracts import (
     DependencyRecord,
     RawRecord,
     Record,
+    ReevaluationResult,
     SemanticRecord,
     SystemRecord,
     VersionRef,
 )
 from ear_storage_client import InvalidRequest, Query
+from ear_storage_client.completion import _indexed_result
 from ear_storage_client.engine import State, canonical_json, stale
 from ear_storage_client.queries import DependencySet, Page, QueryItem, StaleDependency
 from psycopg import sql
@@ -181,6 +183,22 @@ class PostgresReader:
                     (id,),
                 )
             ]
+
+    def get_reevaluation_result(self, request_event_id: str) -> ReevaluationResult | None:
+        with self._connection() as conn:
+            if conn.execute("SELECT to_regclass('storage.request_completions')").fetchone() == (
+                None,
+            ):
+                raise InvalidRequest("authoritative completion reads require schema migration")
+            row = conn.execute(
+                "SELECT result_type FROM storage.request_completions WHERE event_id=%s",
+                (request_event_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            record = get_record(conn, request_event_id, system=True)
+            assert record is None or isinstance(record, SystemRecord)
+            return _indexed_result(registry_from_db(conn), request_event_id, row[0], record)
 
     def get_system_record(self, id: str) -> SystemRecord | None:
         with self._connection() as conn:

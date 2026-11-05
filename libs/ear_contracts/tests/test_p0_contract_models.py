@@ -114,6 +114,10 @@ def test_default_registry_json_unchanged_and_capabilities_default_false() -> Non
         # 候选核心类型（attribution、artifact、rule_selection）待 ③④ 实际输入后按类型启用
         assert not spec.requires_dependencies and not spec.supports_reevaluation
         assert "requires_dependencies" not in spec.to_json()
+        expected_result = spec.name in {"attribution_completion", "extraction_completion"}
+        assert spec.reevaluation_result is expected_result
+        assert DataTypeSpec.from_json(spec.name, spec.to_json()) == spec
+        assert spec.to_json().get("reevaluation_result", False) is expected_result
 
 
 @pytest.mark.parametrize("kind", ["semantic", "rule"])
@@ -137,6 +141,38 @@ def test_explicit_false_is_accepted_and_normalised() -> None:
     assert list(REGISTRY_SCHEMA.iter_errors(registry_doc(data))) == []
     spec = DataTypeSpec.from_json("x", data)
     assert spec.to_json() == {"kind": "raw_record", "writer": "adapter"}
+    for name in ("sample_job_completion", "sample_completion"):
+        legacy = DataTypeSpec.from_json(name, {"kind": "system_record", "writer": "sample"})
+        assert not legacy.reevaluation_result
+        assert (
+            DataTypeSpec.from_json(name, {**legacy.to_json(), "reevaluation_result": False})
+            == legacy
+        )
+        assert "reevaluation_result" not in legacy.to_json()
+    protected = DataTypeSpec(
+        "sample_completion", "system_record", "sample", reevaluation_result=True
+    )
+    assert DataTypeSpec.from_json(protected.name, protected.to_json()) == protected
+    assert not list(REGISTRY_SCHEMA.iter_errors(registry_doc(protected.to_json())))
+    for value in (1, 0, "true", None, []):
+        invalid = {**protected.to_json(), "reevaluation_result": value}
+        assert list(REGISTRY_SCHEMA.iter_errors(registry_doc(invalid)))
+        with pytest.raises(ValueError):
+            DataTypeSpec.from_json(protected.name, invalid)
+    for kind in ("semantic", "rule", "raw_record"):
+        invalid = {**protected.to_json(), "kind": kind}
+        assert list(REGISTRY_SCHEMA.iter_errors(registry_doc(invalid)))
+        with pytest.raises(ValueError):
+            DataTypeSpec.from_json(protected.name, invalid)
+    with pytest.raises(ValueError):
+        DataTypeSpec("sample_job_completion", "system_record", "sample", reevaluation_result=True)
+    with pytest.raises(ValueError):
+        DEFAULT_REGISTRY.extend(
+            DataTypeSpec(
+                "extraction_completion", "system_record", "sample", reevaluation_result=False
+            )
+        )
+    assert DEFAULT_REGISTRY.get("extraction_completion").reevaluation_result
 
 
 @pytest.mark.parametrize("capability", ["requires_dependencies", "supports_reevaluation"])

@@ -20,6 +20,8 @@ import psycopg
 from ear_contracts import (
     DependencyRecord,
     Record,
+    ReevaluationRequested,
+    ReevaluationResult,
     Registry,
     SemanticRecord,
     SystemRecord,
@@ -30,6 +32,7 @@ from ear_storage_client import (
     AppendRaw,
     AssertTypeRevision,
     Context,
+    FinishReevaluation,
     InvalidRequest,
     MarkProcessed,
     PermissionDenied,
@@ -99,6 +102,33 @@ def _write_permissions(
     reads: set[str] = set()
     referenced_ids: list[str] = []
     for op in ops:
+        if isinstance(op, FinishReevaluation):
+            result = op.result
+            spec = registry.data_types.get(result.target_type)
+            if spec is None or spec.writer != principal.module:
+                raise PermissionDenied("access denied")
+            reads.add(result.target_type)
+            reads.update(c.data_type for c in result.extra_causes)
+            referenced_ids.append(result.target_id)
+            referenced_ids.extend(c.data_id for c in result.extra_causes)
+            event = None
+            # Outbox is authoritative; do not validate or reveal persisted request
+            # metadata before current authorization has covered its input types.
+            row = reader._conn.execute(
+                "SELECT event_text FROM storage.outbox WHERE event_id=%s",
+                (result.request_event_id,),
+            ).fetchone()
+            if row is not None:
+                event = EVENT_ADAPTER.validate_json(row[0])
+                if isinstance(event, ReevaluationRequested):
+                    reads.update((event.target_type, event.cause.data_type))
+                    referenced_ids.extend((event.target_id, event.cause.data_id))
+            principal.require_read(reads)
+            if row is not None and isinstance(event, ReevaluationRequested):
+                owner = registry.data_types.get(event.target_type)
+                if owner is None or owner.writer != principal.module:
+                    raise PermissionDenied("access denied")
+            continue
         if isinstance(op, AssertTypeRevision):
             principal.require_read([op.data_type])
             if op.data_type not in registry.data_types:
@@ -194,6 +224,9 @@ class AuthorizedReaderMethods:
     def get_many(self, ids: Sequence[str]) -> dict[str, Record]:
         return self._read("get_many", ids)
 
+    def get_reevaluation_result(self, request_event_id: str) -> ReevaluationResult | None:
+        return self._read("get_reevaluation_result", request_event_id)
+
     def get_system_record(self, id: str) -> SystemRecord | None:
         return self._read("get_system_record", id)
 
@@ -278,7 +311,14 @@ class AuthenticatedClient(AuthorizedReaderMethods):
                     if dtype in principal.read_types
                 }
 
-            if method == "type_revision":
+            if method == "get_reevaluation_result":
+                row = conn.execute(
+                    "SELECT result_type FROM storage.request_completions WHERE event_id=%s",
+                    (args[0],),
+                ).fetchone()
+                if row is None or row[0] not in principal.read_types:
+                    return None
+            elif method == "type_revision":
                 principal.require_read([args[0]])
                 if args[0] not in registry_from_db(conn).data_types:
                     raise PermissionDenied("access denied")

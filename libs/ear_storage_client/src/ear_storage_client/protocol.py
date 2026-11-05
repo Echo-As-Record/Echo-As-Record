@@ -15,6 +15,7 @@ from ear_contracts import (
     DependencyRecord,
     Event,
     Record,
+    ReevaluationResult,
     Registry,
     SemanticRecord,
     SystemRecord,
@@ -60,6 +61,14 @@ class Reader(Protocol):
 
     def count(self, query: Query) -> int:
         """满足条件的数量（忽略 limit 和 cursor）。"""
+        ...
+
+    def get_reevaluation_result(self, request_event_id: str) -> ReevaluationResult | None:
+        """Read only registered Finish results, subject to result-type read permission.
+
+        Snapshots use their captured completion index; legacy snapshots without
+        that index fail explicitly rather than reporting false absence.
+        """
         ...
 
     def get_system_record(self, id: str) -> SystemRecord | None: ...

@@ -12,7 +12,7 @@ from ear_contracts import DEFAULT_REGISTRY, Registry
 from ear_storage_client.engine import canonical_json
 from psycopg import sql
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 WRITER_GATE = 0x45415253544F5245
 
 
@@ -291,6 +291,20 @@ DDL_V9 = (
 )
 
 
+# Explicit v10: one terminal receipt per published request. Result ID equals
+# event ID, which is not a business identity until Finish creates its system row.
+# Registry capabilities are NOT inferred/backfilled by this migration. New result
+# types require explicit trusted bootstrap metadata (reevaluation_result=True).
+# Existing exact-name ordinary types retain Put access and cannot Finish; bootstrap
+# rejects capability changes. Deployment must audit/explicitly migrate such collisions
+# under the writer gate, never silently reclassify historical ordinary records.
+DDL_V10 = (
+    "CREATE TABLE storage.request_completions (event_id text PRIMARY KEY "
+    "REFERENCES storage.published(event_id), result_type text NOT NULL "
+    "REFERENCES storage.registry(name), commit_seq bigint NOT NULL)",
+)
+
+
 # A revision number is not proof of a complete schema. Never repair local old-v5 implicitly.
 _REQUIRED_V5_COLUMNS = {
     "meta": "singleton schema_revision commit_seq",
@@ -372,12 +386,17 @@ def check_schema(conn: psycopg.Connection) -> None:
             ("type_revisions", c) not in present for c in ("data_type", "revision")
         ):
             raise SchemaMismatch("incomplete schema: type_revisions")
+        if SCHEMA_VERSION >= 10 and any(
+            ("request_completions", c) not in present
+            for c in ("event_id", "result_type", "commit_seq")
+        ):
+            raise SchemaMismatch("incomplete schema: request_completions")
         if ("consumer_deliveries", "queue_seq", "a") not in columns:
             raise SchemaMismatch("incomplete schema: consumer_deliveries queue identity")
 
 
 def migrate(dsn: str) -> None:
-    """Explicit atomic v1 through v9 upgrade; retain data and internal replay scopes."""
+    """Explicit atomic v1 through v10 upgrade; retain data and internal replay scopes."""
     with connection(dsn) as conn, writer(conn):
         if one(conn, "SELECT to_regnamespace('storage')")[0] is None:
             for statement in DDL:
@@ -429,6 +448,10 @@ def migrate(dsn: str) -> None:
                         ).format(table(module, name))
                     )
             conn.execute("UPDATE storage.meta SET schema_revision=9 WHERE singleton")
+        if SCHEMA_VERSION >= 10 and revision in range(1, 10):
+            for statement in DDL_V10:
+                conn.execute(statement)
+            conn.execute("UPDATE storage.meta SET schema_revision=10 WHERE singleton")
         check_schema(conn)
 
 
