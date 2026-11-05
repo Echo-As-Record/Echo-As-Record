@@ -433,7 +433,7 @@ def test_cli_serve_explicit_configuration_and_failure_redaction(monkeypatch, cap
     app = object()
     monkeypatch.setenv("EAR_STORAGE_DSN", "password=deployment-secret")
     monkeypatch.setattr("sys.argv", ["ear-storage", "serve", "--port", "8101"])
-    monkeypatch.setattr(http_module, "create_app_from_dsn", lambda dsn: app)
+    monkeypatch.setattr(http_module, "create_app_from_dsn", lambda dsn, **kwargs: app)
     monkeypatch.setattr(uvicorn, "run", lambda actual, **kwargs: seen.append((actual, kwargs)))
     cli.main()
     assert seen[0][0] is app
@@ -441,7 +441,7 @@ def test_cli_serve_explicit_configuration_and_failure_redaction(monkeypatch, cap
     assert seen[0][1]["access_log"] is False
     assert seen[0][1]["limit_concurrency"] == 64
 
-    def failed(dsn):
+    def failed(dsn, **kwargs):
         raise RuntimeError(dsn)
 
     monkeypatch.setattr(http_module, "create_app_from_dsn", failed)

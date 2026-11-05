@@ -63,8 +63,18 @@ class DataTypeSpec:
     requires_dependencies: bool = False
     supports_reevaluation: bool = False
     reevaluation_result: bool = False
+    llm_call_metadata: bool = False
 
     def __post_init__(self) -> None:
+        if not isinstance(self.llm_call_metadata, bool):
+            raise ValueError("llm_call_metadata must be bool")
+        if (self.name == "llm_call" or self.llm_call_metadata) and (
+            self.name,
+            self.kind,
+            self.writer,
+            self.llm_call_metadata,
+        ) != ("llm_call", "system_record", "llm_gateway", True):
+            raise ValueError("llm_call is reserved for gateway metadata")
         if not isinstance(self.reevaluation_result, bool):
             raise ValueError("reevaluation_result must be bool")
         if self.reevaluation_result and (
@@ -103,6 +113,7 @@ class DataTypeSpec:
             requires_dependencies=_json_bool(data, "requires_dependencies"),
             supports_reevaluation=_json_bool(data, "supports_reevaluation"),
             reevaluation_result=_json_bool(data, "reevaluation_result"),
+            llm_call_metadata=_json_bool(data, "llm_call_metadata"),
         )
 
     def to_json(self) -> dict[str, Any]:
@@ -122,6 +133,8 @@ class DataTypeSpec:
             data["supports_reevaluation"] = True
         if self.reevaluation_result:
             data["reevaluation_result"] = True
+        if self.llm_call_metadata:
+            data["llm_call_metadata"] = True
         return data
 
 
@@ -240,6 +253,7 @@ _BUILTIN = Registry(
         {
             spec.name: spec
             for spec in (
+                DataTypeSpec("llm_call", "system_record", "llm_gateway", llm_call_metadata=True),
                 _raw("audio_ref", "adapter", "录音引用"),
                 _raw("transcript_segment", "adapter", "转写段"),
                 _raw("local_speaker", "adapter", "局部说话人"),

@@ -13,6 +13,7 @@ from ear_storage_client import (
     Context,
     FinishReevaluation,
     InvalidRequest,
+    ModelBodyPolicy,
     RegisterDependencies,
     WriteOp,
     WriteResult,
@@ -41,9 +42,16 @@ from ear_storage.schema import (
 
 
 class PostgresStorage(PostgresReader):
-    def __init__(self, dsn: str, *, limits: Limits | None = None) -> None:
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        limits: Limits | None = None,
+        model_body_policy: ModelBodyPolicy | None = None,
+    ) -> None:
         super().__init__(dsn)
         self.limits = limits or Limits()
+        self.model_body_policy = model_body_policy or ModelBodyPolicy()
         with connection(dsn) as conn:
             check_schema(conn)
             if not conn.execute("SELECT 1 FROM storage.registry LIMIT 1").fetchone():
@@ -165,6 +173,7 @@ class PostgresClient(PostgresReader):
             utcnow(),
             new_id(),
             authorize_inputs=authorize_replay,
+            model_body_policy=self._storage.model_body_policy,
         )
         try:
             txn.run(ops)

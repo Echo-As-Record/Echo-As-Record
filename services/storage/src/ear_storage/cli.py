@@ -6,9 +6,35 @@ import argparse
 import asyncio
 import json
 import os
+import re
+from collections.abc import Mapping
 from dataclasses import asdict
 
+from ear_storage_client import ModelBodyPolicy
+
 from ear_storage.schema import bootstrap, migrate
+
+
+def model_body_policy_from_env(env: Mapping[str, str]) -> ModelBodyPolicy:
+    """Explicit deployment config only; lowercase true/false, decimal positive bytes.
+
+    Unset callers means all asserted callers; empty means none; otherwise a strict
+    comma-separated tuple of module names. No .env, request or header discovery.
+    """
+    enabled = env.get("EAR_MODEL_BODY_ENABLED", "false")
+    if enabled not in {"true", "false"}:
+        raise ValueError("EAR_MODEL_BODY_ENABLED must be true or false")
+    size = env.get("EAR_MODEL_BODY_MAX_BYTES", "65536")
+    if re.fullmatch(r"[1-9][0-9]*", size) is None:
+        raise ValueError("EAR_MODEL_BODY_MAX_BYTES must be a positive decimal integer")
+    callers = env.get("EAR_MODEL_BODY_ALLOWED_CALLERS")
+    return ModelBodyPolicy(
+        enabled=enabled == "true",
+        max_bytes=int(size),
+        allowed_callers=None
+        if callers is None
+        else (() if callers == "" else tuple(callers.split(","))),
+    )
 
 
 def main() -> None:
@@ -94,9 +120,11 @@ def main() -> None:
             )
             uvicorn.run(
                 (
-                    create_app_from_dsn(dsn)
-                    if relay_config is None
-                    else create_app_from_dsn(dsn, relay_config=relay_config)
+                    create_app_from_dsn(
+                        dsn,
+                        relay_config=relay_config,
+                        model_body_policy=model_body_policy_from_env(os.environ),
+                    )
                 ),
                 host=args.host,
                 port=args.port,

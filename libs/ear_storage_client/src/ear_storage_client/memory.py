@@ -56,6 +56,7 @@ from ear_storage_client.engine import (
     stale as _stale,
 )
 from ear_storage_client.errors import InvalidRequest, PermissionDenied
+from ear_storage_client.model_body import ModelBodyPolicy
 from ear_storage_client.ops import (
     WriteOp,
 )
@@ -404,7 +405,9 @@ class MemoryStorage:
         clock: Callable[[], datetime] = utcnow,
         max_attempts: int = 5,
         duplicate_delivery: bool = False,
+        model_body_policy: ModelBodyPolicy | None = None,
     ) -> None:
+        self.model_body_policy = model_body_policy or ModelBodyPolicy()
         self.registry = registry
         self.bus = MemoryBus(max_attempts=max_attempts, duplicate_delivery=duplicate_delivery)
         self._clock = clock
@@ -439,7 +442,15 @@ class MemoryStorage:
         with self._lock:
             now = self._clock()
             batch_id = new_id()
-            txn = _Txn(self._state.copy(), self.registry, module, context, now, batch_id)
+            txn = _Txn(
+                self._state.copy(),
+                self.registry,
+                module,
+                context,
+                now,
+                batch_id,
+                model_body_policy=self.model_body_policy,
+            )
             try:
                 txn.run(ops)
             except _Abort as abort:

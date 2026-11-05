@@ -17,6 +17,7 @@ from ear_contracts.base import (
     new_id,
     utcnow,
 )
+from ear_contracts.calls import LLMCallRecord, LLMUsage
 from ear_contracts.completion import ReevaluationResult
 from ear_contracts.events import (
     Cause,
@@ -65,6 +66,8 @@ __all__ = [
     "FieldName",
     "FileRef",
     "Id",
+    "LLMCallRecord",
+    "LLMUsage",
     "ModuleName",
     "NewRawRecord",
     "Operation",

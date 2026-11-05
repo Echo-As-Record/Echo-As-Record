@@ -16,6 +16,7 @@ from ear_contracts import (
     DEFAULT_REGISTRY,
     DataChanged,
     DependencyRecord,
+    LLMCallRecord,
     RawRecord,
     ReevaluationRequested,
     ReevaluationResult,
@@ -33,6 +34,7 @@ from pydantic import BaseModel, ValidationError
 
 CONTRACTS = Path(__file__).resolve().parents[3] / "contracts"
 MODELS: dict[str, type[BaseModel]] = {
+    "llm-call-record": LLMCallRecord,
     "raw-record": RawRecord,
     "semantic-record": SemanticRecord,
     "system-record": SystemRecord,

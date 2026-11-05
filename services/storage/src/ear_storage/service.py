@@ -19,6 +19,7 @@ from typing import Any
 import psycopg
 from ear_contracts import (
     DependencyRecord,
+    LLMCallRecord,
     Record,
     ReevaluationRequested,
     ReevaluationResult,
@@ -35,8 +36,10 @@ from ear_storage_client import (
     FinishReevaluation,
     InvalidRequest,
     MarkProcessed,
+    ModelBodyPolicy,
     PermissionDenied,
     PublishReevaluation,
+    PutSystemRecord,
     Query,
     RegisterDependencies,
     WriteOp,
@@ -184,6 +187,30 @@ def _write_permissions(
         spec = registry.data_types.get(dtype)
         if spec is None or spec.writer != principal.module:
             raise PermissionDenied("access denied")
+        if isinstance(op, PutSystemRecord) and spec.llm_call_metadata:
+            try:
+                call = LLMCallRecord.model_validate(dict(op.payload))
+            except ValueError:
+                raise InvalidRequest("invalid call metadata") from None
+            reads.update(t.cause.data_type for t in call.additional_causes)
+            referenced_ids.extend(t.cause.data_id for t in call.additional_causes)
+            if call.request_event_id is not None:
+                row = reader._conn.execute(
+                    "SELECT event_text FROM storage.outbox WHERE event_id=%s",
+                    (call.request_event_id,),
+                ).fetchone()
+                if row is not None:
+                    metadata = json.loads(row[0])
+                    if metadata.get("event_type") == "reevaluation_requested":
+                        reads.add(metadata["target_type"])
+                        referenced_ids.append(metadata["target_id"])
+                        for cause in (
+                            metadata["cause"],
+                            *(t["cause"] for t in metadata.get("additional_causes", [])),
+                        ):
+                            reads.add(cause["data_type"])
+                            referenced_ids.append(cause["data_id"])
+            principal.require_read(reads)
         if isinstance(op, RegisterDependencies):
             for item in op.inputs():
                 reads.add(item.data_type)
@@ -214,11 +241,12 @@ class StorageService:
         snapshot_limits: SnapshotLimits | None = None,
         relay_config: RelayConfig | None = None,
         consumer_policy: ConsumerPolicy | None = None,
+        model_body_policy: ModelBodyPolicy | None = None,
     ) -> None:
         self.consumers = (
             ConsumerService(dsn, relay_config, consumer_policy) if relay_config else None
         )
-        self._backend = PostgresStorage(dsn, limits=limits)
+        self._backend = PostgresStorage(dsn, limits=limits, model_body_policy=model_body_policy)
         self._snapshot_limits = snapshot_limits or SnapshotLimits()
 
     def client(self, token: str) -> AuthenticatedClient:

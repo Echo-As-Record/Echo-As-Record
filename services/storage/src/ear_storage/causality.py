@@ -2,7 +2,7 @@
 
 from typing import LiteralString
 
-from ear_contracts import ReevaluationResult, Registry, SemanticRecord, SystemRecord
+from ear_contracts import LLMCallRecord, ReevaluationResult, Registry, SemanticRecord, SystemRecord
 from psycopg import sql
 
 
@@ -11,6 +11,9 @@ def record_input_types(record, registry: Registry) -> frozenset[str]:
         return frozenset(t.cause.data_type for t in record.additional_causes)
     if isinstance(record, SystemRecord):
         spec = registry.data_types.get(record.data_type)
+        if spec is not None and spec.llm_call_metadata:
+            call = LLMCallRecord.model_validate(record.payload)
+            return frozenset(t.cause.data_type for t in call.additional_causes)
         if spec is not None and spec.reevaluation_result:
             result = ReevaluationResult.model_validate(record.payload)
             # Legacy extra_causes stay as-is; all new independently traced paths
@@ -28,7 +31,8 @@ def visible_trace_sql(
     return sql.SQL(
         "NOT EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE("
         "CASE WHEN {dtype} IN (SELECT name FROM storage.registry "
-        "WHERE spec_text::jsonb->>'reevaluation_result'='true') "
+        "WHERE spec_text::jsonb->>'reevaluation_result'='true' "
+        "OR spec_text::jsonb->>'llm_call_metadata'='true') "
         "THEN {text}::jsonb->'payload'->'additional_causes' "
         "ELSE {text}::jsonb->'additional_causes' END, '[]'::jsonb)) AS trace "
         "WHERE NOT COALESCE(trace->'cause'->>'data_type'=ANY({reads}::text[]),false))"

@@ -15,6 +15,7 @@ from ear_storage_client.errors import (
     StorageError,
 )
 from ear_storage_client.memory import DeadLetter, MemoryBus, MemoryClient, MemoryStorage
+from ear_storage_client.model_body import ModelBodyPolicy
 from ear_storage_client.ops import (
     AppendRaw,
     AssertTypeRevision,
@@ -86,6 +87,7 @@ __all__ = [
     "MemoryBus",
     "MemoryClient",
     "MemoryStorage",
+    "ModelBodyPolicy",
     "OpResult",
     "Outcome",
     "Page",

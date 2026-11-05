@@ -1,6 +1,7 @@
 {
   "$comment": "DRAFT：数据类型登记表（MVP）。写入权限依据设计文档 5.1 节与工作分解第 0 节；unique_fields、exclusive_members、time_from 引用的 payload 字段名待 ③ 负责人确认。",
   "data_types": {
+    "llm_call": { "kind": "system_record", "writer": "llm_gateway", "llm_call_metadata": true },
     "audio_ref": { "kind": "raw_record", "writer": "adapter", "description": "录音引用" },
     "transcript_segment": { "kind": "raw_record", "writer": "adapter", "description": "转写段" },
     "local_speaker": { "kind": "raw_record", "writer": "adapter", "description": "局部说话人" },

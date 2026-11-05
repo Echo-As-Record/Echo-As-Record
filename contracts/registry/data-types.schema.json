@@ -58,6 +58,11 @@
           "default": false,
           "description": "这类数据的 Create、Update（含结果为 unchanged 的 Update）须在同一批完整登记结果版本的依赖（可为显式空集）。只用于有版本的数据（semantic、rule）。缺省 false 只为兼容旧登记表，不表示核心类型应永久为 false；候选核心类型按类型取得 ③④ 实际输入后再启用"
         },
+        "llm_call_metadata": {
+          "type": "boolean",
+          "default": false,
+          "description": "Protected metadata-only llm_call, llm_gateway single writer. Exact name/owner checked by registry; not a suffix capability."
+        },
         "reevaluation_result": {
           "type": "boolean",
           "default": false,
@@ -71,6 +76,10 @@
       },
       "$comment": "核心类型与插件类型的区别不在本结构中表达：由可信注册来源（内置核心配置或 ① 处理的动态插件登记）决定，不采信 spec 中的自报字段。",
       "allOf": [
+        {
+          "if": { "required": ["llm_call_metadata"], "properties": { "llm_call_metadata": { "const": true } } },
+          "then": { "properties": { "kind": { "const": "system_record" }, "writer": { "const": "llm_gateway" } } }
+        },
         {
           "if": { "required": ["reevaluation_result"], "properties": { "reevaluation_result": { "const": true } } },
           "then": { "properties": { "kind": { "const": "system_record" } } }

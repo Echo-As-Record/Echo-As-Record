@@ -12,7 +12,7 @@ from typing import Any
 
 import psycopg
 from ear_contracts import is_id
-from ear_storage_client import InvalidRequest, PermissionDenied
+from ear_storage_client import InvalidRequest, ModelBodyPolicy, PermissionDenied
 from ear_storage_client.consumer_wire import (
     ConsumerRequest,
     DeliveryCommand,
@@ -256,9 +256,16 @@ def create_app_from_dsn(
     *,
     relay_config: RelayConfig | None = None,
     consumer_policy: ConsumerPolicy | None = None,
+    model_body_policy: ModelBodyPolicy | None = None,
     **kwargs: Any,
 ) -> FastAPI:
     """Deployment-only composition; never reads .env or exposes configuration."""
     return create_app(
-        StorageService(dsn, relay_config=relay_config, consumer_policy=consumer_policy), **kwargs
+        StorageService(
+            dsn,
+            relay_config=relay_config,
+            consumer_policy=consumer_policy,
+            model_body_policy=model_body_policy,
+        ),
+        **kwargs,
     )

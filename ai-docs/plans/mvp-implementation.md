@@ -1,14 +1,14 @@
 ---
 audience: ai
 doc-type: guide
-based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisions/mvp-confirmed-decisions.md；docs/adr/0001-storage-and-runtime-modules.md；代码契约基线origin/dev 48d3c51；其后①在 storage/implementation-preparation 分支实现 P0a（首个提交 a6a1c5a）与 P0b（cf337d1），P1（d7c9919）与提交前本地检查日志 /tmp/ear-p1http-full-OK7Aeg.log，P2/P3 后端 d0d8875（日志 /tmp/ear-p2b-mustfix/closing-*.log、/tmp/ear-p3-*.log、/tmp/ear-p3-checkpoint-validation.log）及合并提交 b7307e9（同步 dev 4afeae0）；PR8 未合并
+based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisions/mvp-confirmed-decisions.md；docs/adr/0001-storage-and-runtime-modules.md；代码契约基线origin/dev 48d3c51；其后①在 storage/implementation-preparation 分支实现 P0a（首个提交 a6a1c5a）与 P0b（cf337d1），P1（d7c9919）与提交前本地检查日志 /tmp/ear-p1http-full-OK7Aeg.log，P2/P3 后端 d0d8875（日志 /tmp/ear-p2b-mustfix/closing-*.log、/tmp/ear-p3-*.log、/tmp/ear-p3-checkpoint-validation.log）及合并提交 b7307e9（同步 dev 4afeae0）；P4 ①侧集合守护 f747e89、重判完成记录 106cd2e、多起因 daa767f，以及本分支已实现的调用记录存储（提交状态以提交历史为准）；PR8 未合并
 ---
 
 # 已采纳 MVP 的契约与实施计划
 
 ## 0. 这不是实现完成报告
 
-负责人已明确采纳目标并授权设计同步，那一轮不改contracts、业务代码、依赖或部署；此后①按授权在功能分支 `storage/implementation-preparation` 提交 P0a（a6a1c5a）、P0b（cf337d1）、P1 核心（d7c9919）、P2（Relay、持久消费者与远程订阅）与 P3 后端（管理反馈、凭据、订阅重配置；d0d8875），并以 b7307e9 合并 dev 4afeae0；均在 PR8，未合并、未经合并前审核，见[①进度](../../services/storage/ai-docs/progress.md)。现有内存行为与新目标不同是显式待实现差距，不因测试绿就认定完成。目标定义见[设计](../../docs/design/design-v1.2.md)、[插件](../../docs/design/plugins-mvp.md)及[决策来源](../../docs/decisions/mvp-confirmed-decisions.md)。
+负责人已明确采纳目标并授权设计同步，那一轮不改contracts、业务代码、依赖或部署；此后①按授权在功能分支 `storage/implementation-preparation` 提交 P0a（a6a1c5a）、P0b（cf337d1）、P1 核心（d7c9919）、P2（Relay、持久消费者与远程订阅）与 P3 后端（管理反馈、凭据、订阅重配置；d0d8875），并以 b7307e9 合并 dev 4afeae0，此后提交 P4 ①侧集合守护（f747e89）、重判完成记录（106cd2e）与多起因（daa767f），并实现调用记录存储（提交状态以提交历史为准）；均在 PR8，未合并、未经合并前审核，见[①进度](../../services/storage/ai-docs/progress.md)。现有内存行为与新目标不同是显式待实现差距，不因测试绿就认定完成。目标定义见[设计](../../docs/design/design-v1.2.md)、[插件](../../docs/design/plugins-mvp.md)及[决策来源](../../docs/decisions/mvp-confirmed-decisions.md)。
 
 ①的首批PR拆分、6cea0b7代码证据与阶段出入口见[①实施准备](../../services/storage/ai-docs/implementation-plan.md)。本页是工程执行顺序和风险清单，新增字段/类型名除已讨论术语外只是待设计项；不替代公共契约审核。协议、索引、超时等细节可由实施者提出，不反复问产品负责人；会改变已确认行为时再请求决策。
 
@@ -18,7 +18,7 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 |---|---|---|
 | `contracts/records/dependency-record.schema.json` | 对象版本引用；P0b 分支新增可选顶层 `fields` | 动态读取权限、持久化后端的并发防环 |
 | `contracts/registry/data-types.json` | 核心类型/单写者、约束；P0b 分支 Schema 新增能力项（缺省 false，核心类型当前全 false） | 持久热注册、可信身份、完整插件生命周期、已启用的强制登记 |
-| `contracts/events/` | 两类事件、单cause及追踪字段 | 多cause/多root调度、完成信号的新Schema |
+| `contracts/events/` | 两类事件、主cause及追踪字段；P4 多起因（daa767f）增加 `additional_causes` 与请求关联 | ⑤的多因调度与合并策略、各模块完成信号接入 |
 | `libs/ear_contracts/src/ear_contracts/` | 模型/UUIDv7/UTC/注册表 | 新结果、管理、外部未知状态已同步 |
 | `libs/ear_storage_client/src/ear_storage_client/protocol.py` | 同步Reader/StorageClient/snapshot/subscribe及重试helper；P1（d7c9919）另有同包 `remote.py` 同步远程客户端与 `wire.py` | 可长期持有的快照（远程订阅已在 P2 实现，d0d8875） |
 | 同包 `ops.py`、`memory.py` | 批次、版本、依赖整体覆盖、内存总线；P0b 分支：`DependencyInput` 字段依赖、按能力强制登记、批末新鲜度、当前图无环（内存全局锁） | 持久化并发正确性、可信身份/动态权限、生产可靠投递 |
@@ -28,7 +28,7 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 
 先复用正确的基础行为，不从零定义另一套category/ULID/事件命名。UUIDv7、data_type/payload、system根源、两类事件和单写者等保持既有公共约定。
 
-## 2. 契约改动清单（除①P0b 的依赖 fields 与登记表能力项外尚未执行）
+## 2. 契约改动清单（①已执行的部分见[①进度](../../services/storage/ai-docs/progress.md)，其余尚未执行）
 
 修改Schema仍由①与I审核，原则为只增加字段，不删除或改变旧字段含义。若现有结构无法无损表达目标，提出显式兼容版本方案，不把不兼容改义伪装成“增加字段”。
 
@@ -86,7 +86,7 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 
 ### P4 ③④⑤⑦业务与传播对齐（可在内存基线上并行）
 
-- **当前状态**：未完成。存储分支已提交①侧规则集合守护（`type_revision` / `AssertTypeRevision`，schema revision 9，f747e89）与按所属方验证的重判完成记录及权威查询（106cd2e）；多起因（`additional_causes`）已在本分支实现（提交状态以提交历史为准）；⑦日志接口未做，③④⑤尚未接入完成记录与守护（④入队 marker 不是业务完成）。b7307e9 合入的模块④是演示基线，其说明注明不代表已完成 v1.2（见[④实现记录](../../services/extraction/ai-docs/implementation.md)），④的 v1.2 对齐仍属本阶段。
+- **当前状态**：未完成。存储分支已提交①侧规则集合守护（`type_revision` / `AssertTypeRevision`，schema revision 9，f747e89）与按所属方验证的重判完成记录及权威查询（106cd2e）；多起因（`additional_causes`）已提交 daa767f；⑦调用记录的①侧存储已在本分支实现（提交状态以提交历史为准）：`llm_gateway` 单写的终态 `llm_call` 系统记录、真实请求关联与按全部起因读授权，默认只存 metadata，正文由部署级 `ModelBodyPolicy` 显式开启（默认关闭、64 KiB），无 TTL。⑦网关服务与实际模型调用未做，③④⑤⑦尚未接入完成记录、守护与调用记录（④入队 marker 不是业务完成）；①侧存储协议不代表业务对齐完成。b7307e9 合入的模块④是演示基线，其说明注明不代表已完成 v1.2（见[④实现记录](../../services/extraction/ai-docs/implementation.md)），④的 v1.2 对齐仍属本阶段。
 - ③仅参考匹配时登记references，不因名字字段变化重归属；保留用户确认保护。
 - ④活动仅原始数据；纯Markdown；选择结果按当前规则集合更新，自动/手动来源分离；最新规则或规则失效处理。
 - ③④及插件提交完成记录，⑤查询无变化/失败/不适用，等待已知相关上游、合并原因并保留追溯；不再写死md终点。

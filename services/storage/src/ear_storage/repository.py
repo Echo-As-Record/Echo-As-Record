@@ -16,6 +16,7 @@ import psycopg
 from ear_contracts import (
     DataTypeSpec,
     DependencyRecord,
+    LLMCallRecord,
     RawRecord,
     ReevaluationRequested,
     Registry,
@@ -192,9 +193,24 @@ class Projection:
         processed_keys = set()
         published_ids = set()
         request_ids = set()
+        call_request_ids = set()
         if context is not None and context.request_event_id is not None:
             request_ids.add(context.request_event_id)
         for op in ops:
+            if isinstance(op, PutSystemRecord) and op.data_type == "llm_call":
+                try:
+                    call = LLMCallRecord.model_validate(dict(op.payload))
+                except ValueError:
+                    from ear_storage_client import InvalidRequest
+
+                    raise InvalidRequest("invalid call metadata") from None
+                if call.request_event_id is not None:
+                    request_ids.add(call.request_event_id)
+                    call_request_ids.add(call.request_event_id)
+                for trace in call.additional_causes:
+                    refs.add((trace.cause.data_id, trace.cause.new_version))
+                    if trace.cause.old_version is not None:
+                        refs.add((trace.cause.data_id, trace.cause.old_version))
             if isinstance(op, FinishReevaluation):
                 request_ids.add(op.result.request_event_id)
                 ids.update((op.result.request_event_id, op.result.target_id))
@@ -276,6 +292,11 @@ class Projection:
                 if event.get("event_type") == "reevaluation_requested":
                     request = ReevaluationRequested.model_validate(event)
                     s.requests[request.event_id] = request
+                    if request.event_id in call_request_ids:
+                        for cause in (request.cause, *(t.cause for t in request.additional_causes)):
+                            refs.add((cause.data_id, cause.new_version))
+                            if cause.old_version is not None:
+                                refs.add((cause.data_id, cause.old_version))
             s.completions.update(
                 self.conn.execute(
                     "SELECT event_id,result_type FROM storage.request_completions "
@@ -283,6 +304,8 @@ class Projection:
                     (sorted(request_ids),),
                 )
             )
+        if len(refs) > self.limits.max_graph_edges:
+            raise ProjectionLimit("batch referenced-version limit exceeded")
         ids.update(id for id, _ in refs)
         identities = self.conn.execute(
             "SELECT id,module,kind,current_seq FROM storage.identity WHERE id=ANY(%s)",

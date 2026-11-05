@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, NoReturn
 
@@ -18,6 +18,7 @@ from ear_contracts import (
     DataTypeSpec,
     DependencyRecord,
     Event,
+    LLMCallRecord,
     RawRecord,
     Record,
     ReevaluationRequested,
@@ -25,6 +26,7 @@ from ear_contracts import (
     Registry,
     SemanticRecord,
     SystemRecord,
+    TracedCause,
     UnknownDataTypeError,
     VersionRef,
     new_id,
@@ -33,6 +35,7 @@ from pydantic import BaseModel, ValidationError
 
 from ear_storage_client.context import Context
 from ear_storage_client.errors import InvalidRequest, PermissionDenied
+from ear_storage_client.model_body import ModelBodyPolicy
 from ear_storage_client.ops import (
     AppendRaw,
     AssertTypeRevision,
@@ -68,7 +71,7 @@ def _json_payload(payload: Any) -> dict[str, Any]:
     return data
 
 
-def _build[M: BaseModel](model: type[M], **fields: Any) -> M:
+def _build[M: BaseModel](model: type[M], /, **fields: Any) -> M:
     try:
         return model(**fields)
     except ValidationError as exc:
@@ -179,7 +182,9 @@ class Transaction:
         batch_id: str,
         *,
         authorize_inputs: Callable[[frozenset[str]], None] | None = None,
+        model_body_policy: ModelBodyPolicy | None = None,
     ) -> None:
+        self.model_body_policy = model_body_policy or ModelBodyPolicy()
         self.s = state
         self.registry = registry
         self.module = module
@@ -367,6 +372,13 @@ class Transaction:
                 inputs.update(c.data_type for c in result.extra_causes)
                 inputs.update(t.cause.data_type for t in result.additional_causes)
                 request = self.initial_requests.get(result.request_event_id)
+                if request is not None:
+                    inputs.update((request.target_type, request.cause.data_type))
+                    inputs.update(t.cause.data_type for t in request.additional_causes)
+            elif isinstance(op, PutSystemRecord) and op.data_type == "llm_call":
+                call = _build(LLMCallRecord, **dict(op.payload))
+                inputs.update(t.cause.data_type for t in call.additional_causes)
+                request = self.initial_requests.get(call.request_event_id or "")
                 if request is not None:
                     inputs.update((request.target_type, request.cause.data_type))
                     inputs.update(t.cause.data_type for t in request.additional_causes)
@@ -745,6 +757,62 @@ class Transaction:
         if spec.kind != "system_record":
             self.invalid(f"{op.data_type} 不是系统记录，不能用 PutSystemRecord")
         self.require_writer(spec)
+        if spec.llm_call_metadata:
+            try:
+                call = LLMCallRecord.model_validate(dict(op.payload))
+            except (ValueError, TypeError):
+                self.invalid("invalid llm_call payload")
+            self.model_body_policy.validate(call)
+            if (call.root_feedback_id, call.depth) != (
+                self.context.root_feedback_id,
+                self.context.depth,
+            ):
+                self.invalid("call must retain write root/depth")
+            if self.context.request_event_id not in (None, call.request_event_id):
+                self.invalid("call request differs from write context")
+            if any(t not in call.additional_causes for t in self.context.additional_causes):
+                self.invalid("call must retain write origins")
+            traces = list(call.additional_causes)
+            if call.request_event_id is not None:
+                request = self.initial_requests.get(call.request_event_id)
+                if request is None:
+                    self.invalid("call requires a committed reevaluation request")
+                if (call.root_feedback_id, call.depth) != (
+                    request.root_feedback_id,
+                    request.depth,
+                ) or any(t not in traces for t in request.additional_causes):
+                    self.invalid("call must retain request root/depth and all origins")
+                if call.started_at < request.occurred_at:
+                    self.invalid("call predates request")
+                # Persist primary cause too: ordinary reads need no outbox join and
+                # cannot leak its source ID after that source's grant is revoked.
+                primary = TracedCause(
+                    cause=request.cause,
+                    root_feedback_id=request.root_feedback_id,
+                    depth=request.depth,
+                )
+                if primary not in traces:
+                    traces.append(primary)
+            for trace in traces:
+                self.validate_cause(trace.cause)
+            call = _build(LLMCallRecord, **{**call.model_dump(), "additional_causes": traces})
+            payload = call.model_dump(mode="json")
+            # Absent/null bodies do not change legacy metadata canonicalization.
+            for field in ("request_text", "response_text"):
+                if payload.get(field) is None:
+                    payload.pop(field, None)
+            current = self.s.system.get(op.id)
+            if (
+                current is not None
+                and current.data_type == op.data_type
+                and (
+                    canonical_json(current.payload) != canonical_json(payload)
+                    or op.event_start not in (None, current.event_start)
+                    or op.event_end not in (None, current.event_end)
+                )
+            ):
+                self.invalid("terminal llm_call is immutable; use a new call id")
+            op = replace(op, payload=payload)
         payload = _json_payload(op.payload)
         current = self.s.system.get(op.id)
         if op.expected_revision is None:
