@@ -1047,6 +1047,49 @@ class Transaction:
                     if record is None or record.data_type != cause.data_type:
                         self.invalid("extra cause must reference an actual typed version")
 
+            if result.outcome in {"changed", "unchanged"}:
+                request = self.initial_requests[result.request_event_id]
+                group = (
+                    self.s.deps.get((result.target_id, result.after_version))
+                    if result.after_version is not None
+                    else None
+                )
+                covered = (
+                    {(e.depends_on.data_type, e.depends_on.id) for e in group.dependencies}
+                    if group and not terminal
+                    else set()
+                )
+                # Actual dependency fields take priority over coarse trigger metadata.
+                # Only extra/newly discovered sources are additional input evidence.
+                inherited_sources = {
+                    (c.data_type, c.data_id)
+                    for c in (request.cause, *(t.cause for t in request.additional_causes))
+                }
+                # A new root for an existing trigger is lineage, not a new input.
+                sources = [
+                    *result.extra_causes,
+                    *(
+                        t.cause
+                        for t in result.additional_causes
+                        if (t.cause.data_type, t.cause.data_id) not in inherited_sources
+                    ),
+                ]
+                for cause in sources:
+                    if (cause.data_type, cause.data_id) in covered:
+                        continue
+                    current = self.s.current(cause.data_id)
+                    if (
+                        current is None
+                        or current.data_type != cause.data_type
+                        or current.version != cause.new_version
+                    ):
+                        self.conflict(
+                            "stale_dependency",
+                            "completion source changed",
+                            id=cause.data_id,
+                            data_type=cause.data_type,
+                        )
+
     def mark_processed(self, op: MarkProcessed) -> None:
         if op.consumer != self.module and not op.consumer.startswith(self.module + "."):
             raise PermissionDenied(f"consumer 必须是 {self.module} 或以 {self.module}. 开头")

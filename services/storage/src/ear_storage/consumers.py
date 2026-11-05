@@ -32,6 +32,7 @@ from pydantic import ValidationError
 from ear_storage.auth import Principal, authenticate, token_digest
 from ear_storage.codec import EVENT_ADAPTER
 from ear_storage.consumer_broker import BrokerDelivery, ConsumerBroker, ConsumerUnavailable
+from ear_storage.history import excluded
 from ear_storage.relay import RelayConfig
 from ear_storage.repository import registry_from_db
 from ear_storage.schema import check_schema, connection, one, writer
@@ -201,6 +202,30 @@ class ConsumerService:
                     )[0],
                     "filters": approved_filters(principal, registry, kinds, self.relay.prefix),
                 }
+                handoffs = dict(
+                    conn.execute(
+                        "SELECT h.data_type,h.watermark FROM storage.module_type_handoffs h "
+                        "JOIN storage.recovery_decisions d USING(decision_id) "
+                        "WHERE h.module=%s AND d.module=h.module AND d.state='switched' "
+                        "AND d.types_text::jsonb ? h.data_type AND h.watermark=d.watermark "
+                        "AND h.data_type=ANY(%s)",
+                        (
+                            principal.module,
+                            sorted(principal.subscribe_types & principal.read_types),
+                        ),
+                    ).fetchall()
+                )
+                if handoffs and not request.from_beginning:
+                    for dtype, boundary in handoffs.items():
+                        start = one(
+                            conn,
+                            "SELECT min(ack_seq) FROM storage.outbox WHERE ack_stream=%s "
+                            "AND commit_seq>%s AND COALESCE(event_text::jsonb->>'data_type',"
+                            "event_text::jsonb->>'target_type')=%s",
+                            (self.relay.stream, boundary, dtype),
+                        )[0]
+                        if start is not None:
+                            cfg["start_seq"] = min(cfg["start_seq"], start)
                 durable = "c_" + secrets.token_hex(24)
                 cursor = (
                     0
@@ -220,6 +245,15 @@ class ConsumerService:
                         cursor,
                     ),
                 )
+                for dtype in {f.rsplit(".", 2)[1] for f in cfg["filters"]}:
+                    conn.execute(
+                        "INSERT INTO storage.consumer_type_cursors VALUES (%s,%s,%s)",
+                        (
+                            request.consumer,
+                            dtype,
+                            cursor if request.from_beginning else handoffs.get(dtype, cursor),
+                        ),
+                    )
             conn.execute(
                 "UPDATE storage.consumers SET ready=false WHERE name=%s", (request.consumer,)
             )
@@ -352,7 +386,7 @@ class ConsumerService:
             # Unknown/foreign generations and invalid records are NOT exclusions.
             pending = conn.execute(
                 "SELECT d.delivery_id,d.event_id,d.broker_reply,d.historical_filtered,"
-                "d.broker_subject,d.broker_generation,g.config_text,g.destination,g.state "
+                "d.broker_subject,d.broker_generation,g.config_text,g.destination,g.state,d.state "
                 "FROM storage.consumer_deliveries d "
                 "LEFT JOIN storage.consumer_generations g ON "
                 "g.consumer=d.consumer AND g.generation=d.broker_generation "
@@ -360,6 +394,7 @@ class ConsumerService:
                 "WHERE d.consumer=%s AND d.ack_pending AND (d.broker_generation=%s "
                 "OR g.generation IS NULL OR g.state<>'retired' OR g.destination<>%s "
                 "OR o.event_id IS NULL OR o.delivered_at IS NULL OR d.historical_filtered "
+                "OR d.state='skipped' "
                 "OR (COALESCE(o.event_text::jsonb->>'data_type',"
                 "o.event_text::jsonb->>'target_type')=ANY(%s) AND "
                 "(o.event_text::jsonb->>'event_type'='data_changed' OR "
@@ -404,7 +439,10 @@ class ConsumerService:
             event = EVENT_ADAPTER.validate_json(stored[0])
             if event.event_id != pending[1]:
                 raise ConsumerUnavailable("event identity mismatch")
-            if pending[3]:
+            if pending[9] == "skipped":
+                if not excluded(conn, principal.module, pending[1], name):
+                    raise ConsumerUnavailable("invalid recovery exclusion")
+            elif pending[3]:
                 if stored[1] > self._cursor(conn, name, event, row[5]):
                     raise ConsumerUnavailable("invalid historical exclusion")
             else:
@@ -500,7 +538,8 @@ class ConsumerService:
                 self._verify_route(registry, json.loads(row[3]), decoded, message.subject)
                 # No HTTP access to events committed before this subscription's creation cursor.
                 # Broker may have received these later; cursor is defined under the writer gate.
-                old = stored[1] <= self._cursor(conn, name, decoded, row[5])
+                skipped = excluded(conn, principal.module, decoded.event_id, name)
+                old = stored[1] <= self._cursor(conn, name, decoded, row[5]) or skipped
                 if not old:
                     authorize_event(
                         principal, registry, json.loads(row[3]), decoded, self.relay.prefix
@@ -514,7 +553,8 @@ class ConsumerService:
                     conn.execute(
                         "UPDATE storage.consumer_deliveries SET "
                         "broker_reply=%s,broker_generation=%s,ack_pending=true "
-                        "WHERE consumer=%s AND delivery_id=%s AND state IN ('acked','dead')",
+                        "WHERE consumer=%s AND delivery_id=%s "
+                        "AND state IN ('acked','dead','skipped')",
                         (message.reply, durable, name, existing[0]),
                     )
                     return {"codec": 1, "status": "progress", "delivery": None}
@@ -529,10 +569,10 @@ class ConsumerService:
                         name,
                         did,
                         decoded.event_id,
-                        "acked" if old else "retry",
+                        "skipped" if skipped else "acked" if old else "retry",
                         message.reply,
                         old,
-                        old,
+                        old and not skipped,
                         message.subject,
                         durable,
                     ),
@@ -569,6 +609,10 @@ class ConsumerService:
             ).fetchone()
             if delivery is None:
                 raise PermissionDenied("access denied")
+            if delivery[3] == "skipped" or excluded(
+                conn, principal.module, delivery[1], request.consumer
+            ):
+                raise DeliveryExpired("delivery expired")
             self.event(conn, principal, registry, json.loads(row[3]), delivery[1])
             if delivery[5] != request.delivery_token:
                 raise DeliveryExpired("delivery expired")
@@ -651,6 +695,8 @@ class ConsumerService:
             ).fetchone()
             if original is None:
                 raise PermissionDenied("access denied")
+            if excluded(conn, principal.module, original[0], request.consumer):
+                raise PermissionDenied("event_excluded_by_recovery")
             self.event(conn, principal, registry, json.loads(row[3]), original[0])
             # Replay identity is separate, event identity unchanged. No stream-wide republish.
             existing = conn.execute(

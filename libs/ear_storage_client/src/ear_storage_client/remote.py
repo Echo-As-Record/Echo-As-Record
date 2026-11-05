@@ -268,6 +268,87 @@ class RemoteStorageClient(RemoteReader):
             # Includes unknown future ConflictReason/Outcome Literals.
             raise CommitUnknown(request_id) from None
 
+    def list_history_reevaluations(
+        self, job_id: str | None = None, *, limit: int = 50, cursor: str | None = None
+    ) -> dict[str, Any]:
+        return load_json(
+            self._request(
+                "POST",
+                "/v1/history/reevaluations/list",
+                canonical_json({"job_id": job_id, "limit": limit, "cursor": cursor}),
+            ).text
+        )
+
+    def attach_history_request(
+        self, job_id: str, item_id: str, request_event_id: str
+    ) -> dict[str, Any]:
+        if not all(is_id(x) for x in (job_id, item_id, request_event_id)):
+            raise InvalidRequest("invalid history assignment")
+        return load_json(
+            self._request(
+                "POST",
+                "/v1/history/jobs/" + job_id + "/requests",
+                canonical_json({"item_id": item_id, "request_event_id": request_event_id}),
+            ).text
+        )
+
+    def claim_history_assignment(self, job_id: str, *, consumer: str) -> dict[str, Any]:
+        if not is_id(job_id):
+            raise InvalidRequest("invalid history job")
+        return load_json(
+            self._request(
+                "POST",
+                "/v1/history/jobs/" + job_id + "/assignments/claim",
+                canonical_json({"consumer": consumer}),
+            ).text
+        )
+
+    def history_job(self, job_id: str) -> dict[str, Any]:
+        if not is_id(job_id):
+            raise InvalidRequest("invalid job id")
+        return load_json(self._request("GET", "/v1/history/jobs/" + job_id).text)
+
+    def claim_history_job(self, job_id: str) -> dict[str, Any]:
+        if not is_id(job_id):
+            raise InvalidRequest("invalid job id")
+        return load_json(self._request("POST", "/v1/history/jobs/" + job_id + "/claim", "{}").text)
+
+    def commit_history_job(
+        self,
+        job_id: str,
+        claim_token: str,
+        fence: int,
+        ops: Sequence[WriteOp],
+        context: Context,
+        *,
+        request_id: str,
+        outcome: str = "completed",
+        error_code: str | None = None,
+    ) -> dict[str, Any]:
+        if not is_id(job_id) or not is_id(request_id):
+            raise InvalidRequest("invalid history request id")
+        body = {
+            "claim_token": claim_token,
+            "fence": fence,
+            "request_id": request_id,
+            "batch": load_json(encode_request(tuple(ops), context)),
+            "outcome": outcome,
+            "error_code": error_code,
+        }
+        response = self._request(
+            "POST",
+            "/v1/history/jobs/" + job_id + "/commit",
+            canonical_json(body),
+            request_id=request_id,
+        )
+        try:
+            result = load_json(response.text)
+            if result["status"] not in {"completed", "failed", "blocked", "conflict"}:
+                raise ValueError
+            return result
+        except (InvalidRequest, ValueError, KeyError, TypeError):
+            raise CommitUnknown(request_id) from None
+
     def create_snapshot(self, *, ttl_seconds: int | None = None) -> dict[str, Any]:
         response = self._request(
             "POST", "/v1/snapshots", canonical_json({"codec": 1, "ttl_seconds": ttl_seconds})

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated, Literal, Self
 
 from ear_contracts import DataTypeSpec
-from ear_contracts.base import Id
+from ear_contracts.base import Id, UtcDatetime
 from ear_contracts.records import DataKind
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
@@ -51,7 +51,7 @@ class ManagementInput(BaseModel):
     New types use a per-consumer DB commit boundary; recovery stays explicit.
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
     request_id: Id
     action: Literal[
         "register_plugin",
@@ -62,6 +62,7 @@ class ManagementInput(BaseModel):
         "retry_task",
         "rotate_credentials",
         "revoke_credentials",
+        "history_backfill",
     ]
     module: Module
     target_feedback_id: Id | None = None
@@ -69,11 +70,29 @@ class ManagementInput(BaseModel):
     read_types: tuple[Name, ...] = Field(default=(), max_length=512)
     subscribe_types: tuple[Name, ...] = Field(default=(), max_length=512)
 
+    resume_choice: Literal["catch_up", "skip"] | None = None
+    expected_revision: Annotated[int, Field(strict=True, ge=1)] | None = None
+    range_start: UtcDatetime | None = Field(default=None, alias="rangeStart")
+    range_end: UtcDatetime | None = Field(default=None, alias="rangeEnd")
+    input_types: tuple[Name, ...] = Field(default=(), max_length=512)
+
     def payload(self):
         # Preserve pre-retry schema6 request fingerprints, including nested nulls.
         data = self.model_dump(
             mode="json",
-            exclude={"target_feedback_id"} if self.target_feedback_id is None else set(),
+            by_alias=True,
+            exclude={
+                name
+                for name in (
+                    "target_feedback_id",
+                    "resume_choice",
+                    "expected_revision",
+                    "range_start",
+                    "range_end",
+                    "input_types",
+                )
+                if getattr(self, name) is None or getattr(self, name) == ()
+            },
         )
 
         # Preserve old feedback fingerprints when the additive capability is absent/false.
@@ -84,6 +103,17 @@ class ManagementInput(BaseModel):
 
     @model_validator(mode="after")
     def validate_declaration(self) -> Self:
+        if (self.resume_choice is None) != (self.expected_revision is None):
+            raise ValueError("resume_choice requires expected_revision")
+        if self.resume_choice is not None and self.action not in {"enable", "set_permissions"}:
+            raise ValueError("resume choice only allowed during recovery")
+        if self.action == "history_backfill":
+            if self.range_start is None or self.range_end is None or not self.input_types:
+                raise ValueError("explicit rangeStart/rangeEnd and input_types required")
+            if self.range_start >= self.range_end:
+                raise ValueError("nonempty half-open history range required")
+        elif self.range_start is not None or self.range_end is not None or self.input_types:
+            raise ValueError("history scope only allowed for history_backfill")
         if (self.action == "retry_task") != (self.target_feedback_id is not None):
             raise ValueError("retry_task requires an original target_feedback_id only")
         if not set(self.subscribe_types) <= set(self.read_types):

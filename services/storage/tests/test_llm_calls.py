@@ -342,7 +342,7 @@ def test_authenticated_read_revoke_and_replay(pg_dsn, revoked):
 @pytest.mark.postgres
 def test_existing_database_requires_explicit_bootstrap(pg_dsn):
     from ear_contracts import Registry
-    from ear_storage.schema import connection
+    from ear_storage.schema import SCHEMA_VERSION, connection
 
     old = Registry(
         {k: v for k, v in DEFAULT_REGISTRY.data_types.items() if k != "llm_call"},
@@ -357,7 +357,7 @@ def test_existing_database_requires_explicit_bootstrap(pg_dsn):
     assert PostgresStorage(pg_dsn).registry.get("llm_call").llm_call_metadata
     with connection(pg_dsn) as conn:
         row = conn.execute("SELECT schema_revision FROM storage.meta WHERE singleton").fetchone()
-        assert row == (10,)
+        assert row == (SCHEMA_VERSION,)
 
 
 def test_max_request_origins_remain_complete(calls):

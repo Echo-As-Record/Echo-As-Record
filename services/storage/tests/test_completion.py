@@ -543,7 +543,8 @@ def test_explicit_v9_to_v10_migration_preserves_request_history(pg_dsn, monkeypa
     saved = reevaluation_result(store, event)
     assert saved is not None and saved.request_event_id == event
     with connection(pg_dsn) as conn:
-        assert conn.execute("SELECT schema_revision FROM storage.meta").fetchone() == (10,)
+        revision = conn.execute("SELECT schema_revision FROM storage.meta").fetchone()
+        assert revision is not None and revision[0] >= 12
         conn.execute("DROP TABLE storage.request_completions")
     with pytest.raises(SchemaMismatch, match="request_completions"):
         PostgresStorage(pg_dsn)

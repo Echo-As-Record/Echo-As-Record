@@ -269,8 +269,10 @@ def test_disable_enable_without_missed_changes_and_disconnect_stays_enabled(setu
     assert service.client(plugin.token).module == "sample"
     _, status = execute(setup, command("status"))
     assert status["enabled"] and status["online"] is None
-    execute(setup, command("disable"))
-    _, result = execute(setup, command("enable"))
+    _, disabled = execute(setup, command("disable"))
+    _, result = execute(
+        setup, command("enable", resume_choice="skip", expected_revision=disabled["revision"])
+    )
     assert result["status"] == "succeeded" and result["enabled"]
     assert service.client(plugin.token).module == "sample"
 

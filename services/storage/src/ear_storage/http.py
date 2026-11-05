@@ -179,6 +179,52 @@ def create_app(
         issued = claim_credentials(client, feedback_id)
         return json_response({"principal_id": issued.principal_id, "token": issued.token})
 
+    @app.post("/v1/history/reevaluations/list")
+    def history_reevaluations(request: Request):
+        _token, client, _module = authenticated(request)
+        body = load_json(request.scope["ear.body"])
+        check_keys(body, {"job_id", "limit", "cursor"})
+        return json_response(client.list_history_reevaluations(**body))
+
+    @app.post("/v1/history/jobs/{job_id}/requests")
+    def history_attach(job_id: str, request: Request):
+        _token, client, _module = authenticated(request)
+        body = load_json(request.scope["ear.body"])
+        check_keys(body, {"item_id", "request_event_id"})
+        return json_response(
+            client.attach_history_request(job_id, body.get("item_id"), body.get("request_event_id"))
+        )
+
+    @app.post("/v1/history/jobs/{job_id}/assignments/claim")
+    def history_assignment_claim(job_id: str, request: Request):
+        _token, client, _module = authenticated(request)
+        body = load_json(request.scope["ear.body"])
+        check_keys(body, {"consumer"})
+        return json_response(client.claim_history_assignment(job_id, consumer=body.get("consumer")))
+
+    @app.get("/v1/history/jobs/{job_id}")
+    def history_job(job_id: str, request: Request):
+        from ear_storage.history import job_status
+
+        _token, client, _module = authenticated(request)
+        return json_response(job_status(client, job_id))
+
+    @app.post("/v1/history/jobs/{job_id}/claim")
+    def history_claim(job_id: str, request: Request):
+        from ear_storage.history_execution import claim
+
+        _token, client, _module = authenticated(request)
+        if request.scope["ear.body"] not in (b"", b"{}"):
+            raise InvalidRequest("claim takes no parameters")
+        return json_response(claim(client, job_id))
+
+    @app.post("/v1/history/jobs/{job_id}/commit")
+    def history_commit(job_id: str, request: Request):
+        from ear_storage.history_execution import commit
+
+        _token, client, _module = authenticated(request)
+        return json_response(commit(client, job_id, load_json(request.scope["ear.body"])))
+
     @app.post("/v1/batches")
     def batches(request: Request):
         _token, client, _module = authenticated(request)

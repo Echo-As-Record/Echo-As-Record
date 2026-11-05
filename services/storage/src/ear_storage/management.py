@@ -428,6 +428,26 @@ class ManagementProcessor:
             payload["recovery_feedback_id"] = previous.payload["recovery_feedback_id"]
         if body.target_feedback_id is not None:
             payload["target_feedback_id"] = body.target_feedback_id
+        job = None
+        # Genuine pre-v11 migration fixtures only; public paths check_schema first.
+        if one(conn, "SELECT to_regclass('storage.history_jobs')")[0] is not None:
+            job = conn.execute(
+                "SELECT job_id FROM storage.history_jobs WHERE feedback_id=%s",
+                (feedback_id,),
+            ).fetchone()
+        if job is not None:
+            payload["history_job_id"] = job[0]
+            payload["history_execution_status"] = "planned"
+            if status == "succeeded":
+                from ear_storage.schema import SCHEMA_VERSION
+
+                if SCHEMA_VERSION >= 12:
+                    conn.execute(
+                        "UPDATE storage.history_jobs j SET execution_revision=l.revision "
+                        "FROM storage.module_lifecycle l WHERE j.job_id=%s AND j.owner=l.module "
+                        "AND j.feedback_id=%s AND j.execution_revision IS NULL",
+                        (job[0], feedback_id),
+                    )
         ops: list[WriteOp] = [
             PutSystemRecord(RESULT, row[5], payload, expected_revision=previous.revision)
         ]
@@ -460,9 +480,17 @@ class ManagementProcessor:
                     from ear_storage.reconfiguration import withdraw
 
                     withdraw(conn, body)
+                # Authorization is persisted independently of broker resource preflight.
+                if body.resume_choice is not None or body.action == "history_backfill":
+                    from ear_storage.history import authorize
+
+                    with conn.transaction():
+                        authorize(conn, feedback_id, body)
                 # Restrictions above survive a failed resource preflight/savepoint.
                 with conn.transaction():
-                    if body.action == "retry_task":
+                    if body.action == "history_backfill":
+                        pass  # Management success means authorization, NOT job completion.
+                    elif body.action == "retry_task":
                         self._retry_task(conn, feedback_id, body, worker_token)
                     elif body.action in {"rotate_credentials", "revoke_credentials"}:
                         from ear_storage.credentials import stage_credentials
@@ -494,6 +522,16 @@ class ManagementProcessor:
                         return self._record(conn, feedback_id, row, body, "succeeded", stage)
             except ResourcesPending as exc:
                 return self._record(conn, feedback_id, row, body, "pending", "resources", str(exc))
+            except PermissionDenied:
+                return self._record(
+                    conn,
+                    feedback_id,
+                    row,
+                    body,
+                    "failed",
+                    "validation",
+                    "history_input_not_authorized",
+                )
             except ManagementFailure as exc:
                 return self._record(conn, feedback_id, row, body, "failed", "validation", str(exc))
             self._record(conn, feedback_id, row, body, "pending", "resources")
@@ -547,12 +585,24 @@ class ManagementProcessor:
                     if current != plan:
                         raise ManagementFailure("resource_configuration_changed")
                     if _status(conn, body.module)["enabled"]:
+                        if body.resume_choice == "skip":
+                            from ear_storage.history import switch
+
+                            switch(conn, body)
+                            conn.execute(
+                                "UPDATE storage.module_lifecycle SET revision=revision+1 "
+                                "WHERE module=%s",
+                                (body.module,),
+                            )
                         self._audit(conn, feedback_id, body)
                         return self._record(conn, feedback_id, row, body, "succeeded", "complete")
+                    from ear_storage.history import switch
+
+                    switch(conn, body)
                     seq = one(conn, "SELECT commit_seq FROM storage.meta WHERE singleton")[0]
                     conn.execute(
                         "UPDATE storage.module_lifecycle SET enabled=true,ever_enabled=true, "
-                        "recovery_pending=false,interrupted_seq=NULL,revision=revision+1 "
+                        "revision=revision+1 "
                         "WHERE module=%s",
                         (body.module,),
                     )
@@ -561,6 +611,12 @@ class ManagementProcessor:
                         "THEN creation_cursor ELSE %s END WHERE name=%s",
                         (plan["ever_enabled"], seq, body.module + ".managed"),
                     )
+                    if not plan["ever_enabled"]:
+                        conn.execute(
+                            "UPDATE storage.consumer_type_cursors t SET effective_commit_seq=%s "
+                            "FROM storage.consumers c WHERE c.name=t.consumer AND c.module=%s",
+                            (seq, body.module),
+                        )
                     self._audit(conn, feedback_id, body)
                     return self._record(conn, feedback_id, row, body, "succeeded", "complete")
             except ResourcesPending as exc:
@@ -644,8 +700,21 @@ class ManagementProcessor:
         ).fetchone():
             raise ResourcesPending("reconfiguration_in_progress")
         state = _status(conn, body.module)
-        if state["need_recovery_decision"] and _missed(conn, body.module):
-            raise ManagementFailure("need_recovery_decision")
+        if state["need_recovery_decision"]:
+            from ear_storage.history import decision
+
+            approved = decision(conn, body)
+            if body.resume_choice is None or approved is None:
+                raise ManagementFailure("need_recovery_decision")
+            if body.expected_revision != state["revision"]:
+                raise ManagementFailure("stale_recovery_revision")
+            if (
+                approved[1] == "catch_up"
+                and not conn.execute(
+                    "SELECT 1 FROM storage.history_jobs WHERE decision_id=%s", (approved[0],)
+                ).fetchone()
+            ):
+                raise ResourcesPending("history_plan_missing")
         if self.consumers is None:
             raise ResourcesPending("broker_not_configured")
         reads, subs = _permissions(conn, body.module)

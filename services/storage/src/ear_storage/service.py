@@ -454,6 +454,9 @@ class AuthenticatedClient(AuthorizedReaderMethods):
             from ear_storage.management import attach_feedback, prepare_feedback
 
             prepare_feedback(conn, principal, ops)
+            from ear_storage.history import guard_submission
+
+            guard_submission(conn, principal, ops, context)
             for op in ops:
                 if isinstance(op, MarkProcessed):
                     recovery = conn.execute(
@@ -461,7 +464,14 @@ class AuthenticatedClient(AuthorizedReaderMethods):
                         (principal.module,),
                     ).fetchone()
                     if recovery and recovery[0]:
-                        raise PermissionDenied("need_recovery_decision")
+                        from ear_storage.history_scheduler import linked_submission
+
+                        if not linked_submission(conn, principal, op.event_id) or not any(
+                            isinstance(item, FinishReevaluation)
+                            and item.result.request_event_id == op.event_id
+                            for item in ops
+                        ):
+                            raise PermissionDenied("need_recovery_decision")
                     owner = conn.execute(
                         "SELECT principal_id,enabled,config_text FROM storage.consumers "
                         "WHERE name=%s",
@@ -495,10 +505,17 @@ class AuthenticatedClient(AuthorizedReaderMethods):
                     else:
                         if owner[0] != principal.id or not owner[1]:
                             raise PermissionDenied("access denied")
+                        from ear_storage.history_scheduler import linked_submission
+
+                        assigned = linked_submission(conn, principal, op.event_id) and any(
+                            isinstance(item, FinishReevaluation)
+                            and item.result.request_event_id == op.event_id
+                            for item in ops
+                        )
                         event = conn.execute(
                             "SELECT event_text FROM storage.outbox WHERE event_id=%s "
-                            "AND delivered_at IS NOT NULL",
-                            (op.event_id,),
+                            "AND (delivered_at IS NOT NULL OR %s)",
+                            (op.event_id, assigned),
                         ).fetchone()
                         if event is None:
                             if _adopted_marker_replay(conn, principal, op, request_id, digest):
@@ -540,6 +557,21 @@ class AuthenticatedClient(AuthorizedReaderMethods):
                     result, conflict=Conflict(conflict.index, conflict.reason, "write conflict")
                 )
             return result
+
+    def list_history_reevaluations(self, job_id=None, *, limit=50, cursor=None):
+        from ear_storage.history_scheduler import list_reevaluations
+
+        return list_reevaluations(self, job_id, limit=limit, cursor=cursor)
+
+    def claim_history_assignment(self, job_id, *, consumer):
+        from ear_storage.history_scheduler import claim_assignment
+
+        return claim_assignment(self, job_id, consumer=consumer)
+
+    def attach_history_request(self, job_id, item_id, request_event_id):
+        from ear_storage.history_scheduler import attach
+
+        return attach(self, job_id, item_id, request_event_id)
 
     def create_snapshot(self, *, ttl_seconds: int | None = None) -> SnapshotLease:
         """Create and commit before returning; descriptor.to_json() is transport-ready."""

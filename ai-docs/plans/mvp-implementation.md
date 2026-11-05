@@ -1,14 +1,14 @@
 ---
 audience: ai
 doc-type: guide
-based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisions/mvp-confirmed-decisions.md；docs/adr/0001-storage-and-runtime-modules.md；代码契约基线origin/dev 48d3c51；其后①在 storage/implementation-preparation 分支实现 P0a（首个提交 a6a1c5a）与 P0b（cf337d1），P1（d7c9919）与提交前本地检查日志 /tmp/ear-p1http-full-OK7Aeg.log，P2/P3 后端 d0d8875（日志 /tmp/ear-p2b-mustfix/closing-*.log、/tmp/ear-p3-*.log、/tmp/ear-p3-checkpoint-validation.log）及合并提交 b7307e9（同步 dev 4afeae0）；P4 ①侧集合守护 f747e89、重判完成记录 106cd2e、多起因 daa767f，以及本分支已实现的调用记录存储（提交状态以提交历史为准）；PR8 未合并
+based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisions/mvp-confirmed-decisions.md；docs/adr/0001-storage-and-runtime-modules.md；代码契约基线origin/dev 48d3c51；其后①在 storage/implementation-preparation 分支实现 P0a（首个提交 a6a1c5a）与 P0b（cf337d1），P1（d7c9919）与提交前本地检查日志 /tmp/ear-p1http-full-OK7Aeg.log，P2/P3 后端 d0d8875（日志 /tmp/ear-p2b-mustfix/closing-*.log、/tmp/ear-p3-*.log、/tmp/ear-p3-checkpoint-validation.log）及合并提交 b7307e9（同步 dev 4afeae0）；P4 ①侧集合守护 f747e89、重判完成记录 106cd2e、多起因 daa767f，调用记录存储 e9391dd，以及本分支已实现的 P5 ①侧历史恢复（schema revision 14；提交状态以提交历史为准）；PR8 未合并
 ---
 
 # 已采纳 MVP 的契约与实施计划
 
 ## 0. 这不是实现完成报告
 
-负责人已明确采纳目标并授权设计同步，那一轮不改contracts、业务代码、依赖或部署；此后①按授权在功能分支 `storage/implementation-preparation` 提交 P0a（a6a1c5a）、P0b（cf337d1）、P1 核心（d7c9919）、P2（Relay、持久消费者与远程订阅）与 P3 后端（管理反馈、凭据、订阅重配置；d0d8875），并以 b7307e9 合并 dev 4afeae0，此后提交 P4 ①侧集合守护（f747e89）、重判完成记录（106cd2e）与多起因（daa767f），并实现调用记录存储（提交状态以提交历史为准）；均在 PR8，未合并、未经合并前审核，见[①进度](../../services/storage/ai-docs/progress.md)。现有内存行为与新目标不同是显式待实现差距，不因测试绿就认定完成。目标定义见[设计](../../docs/design/design-v1.2.md)、[插件](../../docs/design/plugins-mvp.md)及[决策来源](../../docs/decisions/mvp-confirmed-decisions.md)。
+负责人已明确采纳目标并授权设计同步，那一轮不改contracts、业务代码、依赖或部署；此后①按授权在功能分支 `storage/implementation-preparation` 提交 P0a（a6a1c5a）、P0b（cf337d1）、P1 核心（d7c9919）、P2（Relay、持久消费者与远程订阅）与 P3 后端（管理反馈、凭据、订阅重配置；d0d8875），并以 b7307e9 合并 dev 4afeae0，此后提交 P4 ①侧集合守护（f747e89）、重判完成记录（106cd2e）与多起因（daa767f），调用记录存储（e9391dd），并实现 P5 ①侧历史恢复（提交状态以提交历史为准）；均在 PR8，未合并、未经合并前审核，见[①进度](../../services/storage/ai-docs/progress.md)。现有内存行为与新目标不同是显式待实现差距，不因测试绿就认定完成。目标定义见[设计](../../docs/design/design-v1.2.md)、[插件](../../docs/design/plugins-mvp.md)及[决策来源](../../docs/decisions/mvp-confirmed-decisions.md)。
 
 ①的首批PR拆分、6cea0b7代码证据与阶段出入口见[①实施准备](../../services/storage/ai-docs/implementation-plan.md)。本页是工程执行顺序和风险清单，新增字段/类型名除已讨论术语外只是待设计项；不替代公共契约审核。协议、索引、超时等细节可由实施者提出，不反复问产品负责人；会改变已确认行为时再请求决策。
 
@@ -68,7 +68,7 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 
 ### P2 JetStream与可靠交接
 
-- **当前状态**：P2 已提交 d0d8875（PR8 未合并）：持久 Outbox、可恢复有序 Relay、服务端授权的持久消费者（HTTP 代理）、ack/重试/死信/同 consumer 重放、SDK `subscribe` 有界泵；有限去重的至少一次，不是恰好一次；流满拒收且无清理，生产保留与历史补/跳（P5）仍欠。真实完整测试 802 项在 P2 工作区快照上两次通过；merge 前 P3 检查点 916 项全真实通过；b7307e9 合并后尚未完整真实运行。见[①进度](../../services/storage/ai-docs/progress.md)。
+- **当前状态**：P2 已提交 d0d8875（PR8 未合并）：持久 Outbox、可恢复有序 Relay、服务端授权的持久消费者（HTTP 代理）、ack/重试/死信/同 consumer 重放、SDK `subscribe` 有界泵；有限去重的至少一次，不是恰好一次；流满拒收且无清理，生产保留仍欠，历史补/跳①侧见 P5。真实完整测试 802 项在 P2 工作区快照上两次通过；merge 前 P3 检查点 916 项全真实通过；b7307e9 合并后尚未完整真实运行。见[①进度](../../services/storage/ai-docs/progress.md)。
 - 持久Outbox和可恢复Relay，明确发送成功但标记前崩溃如何重投；不将自增序号自动等同于全局提交顺序。
 - 持久消费者、确认策略、退避、失败记录/死信、管理员检查和重放。跨消费者各自进度，授权投递不能共享错误的工作队列吞掉其他模块通知。
 - `write()`冲突不是默认异常；handler必须检查最终结果，失败不能正常返回当ack。already_processed是特例，不盲重试业务结果。
@@ -86,7 +86,7 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 
 ### P4 ③④⑤⑦业务与传播对齐（可在内存基线上并行）
 
-- **当前状态**：未完成。存储分支已提交①侧规则集合守护（`type_revision` / `AssertTypeRevision`，schema revision 9，f747e89）与按所属方验证的重判完成记录及权威查询（106cd2e）；多起因（`additional_causes`）已提交 daa767f；⑦调用记录的①侧存储已在本分支实现（提交状态以提交历史为准）：`llm_gateway` 单写的终态 `llm_call` 系统记录、真实请求关联与按全部起因读授权，默认只存 metadata，正文由部署级 `ModelBodyPolicy` 显式开启（默认关闭、64 KiB），无 TTL。⑦网关服务与实际模型调用未做，③④⑤⑦尚未接入完成记录、守护与调用记录（④入队 marker 不是业务完成）；①侧存储协议不代表业务对齐完成。b7307e9 合入的模块④是演示基线，其说明注明不代表已完成 v1.2（见[④实现记录](../../services/extraction/ai-docs/implementation.md)），④的 v1.2 对齐仍属本阶段。
+- **当前状态**：未完成。存储分支已提交①侧规则集合守护（`type_revision` / `AssertTypeRevision`，schema revision 9，f747e89）与按所属方验证的重判完成记录及权威查询（106cd2e）；多起因（`additional_causes`）已提交 daa767f；⑦调用记录的①侧存储已提交 e9391dd：`llm_gateway` 单写的终态 `llm_call` 系统记录、真实请求关联与按全部起因读授权，默认只存 metadata，正文由部署级 `ModelBodyPolicy` 显式开启（默认关闭、64 KiB），无 TTL。⑦网关服务与实际模型调用未做，③④⑤⑦尚未接入完成记录、守护与调用记录（④入队 marker 不是业务完成）；①侧存储协议不代表业务对齐完成。b7307e9 合入的模块④是演示基线，其说明注明不代表已完成 v1.2（见[④实现记录](../../services/extraction/ai-docs/implementation.md)），④的 v1.2 对齐仍属本阶段。
 - ③仅参考匹配时登记references，不因名字字段变化重归属；保留用户确认保护。
 - ④活动仅原始数据；纯Markdown；选择结果按当前规则集合更新，自动/手动来源分离；最新规则或规则失效处理。
 - ③④及插件提交完成记录，⑤查询无变化/失败/不适用，等待已知相关上游、合并原因并保留追溯；不再写死md终点。
@@ -95,6 +95,7 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 
 ### P5 插件历史交接与集成
 
+- **当前状态**：未完成。①侧已在本分支实现（提交状态以提交历史为准；schema revision 11–14）：管理反馈恢复 catch_up/skip（须 `expected_revision`）与显式范围 `history_backfill`、持久当前状态候选（不盲重放旧事件）、skip 不改旧结果/依赖且不伪造 Finish、W 之后交接即便首次 consumer 也保留、重叠门控与过期输入只读、所属方 claim（snapshot + 租约 + epoch/fence）与业务/进度原子提交，以及供⑤的真实请求关联（权限与起因覆盖）、所属方安全领取分配并自行 Finish、完成索引与历史依赖按 `commit_seq` 验新鲜、终态冻结。⑤实际调度、④业务改动、真实多层/分叉汇合示例、⑥恢复选择页、部署 Compose 与备份清理未做。完整真实运行 1 failed / 1411 passed / 5 skipped，不是全绿，见[①进度](../../services/storage/ai-docs/progress.md)。
 - 首次启用的快照/游标与实时事件无缝衔接需测试，不能误把历史读取变成默认全量批处理。
 - 主动停用恢复补/跳、意外断线自动续、越过消息保留窗口等边界明确；补处理读取当前状态，不盲跑旧事件。
 - 停用/撤权/上游替代的依赖查询与调度：①拒绝未授权输入，⑤标受阻，旧结果保留；恢复补处理尊重用户选择。

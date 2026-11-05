@@ -281,7 +281,15 @@ def test_result_write_failure_rolls_back_ddl_audit_and_mark(mgmt, monkeypatch):
 def test_retry_operation_is_closed_and_old_payload_compatible():
     original = declaration()
     old = original.model_dump(mode="json")
-    old.pop("target_feedback_id")
+    for name in (
+        "target_feedback_id",
+        "resume_choice",
+        "expected_revision",
+        "range_start",
+        "range_end",
+        "input_types",
+    ):
+        old.pop(name)
     # Reconstruct the legacy declaration before the additive completion capability.
     for item in old["types"]:
         item.pop("reevaluation_result")

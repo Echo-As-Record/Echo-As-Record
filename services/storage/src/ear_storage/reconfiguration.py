@@ -154,7 +154,11 @@ def prepare(processor, conn, feedback_id, body):
     )
     added = (set(body.read_types) - reads) | (set(body.subscribe_types) - subs)
     if added & recovery:
-        raise ManagementFailure("need_recovery_decision")
+        from ear_storage.history import decision
+
+        approved = decision(conn, body)
+        if approved is None:
+            raise ManagementFailure("need_recovery_decision")
     rows = consumer_snapshot(conn, body.module)
     if rows and processor.consumers is None:
         raise ResourcesPending("broker_not_configured")
@@ -287,6 +291,10 @@ def activate(processor, conn, feedback_id, body, plan):
     # may finish configuration, but revoke/rotate during I/O changes the epoch
     # above and must abort, even if active remained false throughout. Only a new
     # authorized credential claim may reactivate it; module enable stays separate.
+    from ear_storage.history import decision, switch
+
+    approved = decision(conn, body)
+    recovered = set(json.loads(approved[2])) if approved else set()
     seq = one(conn, "SELECT commit_seq FROM storage.meta WHERE singleton")[0]
     for resource in plan["resources"]:
         name = resource["name"]
@@ -303,13 +311,14 @@ def activate(processor, conn, feedback_id, body, plan):
                 "INSERT INTO storage.consumer_type_cursors VALUES (%s,%s,%s) "
                 "ON CONFLICT(consumer,data_type) DO UPDATE SET "
                 "effective_commit_seq=EXCLUDED.effective_commit_seq",
-                (name, dtype, seq),
+                (name, dtype, approved[3] if approved and dtype in recovered else seq),
             )
         conn.execute(
             "UPDATE storage.consumers SET generation=%s,config_text=%s,ready=true,"
             "fence=fence+1,lease_until='-infinity' WHERE name=%s",
             (resource["generation"], canonical_json(resource["config"]), name),
         )
+    switch(conn, body)
     _replace_permissions(conn, body)
     # Unrelated recovery inputs are intentionally not cleared by granting a new type.
     conn.execute(
