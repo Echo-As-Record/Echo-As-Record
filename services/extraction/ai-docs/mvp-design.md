@@ -1,10 +1,16 @@
 ---
+audience: ai
+doc-type: design
+status: superseded
+superseded-by: ../../../docs/design/design-v1.2.md
 generated-by: Codex (AI)
 generated-at: 2026-11-05
 based-on: docs/design/design-v1.1.md, docs/design/signals-supplement.md, dev 48d3c51
 ---
 
-# ④ 活动提取 MVP 设计
+# ④ 活动提取 MVP 设计（历史）
+
+本设计已由[设计 v1.2](../../../docs/design/design-v1.2.md)替代。当前迁移范围及契约缺口见[v1.2 迁移记录](v12-migration.md)。下文仅保留初版实现依据。
 ## 1. 目标与边界
 
 将一段时间内的录音转写、GPS 和手机信息整理成活动，根据用户规则生成 Markdown 笔记、待办及待审核的日历／提醒建议。人物归属纠正后，按⑤的请求重新判断相关产物。

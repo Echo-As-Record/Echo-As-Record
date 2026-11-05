@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 
 from ear_contracts import RawRecord, SemanticRecord
@@ -12,7 +11,6 @@ from ear_extraction.domain import Activity, Interval, Segmentation, Waiting
 from ear_extraction.persistence import records, semantic
 
 RAW_TYPES = ("transcript_segment", "ambient_sound", "gps_point", "phone_info", "local_speaker")
-REFERENCES = re.compile(r"\[\[(person|place):([^\]]+)\]\]")
 
 
 @dataclass
@@ -25,7 +23,16 @@ class Inputs:
         data = {"evidence": [r.model_dump(mode="json") for r in self.raw]}
         if not anonymous:
             data["attributions"] = [r.model_dump(mode="json") for r in self.attributions]
-            data["entities"] = [r.model_dump(mode="json") for r in self.entities]
+            # Only names enter model context; references are attribution's concern.
+            data["entities"] = [
+                {
+                    "id": r.id,
+                    "data_type": r.data_type,
+                    "version": r.version,
+                    "payload": {"name": r.payload.get("name")},
+                }
+                for r in self.entities
+            ]
         return data
 
 
@@ -52,13 +59,9 @@ def inputs(reader: Reader, interval: Interval) -> Inputs:
     return Inputs(raw, attrs, list(entities.values()))
 
 
-def check_refs(text: str, entities: list[SemanticRecord]) -> None:
-    allowed = {(r.data_type, r.id) for r in entities}
-    refs = REFERENCES.findall(text)
-    if any(ref not in allowed for ref in refs):
-        raise ValueError("unknown_entity_reference")
-    if "[[" in REFERENCES.sub("", text):
-        raise ValueError("invalid_reference_syntax")
+def check_markdown(text: str) -> None:
+    if "[[person:" in text or "[[place:" in text:
+        raise ValueError("legacy_entity_reference_not_allowed")
 
 
 def validate_activity(activity: Activity, interval: Interval, evidence: list[RawRecord]) -> None:

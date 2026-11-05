@@ -41,8 +41,10 @@ class DemoGateway:
             r for r in call.data["attributions"] if r["payload"]["target_type"] == "person"
         )
         pid = person["payload"]["target_id"]
+        entity = next(e for e in call.data["entities"] if e["id"] == pid)
+        name = entity["payload"].get("name") or "未命名人物"
         result = {
-            "body_md": f"- [[person:{pid}]] 整理实验结果。",
+            "body_md": f"- {name} 整理实验结果。",
             "evidence_ids": [evidence[0]["id"]],
         }
         rule = call.data["rule"]["payload"]

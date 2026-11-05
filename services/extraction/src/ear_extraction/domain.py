@@ -97,6 +97,7 @@ class Command(Model):
     # Returned by preview_reextract. Exact version set is required, even when empty.
     preview: dict[str, int] | None = None
     description: str = ""
+    cause: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def required_fields(self) -> Self:
@@ -123,6 +124,7 @@ class Command(Model):
 
 
 class Call(Model):
+    request_id: str | None = None
     module: Literal["extraction"] = "extraction"
     root_feedback_id: str
     depth: int
