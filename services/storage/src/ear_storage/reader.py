@@ -22,6 +22,7 @@ from ear_storage_client.engine import State, canonical_json, stale
 from ear_storage_client.queries import DependencySet, Page, QueryItem, StaleDependency
 from psycopg import sql
 
+from ear_storage.causality import visible_trace_sql
 from ear_storage.repository import registry_from_db, table_name
 from ear_storage.schema import connection, has_type_revisions, one, table
 
@@ -108,6 +109,8 @@ def dependents(
 
 
 class PostgresReader:
+    read_types: frozenset[str] | None = None
+
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
 
@@ -233,6 +236,8 @@ class PostgresReader:
             raise InvalidRequest("source_user only applies to raw records")
         params: list[Any] = [query.data_type]
         predicates: list[sql.SQL | sql.Composed] = [sql.SQL("r.data_type=%s")]
+        if self.read_types is not None:
+            predicates.append(visible_trace_sql(self.read_types))
         if spec.versioned and not query.include_superseded:
             predicates.append(sql.SQL("NOT r.superseded"))
         if query.source_user is not None:

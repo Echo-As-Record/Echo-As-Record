@@ -12,13 +12,13 @@ from __future__ import annotations
 
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from ear_contracts.base import DataType, Id, RootFeedbackId, SnakeCase, UtcDatetime
-from ear_contracts.events import Cause
+from ear_contracts.events import Cause, TraceFields
 
 
-class ReevaluationResult(BaseModel):
+class ReevaluationResult(TraceFields):
     model_config = ConfigDict(frozen=True, extra="allow")
     request_event_id: Id
     target_type: DataType

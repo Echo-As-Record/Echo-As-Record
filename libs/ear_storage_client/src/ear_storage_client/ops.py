@@ -13,8 +13,10 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from ear_contracts import Cause, NewRawRecord, ReevaluationResult, VersionRef, is_id
+from ear_contracts.events import AdditionalCauses
 from pydantic import BaseModel, Field
 
+from ear_storage_client.context import checked_traces
 from ear_storage_client.errors import InvalidRequest
 
 _SNAKE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -254,10 +256,12 @@ class PublishReevaluation:
     cause: Cause
     change_description: str
     event_id: str | None = None
+    additional_causes: AdditionalCauses = ()
 
     def __post_init__(self) -> None:
         _check_type(self.target_type)
         _check_id(self.target_id, "target_id")
+        object.__setattr__(self, "additional_causes", checked_traces(self.additional_causes))
         if self.event_id is not None:
             _check_id(self.event_id, "event_id")
 

@@ -29,6 +29,7 @@ from ear_contracts.base import (
     SnakeCase,
     UtcDatetime,
 )
+from ear_contracts.events import TraceFields
 
 DataKind = Literal["raw_record", "semantic", "rule", "system_record"]
 VersionStatus = Literal["active", "superseded"]
@@ -111,7 +112,7 @@ class RawRecord(BaseModel):
         return "raw_record"
 
 
-class SemanticRecord(BaseModel):
+class SemanticRecord(TraceFields):
     """语义信息、归属关系、规则的一个版本（contracts/records/semantic-record.schema.json）。"""
 
     model_config = _READ
@@ -124,6 +125,7 @@ class SemanticRecord(BaseModel):
     dedup_key: str | None = Field(min_length=1)
     payload: dict[str, Any]
     writer: ModuleName
+    request_event_id: Id | None = None
     root_feedback_id: RootFeedbackId
     depth: int = Field(ge=0)
     skip_history: bool

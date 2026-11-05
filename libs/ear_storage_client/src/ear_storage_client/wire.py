@@ -69,7 +69,13 @@ def _value(value: Any) -> Any:
     if isinstance(value, datetime):
         return format_utc(value)
     if is_dataclass(value) and not isinstance(value, type):
-        return {f.name: _value(getattr(value, f.name)) for f in fields(value)}
+        return {
+            f.name: _value(getattr(value, f.name))
+            for f in fields(value)
+            if not (
+                f.name in {"additional_causes", "request_event_id"} and not getattr(value, f.name)
+            )
+        }
     if isinstance(value, Mapping):
         return {k: _value(v) for k, v in value.items()}
     if isinstance(value, list | tuple):
@@ -120,6 +126,7 @@ def decode_request(text: str) -> tuple[tuple[WriteOp, ...], Context]:
         if not isinstance(data, dict) or type(data.get("codec")) is not int or data["codec"] != 1:
             raise InvalidRequest("unsupported request codec")
         check_keys(data["context"], {f.name for f in fields(Context)})
+        validate_traces(data["context"].get("additional_causes", []))
         context = CONTEXT_ADAPTER.validate_json(canonical_json(data["context"]), strict=True)
         ops = []
         if not isinstance(data["ops"], list):
@@ -218,6 +225,22 @@ def utc_fields(body: dict[str, Any], names: tuple[str, ...]) -> None:
             raise InvalidRequest("timestamps must be UTC JSON strings ending in Z")
 
 
+def validate_traces(values: Any) -> None:
+    from ear_contracts import Cause, TracedCause
+
+    if not isinstance(values, list) or len(values) > 256:
+        raise InvalidRequest("invalid additional_causes")
+    for trace in values:
+        check_keys(trace, set(TracedCause.model_fields))
+        check_keys(trace["cause"], set(Cause.model_fields))
+        if type(trace.get("depth")) is not int:
+            raise InvalidRequest("trace depth must be integer")
+        for key in ("old_version", "new_version"):
+            value = trace["cause"].get(key)
+            if not (key == "old_version" and value is None) and type(value) is not int:
+                raise InvalidRequest("cause versions must be integers")
+
+
 def validate_operation(name: str, body: dict[str, Any]) -> None:
     classes = (
         AppendRaw,
@@ -234,6 +257,7 @@ def validate_operation(name: str, body: dict[str, Any]) -> None:
     cls = next(cls for cls in classes if cls.__name__ == name)
     check_keys(body, {f.name for f in fields(cls)})
     utc_fields(body, ("event_start", "event_end"))
+    validate_traces(body.get("additional_causes", []))
     if name == "AppendRaw":
         record = body["record"]
         check_keys(record, set(NewRawRecord.model_fields))
@@ -249,6 +273,7 @@ def validate_operation(name: str, body: dict[str, Any]) -> None:
     elif name == "FinishReevaluation":
         check_keys(body["result"], set(ReevaluationResult.model_fields))
         utc_fields(body["result"], ("completed_at",))
+        validate_traces(body["result"].get("additional_causes", []))
         for cause in body["result"].get("extra_causes", []):
             for key in ("old_version", "new_version"):
                 value = cause.get(key)

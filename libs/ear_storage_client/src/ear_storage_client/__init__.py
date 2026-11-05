@@ -4,6 +4,8 @@
 接口说明见 services/storage/ai-docs/interface.md。
 """
 
+from ear_contracts import TracedCause
+
 from ear_storage_client.completion import reevaluation_result
 from ear_storage_client.context import Context
 from ear_storage_client.errors import (
@@ -102,6 +104,7 @@ __all__ = [
     "StorageError",
     "Supersede",
     "TimeRange",
+    "TracedCause",
     "TypeRevision",
     "Update",
     "WriteOp",

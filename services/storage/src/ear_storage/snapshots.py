@@ -35,6 +35,7 @@ from ear_storage_client.queries import DependencySet
 from psycopg import sql
 
 from ear_storage.auth import Principal, can_use_consumer
+from ear_storage.causality import record_input_types, visible_trace_sql
 from ear_storage.schema import (
     ProjectionLimit,
     check_schema,
@@ -123,13 +124,15 @@ def _sources(conn: psycopg.Connection, principal: Principal):
     if conn.execute("SELECT to_regclass('storage.request_completions')").fetchone() != (None,):
         # A constant marker distinguishes an empty captured index from a legacy lease.
         yield (sql.SQL("SELECT 'completion_index','v1','','1'"), [])
-        yield (
-            sql.SQL(
-                "SELECT 'completion',event_id,result_type,to_json(result_type)::text "
-                "FROM storage.request_completions WHERE result_type=ANY(%s)"
-            ),
-            [reads],
-        )
+        for (module,) in conn.execute("SELECT module FROM storage.modules"):
+            yield (
+                sql.SQL(
+                    "SELECT 'completion',c.event_id,c.result_type,to_json(c.result_type)::text "
+                    "FROM storage.request_completions c JOIN {} r "
+                    "ON r.id=c.event_id WHERE c.result_type=ANY(%s) AND {}"
+                ).format(table(module, "system_records"), visible_trace_sql(reads)),
+                [reads],
+            )
     modules = conn.execute(
         "SELECT DISTINCT module FROM storage.identity WHERE data_type=ANY(%s)", (reads,)
     )
@@ -142,8 +145,14 @@ def _sources(conn: psycopg.Connection, principal: Principal):
             yield (
                 sql.SQL(
                     "SELECT %s::text,r.id||'/'||r.seq,r.data_type,r.record_text FROM {} r "
-                    "WHERE r.data_type=ANY(%s)"
-                ).format(table(module, name)),
+                    "WHERE r.data_type=ANY(%s) AND {} AND NOT EXISTS "
+                    "(SELECT 1 FROM {} c WHERE c.id=r.id AND NOT ({}))"
+                ).format(
+                    table(module, name),
+                    visible_trace_sql(reads),
+                    table(module, name),
+                    visible_trace_sql(reads, text="c.record_text", dtype="c.data_type"),
+                ),
                 [kind, reads],
             )
     yield (
@@ -383,9 +392,18 @@ def load_reader(
             state.raw[raw.id] = raw
         elif kind == "version":
             record = SemanticRecord.model_validate_json(text)
+            if any(t.cause.data_type not in principal.read_types for t in record.additional_causes):
+                denied.add(record.id)
+                continue
             versions.setdefault(record.id, []).append(record)
         elif kind == "system":
             system = SystemRecord.model_validate_json(text)
+            if (
+                not record_input_types(system, Registry(specs, {}, frozenset(core)))
+                <= principal.read_types
+            ):
+                denied.add(system.id)
+                continue
             systems.setdefault(system.id, []).append(system)
         elif kind == "group":
             groups.append(json.loads(text))
@@ -403,10 +421,17 @@ def load_reader(
             consumer, event = json.loads(text)
             if can_use_consumer(conn, principal, consumer):
                 state.processed[(consumer, event)] = None
-    state.versions = {id: tuple(sorted(vs, key=lambda r: r.version)) for id, vs in versions.items()}
+    state.versions = {
+        id: tuple(sorted(vs, key=lambda r: r.version))
+        for id, vs in versions.items()
+        if id not in denied
+    }
     for id, history in systems.items():
         history.sort(key=lambda r: r.revision)
         state.system[id] = history[-1]
+    state.completions = {
+        eid: dtype for eid, dtype in state.completions.items() if eid in state.system
+    }
     for id, version, dtype, who, when, hidden in groups:
         group_key = (id, version)
         if hidden:

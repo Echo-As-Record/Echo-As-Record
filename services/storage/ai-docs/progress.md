@@ -1,12 +1,12 @@
 ---
 audience: ai
 doc-type: status
-based-on: origin/dev 48d3c51 的代码与契约；docs/design/design-v1.2.md；docs/design/plugins-mvp.md；ADR-0001；6cea0b7 实施准备（当时无实现改动）；storage/implementation-preparation 分支 P0a 提交 a6a1c5a、P0b 提交 cf337d1、P1 提交 d7c9919（提交前完整检查日志 /tmp/ear-p1http-full-OK7Aeg.log，exit 0）、P2/P3 后端提交 d0d8875（schema revision 5–8：Relay 与持久消费者、管理反馈、凭据、订阅重配置）与合并提交 b7307e9（HEAD，同步 dev 4afeae0 的模块④，未改④代码），均在 PR8、未合并；各阶段日志 /tmp/ear-p2b-mustfix/closing-*.log 及 .exit、/tmp/ear-p3-reliability-*.log、/tmp/ear-p3-credentials-{final,refresh}-*.log 与 /tmp/ear-p3-credentials-state.json、/tmp/ear-p3-checkpoint-validation.log（exit 0），以及 b7307e9 后的默认检查结果；项目负责人（用户）采用推荐方案并授权功能分支持续实现、分批提交推送提 PR、合并前由负责人兼 I 审核
+based-on: origin/dev 48d3c51 的代码与契约；docs/design/design-v1.2.md；docs/design/plugins-mvp.md；ADR-0001；6cea0b7 实施准备（当时无实现改动）；storage/implementation-preparation 分支 P0a 提交 a6a1c5a、P0b 提交 cf337d1、P1 提交 d7c9919（提交前完整检查日志 /tmp/ear-p1http-full-OK7Aeg.log，exit 0）、P2/P3 后端提交 d0d8875（schema revision 5–8：Relay 与持久消费者、管理反馈、凭据、订阅重配置）与合并提交 b7307e9（同步 dev 4afeae0 的模块④，未改④代码）、P4 集合守护提交 f747e89（schema revision 9）、P4 重判完成记录提交 106cd2e（完整真实运行日志 /tmp/ear-p4-completion-full.log，日志内 EXIT=0，并有 /tmp/ear-p4-completion-full.exit），均在 PR8、未合并；106cd2e 之上的多起因已在本分支实现（提交状态以提交历史为准），其完整真实运行 /tmp/ear-p4-causality-full.log 为 1168 passed / 5 skipped（日志内 EXIT=0，/tmp/ear-p4-causality-full.exit 为 0）；各阶段日志 /tmp/ear-p2b-mustfix/closing-*.log 及 .exit、/tmp/ear-p3-reliability-*.log、/tmp/ear-p3-credentials-{final,refresh}-*.log 与 /tmp/ear-p3-credentials-state.json、/tmp/ear-p3-checkpoint-validation.log（exit 0），以及 b7307e9 后的默认检查结果；项目负责人（用户）采用推荐方案并授权功能分支持续实现、分批提交推送提 PR、合并前由负责人兼 I 审核
 ---
 
 # ① 实现状态与新目标差距
 
-[设计](../../../docs/design/design-v1.2.md)、[插件](../../../docs/design/plugins-mvp.md)和[ADR](../../../docs/adr/0001-storage-and-runtime-modules.md)已采纳；采纳决定不等于已实现。本分支已提交 P0a（a6a1c5a）、P0b（cf337d1）、P1（d7c9919）、P2 与 P3 后端（d0d8875），并以 b7307e9 合并 dev 4afeae0（模块④，未改其代码）；均在 PR8，未合并、未经合并前审核（负责人兼 I）。P3 只余⑥管理页对接；P4 仅①侧集合守护（schema revision 9）已在本分支实现并定向验证（见 P4 节），完成记录、多起因等其余 P4 未做，不是完整 P4；P5 未做，不是完整 MVP。所有权及接口目标见[人读说明](../../../docs/modules/storage.md)。
+[设计](../../../docs/design/design-v1.2.md)、[插件](../../../docs/design/plugins-mvp.md)和[ADR](../../../docs/adr/0001-storage-and-runtime-modules.md)已采纳；采纳决定不等于已实现。本分支已提交 P0a（a6a1c5a）、P0b（cf337d1）、P1（d7c9919）、P2 与 P3 后端（d0d8875），并以 b7307e9 合并 dev 4afeae0（模块④，未改其代码）；均在 PR8，未合并、未经合并前审核（负责人兼 I）。P3 只余⑥管理页对接；P4 已提交①侧集合守护（f747e89，schema revision 9）与按所属方验证的重判完成记录及权威查询（106cd2e），多起因（`additional_causes`）已在本分支实现（提交状态以提交历史为准，见 P4 节）；⑦日志接口与③④⑤业务接入未做，不是完整 P4；P5 未做，不是完整 MVP。所有权及接口目标见[人读说明](../../../docs/modules/storage.md)。
 
 ## 已有代码
 
@@ -23,13 +23,13 @@ based-on: origin/dev 48d3c51 的代码与契约；docs/design/design-v1.2.md；d
 | 字段依赖/强制登记/防环 | 内存（P0b）与 PostgreSQL（P1）已实现；核心类型 `requires_dependencies` 全为 false，需③④迁移验证后按类型启用 |
 | 动态注册与可信权限 | P3 后端（d0d8875）：运行时数据库登记表、动态创建模块 namespace、启停与权限替换、可信管理员角色、凭据经管理反馈的轮换/撤销与一次性领取（revision 7）、订阅完整重配置（revision 8），见 P3 节。**缺**：⑥管理页对接；按模块隔离的 NATS 账户（与 I） |
 | 管理反馈 | P3 后端（d0d8875）：①管理反馈处理器、可恢复阶段、`retry_task`、`rotate_credentials` / `revoke_credentials` 与一次性 claim、订阅重配置、管理结果系统记录。**缺**：⑥管理页面；`AuthOperator` 不能代替日常管理 |
-| 完成记录与调度交接 | 缺③④及插件通用结果类别、多起因与请求关联的兼容契约（P4）；①侧集合守护已实现（schema revision 9，见 P4 节），③④接入未做 |
+| 完成记录与调度交接 | ①侧：集合守护（f747e89，schema revision 9）与重判完成记录（106cd2e：权威索引验真，需显式 `reevaluation_result` 能力）已提交；多起因与请求关联已在本分支实现（见 P4 节）。**缺**：③④⑤接入（④入队 marker 不是业务完成，④业务未改）、⑦日志接口（P4） |
 | 最新规则/纯Markdown/选择结果 | 主要属于③④⑤业务对齐；①提供所需类型、依赖及事务支持（P4） |
 | 插件多层/历史处理 | 缺历史恢复的补或跳、快照游标、多层集成与示例插件（P5）；当前注册默认只收未来事件 |
 
 ## 下一步
 
-P2/P3 后端已提交 d0d8875 并推送到 PR8；b7307e9 合并了 dev 4afeae0（模块④，①未改其代码或文档）。合并后只跑了默认检查（见 P3 节“检查点与合并后验证”），**尚未做合并后的完整真实运行**，应先补跑；CI 已配置真实 PostgreSQL 与 NATS，但**尚未在远程运行过**。P3 剩余⑥管理页对接。之后按[全局实施计划](../../../ai-docs/plans/mvp-implementation.md)进入 P4 其余部分（业务完成记录、多起因、③④接入集合守护；①侧守护已实现，见 P4 节）、P5（插件历史补/跳任务、多层集成与示例插件）。部署与I合作，页面归⑥，传播调度归⑤；不要让①包办业务模块。
+P2/P3 后端已提交 d0d8875 并推送到 PR8；b7307e9 合并了 dev 4afeae0（模块④，①未改其代码或文档）。b7307e9 本身只跑了默认检查（见 P3 节“检查点与合并后验证”）；文档记录中合并后的首次完整真实运行在 106cd2e（1091 passed / 0 skipped，见 P4 节）；CI 已配置真实 PostgreSQL 与 NATS，但**尚未在远程运行过**。P3 剩余⑥管理页对接。P4 ①侧已提交集合守护（f747e89）与重判完成记录（106cd2e），多起因已在本分支实现（见 P4 节）；之后按[全局实施计划](../../../ai-docs/plans/mvp-implementation.md)完成 P4 其余部分（⑦日志接口、③④⑤接入完成记录与集合守护）、P5（插件历史补/跳任务、多层集成与示例插件）。部署与I合作，页面归⑥，传播调度归⑤；不要让①包办业务模块。
 
 不要把 `test_memory.py::test_concurrent_writers`（顺序旧版本冲突）当真正并发测试；真实多进程竞争在 `services/storage/tests/test_p1a_regressions.py`。SDK用法与命令见[工程指南](interface.md)。
 
@@ -38,7 +38,7 @@ P2/P3 后端已提交 d0d8875 并推送到 PR8；b7307e9 合并了 dev 4afeae0�
 - 模块④：合入的 `services/extraction/` 是 v1.1 演示基线，其文档注明不代表 v1.2（见[④实现记录](../../extraction/ai-docs/implementation.md)）。仍使用特殊实体标记、旧规则阻塞，没有 `rule_selection`；其原有 39 项测试通过**不等于**已与 v1.2 对齐。①未改④的代码或文档；④按类型启用强制依赖登记、完成记录、接入集合守护等仍待④迁移（P4）。P4 集合守护后，默认运行中④原有 39 项仍通过；这不代表④已与①远程服务集成。
 - `services/extraction/README.md` 不存在（AGENTS 要求的模块入口缺口），已报告，由④负责方补；①不代写。
 - 待通知：P0b 契约字段与能力项、P3 新增的两个登记类型，尚未通知③④及 `api` 负责方。
-- 待办：合并前人工审核（负责人兼 I）；b7307e9 后的完整真实运行；远程 CI；⑥管理页对接。
+- 待办：合并前人工审核（负责人兼 I）；多起因工作区的提交（完整真实运行 EXIT=0，见 P4 节）；远程 CI；⑥管理页对接。
 
 ## 实施准备（历史记录，基线 6cea0b7）
 
@@ -198,14 +198,14 @@ P2/P3 后端已提交 d0d8875 并推送到 PR8；b7307e9 合并了 dev 4afeae0�
 ### 检查点与合并后验证
 
 - merge 前 P3 检查点（d0d8875 的代码）：`/tmp/ear-p3-checkpoint-validation.log`，启用真实 PostgreSQL + 隔离 NATS 的完整 `pytest` **916 passed、0 skipped**，338.05 s，exit 0。
-- b7307e9（合并 dev 4afeae0 后）：默认 `pytest` 657 passed、298 skipped（3.57 s）；pyright 0 错误；ruff（89 个文件）与 check_docs（28 个文档）通过。**合并后尚未做完整真实运行**，不能把 916 记为 b7307e9 的结果。
+- b7307e9（合并 dev 4afeae0 后）：默认 `pytest` 657 passed、298 skipped（3.57 s）；pyright 0 错误；ruff（89 个文件）与 check_docs（28 个文档）通过。b7307e9 本身未做完整真实运行，不能把 916 记为 b7307e9 的结果；合并后首次完整真实运行在 106cd2e，见 P4 节。
 - 远程 CI 尚未运行这批代码。
 
 ## P4、P5（未完成）
 
-P4：①侧规则集合守护（schema revision 9）已在本分支实现并定向验证（见下），**不是 P4 完成**。业务完成记录、多起因等③④⑤⑦接口未做，③④尚未接入守护。P5 未做：插件历史恢复（补/跳）、多层集成、示例插件。
+P4：①侧规则集合守护（f747e89，schema revision 9）与重判完成记录（106cd2e）已提交，多起因已在本分支 106cd2e 之上实现（提交状态以提交历史为准，见下），**不是 P4 完成**。⑦日志接口未做；③④⑤尚未接入完成记录与守护。P5 未做：插件历史恢复（补/跳）、多层集成、示例插件。
 
-### 集合守护（schema revision 9）
+### 集合守护（schema revision 9，提交 f747e89）
 
 - 接口：`Reader.type_revision(data_type) -> int`（内存、PostgreSQL 服务、HTTP 与 snapshot reader）；提交期操作 `AssertTypeRevision(data_type, expected_revision)`，`expected_revision` 须为非负整数（拒绝 bool）。不匹配返回可重试冲突 `collection_changed`：须在同一 snapshot 内重新查询并取 revision 后重算，不能原样重提交。
 - 一致性：查询结果与 revision 必须取自**同一 snapshot**；两次独立的实时调用不构成一致的一对。
@@ -222,5 +222,22 @@ P4：①侧规则集合守护（schema revision 9）已在本分支实现并定�
 - 默认 `pytest`：676 passed、311 skipped；ruff、ruff format（91 个文件）、pyright（0 错误）通过。
 - 真实 PostgreSQL/NATS 分组：type_revisions 13、迁移 28、snapshot 38、授权 42、管理 27、管理 NATS 6、持久化/HTTP 43。各组互有重叠，**不能相加**，也**不等于**完整真实运行（全部 987 项未跑）。
 - 远程 CI 未运行。
+
+### 重判完成记录与权威查询（提交 106cd2e）
+
+- 范围：按所属方验证的重判完成记录与权威查询，供③④⑤及插件后续接入；①只做存储与校验，不承担业务完成判断。
+- 验真：完成协议只以①的权威索引验证请求与所属方，不信任调用方自报。
+- 能力：类型须在登记表显式声明 `reevaluation_result` 能力才受完成协议保护；普通名称后缀不会自动获得保护；旧的同名类型保持兼容。
+- ④：④的入队 marker 只表示已入队，不是业务完成；本提交未改④业务代码。
+- 验证：`/tmp/ear-p4-completion-full.log`，真实 PostgreSQL + 隔离 NATS 完整 `pytest` **1091 passed、0 skipped**，日志内 EXIT=0（DURATION=382.71）。远程 CI 未运行。
+
+### 多起因（本分支已实现，基于 106cd2e）
+
+- 范围：契约 `data-changed`、`reevaluation-requested`、`reevaluation-result`、`semantic-record` schema 及 multi-origin 正例与 depth 反例；`ear_contracts`；`ear_storage_client`（context、completion、engine、ops、wire）；服务端新增 `causality.py` 并改 backend、consumers、reader、repository、service、snapshots。提交状态以提交历史为准。
+- 兼容：原有 `cause` / `root` / `depth` 含义不变，仍表示主起因。
+- 新增 `additional_causes`：每项（`TracedCause`）只有自己的 `cause`、`root_feedback_id`、`depth`（≥1），不含 `request_event_id` 或 `trigger_request_event_id`。请求关联在别处：`request_event_id` 位于 Context、语义记录与 `DataChanged`；`ReevaluationRequested.trigger_request_event_id` 指向上游请求。关联必须指向真实已提交的请求，不能指向自身（拒绝自循环）。
+- 执行中：新增来源须先在 Context 中预合并，并与 Finish 一致，保证后续事件携带完整来源。
+- 权限：逐 origin 复核读权限，覆盖历史读取、结果、消费者投递与旧消费者代的待确认消息。
+- 验证：`/tmp/ear-p4-causality-full.log`，真实 PostgreSQL + 隔离 NATS 完整 `pytest` **1168 passed、5 skipped**（JUnit `/tmp/ear-p4-causality-full.xml`：共 1173 项，0 failed、0 error），日志内 EXIT=0（DURATION=436.33；`/tmp/ear-p4-causality-full.exit` 为 0）。5 个 skip 均为 `memory` 参数化用例，该后端不适用认证路径（跳过原因 requires authenticated PostgreSQL），不是缺少真实环境：`test_association_authorization_and_replay_without_finish[memory-target]`（requires authenticated PostgreSQL）；`test_association_authorization_and_replay_without_finish[memory-primary]`（requires authenticated PostgreSQL）；`test_association_authorization_and_replay_without_finish[memory-secondary]`（requires authenticated PostgreSQL）；`test_new_context_origin_permission_and_source_metadata_precedence[memory]`（requires authenticated PostgreSQL）；`test_dependency_can_read_foreign_upstream_and_publish[memory]`（requires authenticated PostgreSQL）。默认 `pytest` 779 passed / 394 skipped 为此前历史结果。远程 CI 未运行。
 
 未完成项不得因文档检查通过而标为完成；进度更新必须对应实际提交和测试结果。

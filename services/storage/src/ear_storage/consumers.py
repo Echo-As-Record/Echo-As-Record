@@ -99,6 +99,7 @@ def authorize_event(
     ):
         raise PermissionDenied("access denied")
     principal.require_read([dtype])
+    principal.require_read(t.cause.data_type for t in event.additional_causes)
     if not isinstance(event, DataChanged):
         if spec.writer != principal.module or not spec.supports_reevaluation:
             raise PermissionDenied("access denied")
@@ -302,6 +303,17 @@ class ConsumerService:
             body["cause"] = event.cause.model_dump(
                 mode="json", include=set(type(event.cause).model_fields)
             )
+        if event.additional_causes:
+            body["additional_causes"] = [
+                {
+                    "cause": t.cause.model_dump(
+                        mode="json", include=set(type(t.cause).model_fields)
+                    ),
+                    "root_feedback_id": t.root_feedback_id,
+                    "depth": t.depth,
+                }
+                for t in event.additional_causes
+            ]
         return {
             "codec": 1,
             "status": "delivery",
@@ -351,13 +363,17 @@ class ConsumerService:
                 "OR (COALESCE(o.event_text::jsonb->>'data_type',"
                 "o.event_text::jsonb->>'target_type')=ANY(%s) AND "
                 "(o.event_text::jsonb->>'event_type'='data_changed' OR "
-                "o.event_text::jsonb->'cause'->>'data_type'=ANY(%s)))) "
+                "o.event_text::jsonb->'cause'->>'data_type'=ANY(%s)) AND "
+                "NOT EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE("
+                "o.event_text::jsonb->'additional_causes','[]'::jsonb)) AS trace "
+                "WHERE NOT COALESCE(trace->'cause'->>'data_type'=ANY(%s),false)))) "
                 "ORDER BY (d.broker_generation=%s) DESC NULLS LAST,d.queue_seq LIMIT 1",
                 (
                     name,
                     row[2],
                     self.relay.destination,
                     sorted(principal.read_types & principal.subscribe_types),
+                    sorted(principal.read_types),
                     sorted(principal.read_types),
                     row[2],
                 ),

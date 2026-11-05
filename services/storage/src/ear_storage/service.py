@@ -53,6 +53,7 @@ from ear_storage.auth import (
     token_digest,
 )
 from ear_storage.backend import PostgresClient, PostgresStorage
+from ear_storage.causality import record_input_types
 from ear_storage.codec import EVENT_ADAPTER, decode_request, encode_request
 from ear_storage.consumers import ConsumerPolicy, ConsumerService, approved_filters, authorize_event
 from ear_storage.reader import ConnectionBoundReader
@@ -97,10 +98,32 @@ def _adopted_marker_replay(
 
 
 def _write_permissions(
-    principal: Principal, reader: ConnectionBoundReader, registry: Registry, ops: Sequence[WriteOp]
+    principal: Principal,
+    reader: ConnectionBoundReader,
+    registry: Registry,
+    ops: Sequence[WriteOp],
+    context: Context,
 ) -> frozenset[str]:
-    reads: set[str] = set()
-    referenced_ids: list[str] = []
+    reads: set[str] = {t.cause.data_type for t in context.additional_causes}
+    referenced_ids: list[str] = [t.cause.data_id for t in context.additional_causes]
+    # Authorize raw outbox source types before model/index validation or replay.
+    principal.require_read(reads)
+    if context.request_event_id is not None:
+        row = reader._conn.execute(
+            "SELECT event_text FROM storage.outbox WHERE event_id=%s",
+            (context.request_event_id,),
+        ).fetchone()
+        if row is not None:
+            metadata = json.loads(row[0])
+            if metadata.get("event_type") == "reevaluation_requested":
+                reads.add(metadata.get("target_type", ""))
+                referenced_ids.append(metadata.get("target_id", ""))
+                causes = [metadata.get("cause", {})]
+                causes.extend(t.get("cause", {}) for t in metadata.get("additional_causes", []))
+                for cause in causes:
+                    reads.add(cause.get("data_type", ""))
+                    referenced_ids.append(cause.get("data_id", ""))
+                principal.require_read(reads)
     for op in ops:
         if isinstance(op, FinishReevaluation):
             result = op.result
@@ -109,6 +132,8 @@ def _write_permissions(
                 raise PermissionDenied("access denied")
             reads.add(result.target_type)
             reads.update(c.data_type for c in result.extra_causes)
+            reads.update(t.cause.data_type for t in result.additional_causes)
+            referenced_ids.extend(t.cause.data_id for t in result.additional_causes)
             referenced_ids.append(result.target_id)
             referenced_ids.extend(c.data_id for c in result.extra_causes)
             event = None
@@ -122,6 +147,8 @@ def _write_permissions(
                 event = EVENT_ADAPTER.validate_json(row[0])
                 if isinstance(event, ReevaluationRequested):
                     reads.update((event.target_type, event.cause.data_type))
+                    reads.update(t.cause.data_type for t in event.additional_causes)
+                    referenced_ids.extend(t.cause.data_id for t in event.additional_causes)
                     referenced_ids.extend((event.target_id, event.cause.data_id))
             principal.require_read(reads)
             if row is not None and isinstance(event, ReevaluationRequested):
@@ -143,6 +170,8 @@ def _write_permissions(
             if principal.module not in registry.publishers_of("reevaluation_requested"):
                 raise PermissionDenied("access denied")
             reads.update((op.target_type, op.cause.data_type))
+            reads.update(t.cause.data_type for t in op.additional_causes)
+            referenced_ids.extend(t.cause.data_id for t in op.additional_causes)
             referenced_ids.extend((op.target_id, op.cause.data_id))
             continue
         dtype = (
@@ -349,7 +378,9 @@ class AuthenticatedClient(AuthorizedReaderMethods):
                 elif method == "get_many":
                     for rid in args[0]:
                         ManagementProcessor(self._backend).reconcile(conn, rid)
+            reader.read_types = principal.read_types
             result = getattr(reader, method)(*args, **kwargs)
+            self._authorize_trace_result(principal, registry_from_db(conn), result)
             if method == "dependency_set" and result is not None:
                 # Never pretend a redacted set is complete (especially an empty set).
                 principal.require_read(edge.depends_on.data_type for edge in result.dependencies)
@@ -361,6 +392,20 @@ class AuthenticatedClient(AuthorizedReaderMethods):
                     and edge.depends_on.data_type in principal.read_types
                 ]
             return result
+
+    @staticmethod
+    def _authorize_trace_result(principal, registry, result) -> None:
+        values = (
+            result.items
+            if isinstance(result, Page)
+            else result.values()
+            if isinstance(result, dict)
+            else result
+            if isinstance(result, list)
+            else (result,)
+        )
+        for value in values:
+            principal.require_read(record_input_types(value, registry))
 
     def write(
         self, ops: Sequence[WriteOp], context: Context, *, request_id: str | None = None
@@ -441,7 +486,7 @@ class AuthenticatedClient(AuthorizedReaderMethods):
                             EVENT_ADAPTER.validate_json(event[0]),
                             prefix,
                         )
-            required = _write_permissions(principal, reader, registry_from_db(conn), ops)
+            required = _write_permissions(principal, reader, registry_from_db(conn), ops, context)
             try:
                 result = PostgresClient(self._backend, principal.module)._write_locked(
                     conn,

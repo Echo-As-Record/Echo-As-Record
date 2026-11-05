@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Any, NoReturn
 
 from ear_contracts import (
+    Cause,
     DataChanged,
     DataTypeSpec,
     DependencyRecord,
@@ -271,6 +272,8 @@ class Transaction:
             old_version=old_version,
             root_feedback_id=self.context.root_feedback_id,
             depth=self.context.depth,
+            additional_causes=self.context.additional_causes,
+            request_event_id=self.context.request_event_id,
             skip_history=skip_history,
             writer=self.module,
             batch_id=self.batch_id,
@@ -339,6 +342,8 @@ class Transaction:
             writer=self.module,
             root_feedback_id=self.context.root_feedback_id,
             depth=self.context.depth,
+            additional_causes=self.context.additional_causes,
+            request_event_id=self.context.request_event_id,
             skip_history=skip_history,
             batch_id=self.batch_id,
             created_at=self.now,
@@ -350,18 +355,31 @@ class Transaction:
         # Resolve persisted request metadata and authorize ALL its inputs before
         # any business conflict or completion validation. Same-batch Publish is not
         # a persisted request and cannot be finished.
-        inputs: set[str] = set()
+        inputs: set[str] = {t.cause.data_type for t in self.context.additional_causes}
+        source = self.initial_requests.get(self.context.request_event_id or "")
+        if source is not None:
+            inputs.update((source.target_type, source.cause.data_type))
+            inputs.update(t.cause.data_type for t in source.additional_causes)
         for op in ops:
             if isinstance(op, FinishReevaluation):
                 result = op.result
                 inputs.add(result.target_type)
                 inputs.update(c.data_type for c in result.extra_causes)
+                inputs.update(t.cause.data_type for t in result.additional_causes)
                 request = self.initial_requests.get(result.request_event_id)
                 if request is not None:
                     inputs.update((request.target_type, request.cause.data_type))
+                    inputs.update(t.cause.data_type for t in request.additional_causes)
+            elif isinstance(op, PublishReevaluation):
+                inputs.update(t.cause.data_type for t in op.additional_causes)
         if self.authorize_inputs is not None:
             self.authorize_inputs(frozenset(inputs))
         self.used_input_types |= inputs
+        self.check_context_request(ops)
+        for trace in self.context.additional_causes:
+            if trace.model_extra:
+                self.invalid("unknown causal write fields")
+            self.validate_cause(trace.cause)
         # Ownership must precede conflicts too: an old marker or guard cannot
         # turn another executor's request into an apparently processed result.
         for op in ops:
@@ -413,6 +431,40 @@ class Transaction:
         self.check_completions(ops)
         self.check_constraints()
         self.check_dependencies()
+
+    def check_context_request(self, ops: Sequence[WriteOp]) -> None:
+        """Validate explicit lineage before output. Never infer roots from extra_causes."""
+        request_id = self.context.request_event_id
+        if request_id is None:
+            return
+        request = self.initial_requests.get(request_id)
+        if request is None:
+            self.invalid("context requires a committed reevaluation request")
+        business = any(
+            isinstance(
+                op,
+                AppendRaw | Create | Update | Supersede | RegisterDependencies | FinishReevaluation,
+            )
+            for op in ops
+        )
+        publishing = any(isinstance(op, PublishReevaluation) for op in ops)
+        if business:
+            self.require_writer(self.spec(request.target_type))
+        offset = 1 if publishing else 0
+        if publishing and business:
+            self.invalid("execution and downstream publication require separate contexts")
+        if any(isinstance(op, PublishReevaluation) and op.event_id == request_id for op in ops):
+            self.invalid("request cannot refer to itself")
+        if (self.context.root_feedback_id, self.context.depth) != (
+            request.root_feedback_id,
+            request.depth + offset,
+        ):
+            self.invalid("context must retain source root and exact execution/publication depth")
+        inherited = tuple(
+            t.model_copy(update={"depth": t.depth + offset}) for t in request.additional_causes
+        )
+        if any(t not in self.context.additional_causes for t in inherited):
+            self.invalid("context must cover every source causal path")
 
     def check_type_revision(self, op: AssertTypeRevision) -> None:
         if self.s.type_revisions.get(op.data_type, 0) != op.expected_revision:
@@ -764,11 +816,30 @@ class Transaction:
         )
         self.result("written", op.data_type, op.id, current.revision + 1, current.revision)
 
+    def validate_cause(self, cause: Cause) -> None:
+        if cause.model_extra:
+            self.invalid("unknown causal write fields")
+        for version in (cause.old_version, cause.new_version):
+            if version is None:
+                continue
+            record = self.s.version(cause.data_id, version)
+            if record is None or record.data_type != cause.data_type:
+                self.invalid("cause must reference an actual typed version")
+
     def publish(self, op: PublishReevaluation) -> None:
         if self.module not in self.registry.publishers_of("reevaluation_requested"):
             raise PermissionDenied(f"{self.module} 不能发布 reevaluation_requested")
         if self.context.depth < 1:
             self.invalid("「请求重新判断」的 depth 至少为 1，请用 Context.deeper()")
+        if op.cause.model_extra:
+            self.invalid("unknown causal write fields")
+        origins = self.context.origins_for(op.additional_causes)
+        for trace in origins:
+            self.validate_cause(trace.cause)
+        # Legacy single-cause requests historically accepted unverified versions.
+        # Multi-origin requests validate the primary path as well.
+        if origins:
+            self.validate_cause(op.cause)
         self.spec(op.target_type)
         target = self.s.current(op.target_id)
         if target is None:
@@ -794,6 +865,8 @@ class Transaction:
             change_description=op.change_description,
             root_feedback_id=self.context.root_feedback_id,
             depth=self.context.depth,
+            additional_causes=origins,
+            trigger_request_event_id=self.context.request_event_id,
         )
         self.s.published[event_id] = None
         self.s.requests[event_id] = event.model_copy(deep=True)
@@ -823,6 +896,17 @@ class Transaction:
             self.context.depth,
         ) != expected:
             self.invalid("completion must retain request context")
+        if (
+            self.context.additional_causes != result.additional_causes
+            or any(t not in self.context.additional_causes for t in request.additional_causes)
+            or self.context.request_event_id not in (None, request.event_id)
+            or (request.additional_causes and self.context.request_event_id != request.event_id)
+        ):
+            self.invalid("completion must retain request identity and all causal paths")
+        for trace in result.additional_causes:
+            if trace.model_extra:
+                self.invalid("unknown causal write fields")
+            self.validate_cause(trace.cause)
         if result.completed_at < request.occurred_at:
             self.invalid("completion predates request")
         if result.request_event_id in self.s.completions:
@@ -944,6 +1028,10 @@ class Transaction:
         if self.authorize_inputs is not None:
             self.authorize_inputs(inputs)
         self.used_input_types |= inputs
+        for trace in self.context.additional_causes:
+            if trace.model_extra:
+                self.invalid("unknown causal write fields")
+            self.validate_cause(trace.cause)
         for index, group in freshness_groups:
             self.index = index
             for dep in group.dependencies:

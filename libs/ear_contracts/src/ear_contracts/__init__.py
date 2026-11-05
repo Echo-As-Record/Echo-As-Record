@@ -24,6 +24,7 @@ from ear_contracts.events import (
     Event,
     Operation,
     ReevaluationRequested,
+    TracedCause,
     parse_event,
     to_json_dict,
 )
@@ -76,6 +77,7 @@ __all__ = [
     "SemanticRecord",
     "Source",
     "SystemRecord",
+    "TracedCause",
     "UnknownDataTypeError",
     "UtcDatetime",
     "VersionRef",

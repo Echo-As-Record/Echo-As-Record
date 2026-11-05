@@ -86,7 +86,7 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 
 ### P4 ③④⑤⑦业务与传播对齐（可在内存基线上并行）
 
-- **当前状态**：未完成。①侧规则集合守护（`type_revision` / `AssertTypeRevision`，schema revision 9）已在存储分支实现并定向验证，③④尚未接入；完成记录、多起因等未做。b7307e9 合入的模块④是演示基线，其说明注明不代表已完成 v1.2（见[④实现记录](../../services/extraction/ai-docs/implementation.md)），④的 v1.2 对齐仍属本阶段。
+- **当前状态**：未完成。存储分支已提交①侧规则集合守护（`type_revision` / `AssertTypeRevision`，schema revision 9，f747e89）与按所属方验证的重判完成记录及权威查询（106cd2e）；多起因（`additional_causes`）已在本分支实现（提交状态以提交历史为准）；⑦日志接口未做，③④⑤尚未接入完成记录与守护（④入队 marker 不是业务完成）。b7307e9 合入的模块④是演示基线，其说明注明不代表已完成 v1.2（见[④实现记录](../../services/extraction/ai-docs/implementation.md)），④的 v1.2 对齐仍属本阶段。
 - ③仅参考匹配时登记references，不因名字字段变化重归属；保留用户确认保护。
 - ④活动仅原始数据；纯Markdown；选择结果按当前规则集合更新，自动/手动来源分离；最新规则或规则失效处理。
 - ③④及插件提交完成记录，⑤查询无变化/失败/不适用，等待已知相关上游、合并原因并保留追溯；不再写死md终点。

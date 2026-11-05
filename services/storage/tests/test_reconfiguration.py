@@ -431,17 +431,24 @@ def test_shrink_broker_failure_keeps_gate_closed_pending_data_and_recovery_choic
     assert restored["need_recovery_decision"]
 
 
-def retired_ack(setup, monkeypatch):
+def retired_ack(setup, monkeypatch, *, context=None):
     """Real G1 delivery, committed completion, failed broker ack, then managed G2."""
     from ear_storage.consumer_broker import ConsumerUnavailable
     from ear_storage.schema import connection
 
     dsn, backend, cfg, service, _, _, _ = setup
     plugin = enable(setup)
+    if context is not None:
+        backend.client("sample").write(
+            [Create("sample_item", context.additional_causes[0].cause.data_id, {})],
+            Context.system(),
+        ).check()
     consumers = service.consumers
     assert consumers is not None
     item = new_id()
-    backend.client("extraction").write([Create("activity", item, {})], Context.system()).check()
+    backend.client("extraction").write(
+        [Create("activity", item, {})], context or Context.system()
+    ).check()
     asyncio.run(run_relay(RelayStore(dsn, cfg), once=True))
     delivery = consumers.fetch(plugin.token, ConsumerRequest(consumer="sample.managed"))["delivery"]
     assert delivery
@@ -629,6 +636,40 @@ def test_retired_ack_cleanup_never_bypasses_security_gates(setup, monkeypatch, g
         consumers.fetch(plugin.token, ConsumerRequest(consumer="sample.managed"))
     assert calls == []
     assert broker_pending(cfg, pending[0]) == 1
+    with connection(dsn) as conn:
+        assert conn.execute(
+            "SELECT ack_pending FROM storage.consumer_deliveries WHERE delivery_id=%s",
+            (old["delivery_id"],),
+        ).fetchone() == (True,)
+
+
+def test_retired_secondary_only_revocation_does_not_block_current(setup, monkeypatch):
+    from ear_contracts import Cause, TracedCause
+    from ear_storage.schema import connection
+
+    dsn, backend, cfg, service, operator, _, _ = setup
+    source = new_id()
+    trace = TracedCause(
+        cause=Cause(data_type="sample_item", data_id=source, old_version=None, new_version=1),
+        root_feedback_id=new_id(),
+        depth=3,
+    )
+    plugin, old, pending, _ = retired_ack(
+        setup, monkeypatch, context=Context("system", 1, additional_causes=(trace,))
+    )
+    operator.set_grants(
+        plugin.principal_id,
+        read_types=["activity", "person"],
+        subscribe_types=["activity", "person"],
+    )
+    future = new_id()
+    backend.client("attribution").write([Create("person", future, {})], Context.system()).check()
+    asyncio.run(run_relay(RelayStore(dsn, cfg), once=True))
+    consumers = service.consumers
+    assert consumers is not None
+    result = consumers.fetch(plugin.token, ConsumerRequest(consumer="sample.managed"))
+    assert result["delivery"]["event"]["data_id"] == future
+    assert source not in str(result) and pending[0] not in str(result)
     with connection(dsn) as conn:
         assert conn.execute(
             "SELECT ack_pending FROM storage.consumer_deliveries WHERE delivery_id=%s",

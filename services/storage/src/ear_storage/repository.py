@@ -110,7 +110,7 @@ class Projection:
         self.bytes += row[1]
         return [r[0] for r in self.conn.execute(query, params)]
 
-    def load(self, ops: Sequence[WriteOp], registry: Registry) -> State:
+    def load(self, ops: Sequence[WriteOp], registry: Registry, context=None) -> State:
         s = State()
         needed = {
             op.record.data_type if isinstance(op, AppendRaw) else op.data_type
@@ -165,6 +165,11 @@ class Projection:
         by_key: dict[tuple[str, int], list[DependencyRecord]] = {}
         refs: set[tuple[str, int]] = set()
         ids: set[str] = set()
+        if context is not None:
+            for trace in context.additional_causes:
+                refs.add((trace.cause.data_id, trace.cause.new_version))
+                if trace.cause.old_version is not None:
+                    refs.add((trace.cause.data_id, trace.cause.old_version))
         recomputed_ids = {op.id for op in ops if isinstance(op, Create | Update)}
         for text in edges:
             dep = DependencyRecord.model_validate_json(text)
@@ -187,11 +192,25 @@ class Projection:
         processed_keys = set()
         published_ids = set()
         request_ids = set()
+        if context is not None and context.request_event_id is not None:
+            request_ids.add(context.request_event_id)
         for op in ops:
             if isinstance(op, FinishReevaluation):
                 request_ids.add(op.result.request_event_id)
                 ids.update((op.result.request_event_id, op.result.target_id))
-                for cause in op.result.extra_causes:
+                for cause in (
+                    *op.result.extra_causes,
+                    *(t.cause for t in op.result.additional_causes),
+                ):
+                    refs.add((cause.data_id, cause.new_version))
+                    if cause.old_version is not None:
+                        refs.add((cause.data_id, cause.old_version))
+            if isinstance(op, PublishReevaluation):
+                origins = (
+                    context.origins_for(op.additional_causes) if context else op.additional_causes
+                )
+                causes = (op.cause, *(t.cause for t in origins)) if origins else ()
+                for cause in causes:
                     refs.add((cause.data_id, cause.new_version))
                     if cause.old_version is not None:
                         refs.add((cause.data_id, cause.old_version))

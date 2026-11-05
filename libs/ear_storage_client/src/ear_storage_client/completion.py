@@ -30,4 +30,4 @@ def _indexed_result(
     result = ReevaluationResult.model_validate(record.payload)
     if result.request_event_id != request_event_id:
         raise InvalidRequest("invalid completion identity")
-    return result
+    return result.model_copy(deep=True)

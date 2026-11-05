@@ -1,7 +1,7 @@
 ---
 audience: ai
 doc-type: guide
-based-on: docs/modules/storage.md；contracts/；libs/ear_storage_client 与 libs/ear_contracts（origin/dev 48d3c51）；原接口说明 v0.2 的职责拆分；设计v1.2同步（代码仍为原基线）；P0a 修复（基于 6cea0b7，首个提交 a6a1c5a）；P0b 字段依赖与登记表能力（cf337d1）；P1 实际代码（提交 d7c9919；services/storage/src/ear_storage，ear_storage_client 的 engine/wire/remote/remote_errors）；P2/P3 后端提交 d0d8875（relay.py、consumers.py、consumer_broker.py、consumer_wire.py 与远程 subscribe；management.py、management_input.py、credentials.py、reconfiguration.py）；合并提交 b7307e9；均在 PR8，未合并
+based-on: docs/modules/storage.md；contracts/；libs/ear_storage_client 与 libs/ear_contracts（origin/dev 48d3c51）；原接口说明 v0.2 的职责拆分；设计v1.2同步（代码仍为原基线）；P0a 修复（基于 6cea0b7，首个提交 a6a1c5a）；P0b 字段依赖与登记表能力（cf337d1）；P1 实际代码（提交 d7c9919；services/storage/src/ear_storage，ear_storage_client 的 engine/wire/remote/remote_errors）；P2/P3 后端提交 d0d8875（relay.py、consumers.py、consumer_broker.py、consumer_wire.py 与远程 subscribe；management.py、management_input.py、credentials.py、reconfiguration.py）；合并提交 b7307e9；P4 集合守护 f747e89、重判完成记录 106cd2e（completion.py）；多起因（causality.py 等）已在本分支实现，提交状态以提交历史为准；均在 PR8，未合并
 ---
 
 # ① SDK 使用与实现导航
@@ -10,7 +10,7 @@ based-on: docs/modules/storage.md；contracts/；libs/ear_storage_client 与 lib
 
 ## 0. 当前代码与新目标不能混淆
 
-本页示例描述现有 SDK，不是 v1.2 的完整接口。P0b（cf337d1）：字段依赖、按能力强制登记、批末新鲜度与当前图无环（内存）。P1（d7c9919）：PostgreSQL 后端、可信 token 身份与读授权、请求 ID 重放、有界 snapshot、HTTP `/v1` 与同步 `RemoteStorageClient`（工程细节见[P1 工程指南](persistent-service-plan.md)，状态见 [progress](progress.md)）。P2（d0d8875）：有序 Outbox Relay → JetStream、服务端授权的持久消费者（经 HTTP `/v1/consumers/*` 代理）与远程 `subscribe`。P3 后端（d0d8875）：管理反馈 `/v1/management/requests` 与 `manage-worker`；凭据动作 `rotate_credentials` / `revoke_credentials` 与一次性领取 `POST /v1/management/credentials/{feedback_id}/claim`（schema revision 7）；订阅范围变更由①经管理反馈做完整重配置（revision 8：新增类型只收切换后的事件，原有积压保留），模块不能靠重新注册扩大订阅。规则与验证见 [progress](progress.md)。以上均在 PR8，**未合并**、未经合并前审核。P4 ①侧集合守护（schema revision 9）同在本分支实现，见第 4 节。**仍未实现**：⑥管理页（P3 余项）；P4 的通用完成记录与多起因；插件历史补/跳（P5）。跟进[实施计划](../../../ai-docs/plans/mvp-implementation.md)，不要因下文旧接口可以调用就跳过新目标。
+本页示例描述现有 SDK，不是 v1.2 的完整接口。P0b（cf337d1）：字段依赖、按能力强制登记、批末新鲜度与当前图无环（内存）。P1（d7c9919）：PostgreSQL 后端、可信 token 身份与读授权、请求 ID 重放、有界 snapshot、HTTP `/v1` 与同步 `RemoteStorageClient`（工程细节见[P1 工程指南](persistent-service-plan.md)，状态见 [progress](progress.md)）。P2（d0d8875）：有序 Outbox Relay → JetStream、服务端授权的持久消费者（经 HTTP `/v1/consumers/*` 代理）与远程 `subscribe`。P3 后端（d0d8875）：管理反馈 `/v1/management/requests` 与 `manage-worker`；凭据动作 `rotate_credentials` / `revoke_credentials` 与一次性领取 `POST /v1/management/credentials/{feedback_id}/claim`（schema revision 7）；订阅范围变更由①经管理反馈做完整重配置（revision 8：新增类型只收切换后的事件，原有积压保留），模块不能靠重新注册扩大订阅。规则与验证见 [progress](progress.md)。以上均在 PR8，**未合并**、未经合并前审核。P4 ①侧集合守护（schema revision 9，f747e89）已提交，见第 4 节；重判完成记录（106cd2e）已提交，多起因已在本分支实现（提交状态以提交历史为准），均见第 6 节。**仍未实现**：⑥管理页（P3 余项）；P4 的⑦日志接口与③④⑤接入；插件历史补/跳（P5）。跟进[实施计划](../../../ai-docs/plans/mvp-implementation.md)，不要因下文旧接口可以调用就跳过新目标。
 
 远程客户端调用规则（以 `libs/ear_storage_client/src/ear_storage_client/remote.py`、`remote_errors.py` 为准）：
 
@@ -131,6 +131,10 @@ assert seen == [record.id]
 handler 内写入的固定处理方式（见第 2 节示例）：先单独判断 `already_processed`（说明之前已提交，正常 return）；其余情况调用 `result.check()`，把冲突转成异常以触发重投。其他冲突应重算或显式失败，不能默默确认。总线无法发现 handler 忽略了 `write()` 的返回值；与本 consumer 无关的事件可以直接 return。
 
 内存辅助功能：`duplicate_delivery=True`、`max_attempts`、`run_until_idle()`、`dead_letters`、`storage.events`、from_beginning 重放。它们不证明跨进程持久化或外部动作恰好执行一次。`run_until_idle` 中，同一 consumer 同时只处理一个事件：多个 runner 或 handler 内嵌套调用会跳过正在处理的 consumer（不等待），由持有它的 runner 继续投递；超过 `max_deliveries` 时抛出 RuntimeError，未投递的事件留在队列中（P0a 修复，状态见 [progress](progress.md)）。
+
+**重判完成记录（P4，106cd2e）**：完成以①的权威索引验真（请求与所属方），不信任调用方自报；只有登记表显式声明 `reevaluation_result` 能力的类型受完成协议保护，名称带普通后缀不会自动受保护，旧同名类型保持兼容。④现有的入队 marker 只表示已入队，不能当业务完成。调用签名以 `ear_storage_client/completion.py` 为准，规则与验证见 [progress](progress.md)。
+
+**多起因（本分支已实现，以代码为准；提交状态以提交历史为准）**：`cause` / `root` / `depth` 保持主起因含义；额外来源放在 `additional_causes`，每项（`TracedCause`）只有 `cause`、`root_feedback_id`、`depth` 三个字段，没有 `request_event_id` 或 `trigger_request_event_id`。请求关联在别处：`request_event_id` 位于 Context、语义记录与 `DataChanged`；`ReevaluationRequested.trigger_request_event_id` 指向上游请求。关联须是真实已提交的请求，不能指向自身。处理中新增的来源须先在 Context 预合并，并与 Finish 一致，后续事件才会带上。①逐 origin 复核读权限（含历史、结果、消费者投递与旧消费者代的待确认消息）。完整真实运行 1168 passed / 5 skipped，见 [progress](progress.md)。
 
 ## 7. 验证与已知边界
 

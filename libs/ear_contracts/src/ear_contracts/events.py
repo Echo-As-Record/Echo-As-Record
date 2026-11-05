@@ -5,9 +5,16 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+)
 
 from ear_contracts.base import DataType, Id, ModuleName, RootFeedbackId, UtcDatetime
 
@@ -16,7 +23,67 @@ Operation = Literal["created", "updated", "superseded"]
 _EVENT = ConfigDict(frozen=True, extra="allow")
 
 
-class DataChanged(BaseModel):
+class Cause(BaseModel):
+    """引起「请求重新判断」的那次修改。"""
+
+    model_config = _EVENT
+    data_type: DataType
+    data_id: Id
+    old_version: int | None = Field(ge=1)
+    new_version: int = Field(ge=1)
+
+
+class TracedCause(BaseModel):
+    """An independent causal path; never a replacement for the primary root/depth."""
+
+    model_config = _EVENT
+    cause: Cause
+    root_feedback_id: RootFeedbackId
+    depth: int = Field(ge=1, strict=True)
+
+
+def unique_traces(values: tuple[TracedCause, ...]) -> tuple[TracedCause, ...]:
+    result: list[TracedCause] = []
+    for value in values:
+        if value not in result:
+            result.append(value)
+    return tuple(
+        sorted(
+            result,
+            key=lambda t: (
+                t.cause.data_type,
+                t.cause.data_id,
+                t.cause.old_version or 0,
+                t.cause.new_version,
+                t.root_feedback_id,
+                t.depth,
+            ),
+        )
+    )
+
+
+AdditionalCauses = Annotated[
+    tuple[TracedCause, ...], Field(max_length=256), AfterValidator(unique_traces)
+]
+
+
+class TraceFields(BaseModel):
+    model_config = _EVENT
+    additional_causes: AdditionalCauses = ()
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_trace(self, handler: SerializerFunctionWrapHandler) -> Any:
+        data = handler(self)
+        if isinstance(data, dict):
+            if not self.additional_causes:
+                data.pop("additional_causes", None)
+            for name in ("request_event_id", "trigger_request_event_id"):
+                if data.get(name) is None:
+                    data.pop(name, None)
+        return data
+
+
+class DataChanged(TraceFields):
     """「数据库被修改」：只由 ① 在写入原始数据、语义信息、归属关系、规则时自动发出。"""
 
     model_config = _EVENT
@@ -30,23 +97,14 @@ class DataChanged(BaseModel):
     old_version: int | None = Field(ge=1)
     root_feedback_id: RootFeedbackId
     depth: int = Field(ge=0)
+    request_event_id: Id | None = None
     skip_history: bool
     # 以下为 DRAFT 新增的可选字段
     writer: ModuleName | None = None
     batch_id: Id | None = None
 
 
-class Cause(BaseModel):
-    """引起「请求重新判断」的那次修改。"""
-
-    model_config = _EVENT
-    data_type: DataType
-    data_id: Id
-    old_version: int | None = Field(ge=1)
-    new_version: int = Field(ge=1)
-
-
-class ReevaluationRequested(BaseModel):
+class ReevaluationRequested(TraceFields):
     """「请求重新判断」：只由 ⑤ 发出，经 ① 投递。"""
 
     model_config = _EVENT
@@ -55,6 +113,7 @@ class ReevaluationRequested(BaseModel):
     occurred_at: UtcDatetime
     target_type: DataType
     target_id: Id
+    trigger_request_event_id: Id | None = None
     cause: Cause
     change_description: str = Field(min_length=1)
     root_feedback_id: RootFeedbackId

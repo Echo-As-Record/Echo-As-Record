@@ -156,7 +156,7 @@ class PostgresClient(PostgresReader):
                 raise InvalidRequest("request_id reused with a different payload/context")
             return decode_result(old[1])
         registry = registry_from_db(conn)
-        before = Projection(conn, limits).load(ops, registry)
+        before = Projection(conn, limits).load(ops, registry, context)
         txn = Transaction(
             before.copy(),
             registry,
@@ -223,6 +223,7 @@ class PostgresClient(PostgresReader):
             if isinstance(op, FinishReevaluation):
                 required.add(op.result.target_type)
                 required.update(c.data_type for c in op.result.extra_causes)
+                required.update(t.cause.data_type for t in op.result.additional_causes)
             for attr in ("data_type", "dependent_type", "target_type"):
                 value = getattr(op, attr, None)
                 if value:
@@ -232,6 +233,7 @@ class PostgresClient(PostgresReader):
                 required.add(record.data_type)
             if isinstance(op, RegisterDependencies):
                 required.update(item.data_type for item in op.inputs())
+            required.update(t.cause.data_type for t in getattr(op, "additional_causes", ()))
             cause = getattr(op, "cause", None)
             if cause is not None:
                 required.add(cause.data_type)
