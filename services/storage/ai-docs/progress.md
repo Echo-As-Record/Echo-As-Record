@@ -1,7 +1,7 @@
 ---
 audience: ai
 doc-type: status
-based-on: origin/dev 48d3c51 的代码与契约；docs/design/design-v1.2.md；docs/design/plugins-mvp.md；ADR-0001；6cea0b7 实施准备（当时无实现改动）；storage/implementation-preparation 分支 P0a 提交 a6a1c5a、P0b 提交 cf337d1、P1 提交 d7c9919（提交前完整检查日志 /tmp/ear-p1http-full-OK7Aeg.log，exit 0）、P2/P3 后端提交 d0d8875（schema revision 5–8：Relay 与持久消费者、管理反馈、凭据、订阅重配置）与合并提交 b7307e9（同步 dev 4afeae0 的模块④，未改④代码）、P4 集合守护提交 f747e89（schema revision 9）、P4 重判完成记录提交 106cd2e（完整真实运行日志 /tmp/ear-p4-completion-full.log，日志内 EXIT=0，并有 /tmp/ear-p4-completion-full.exit），均在 PR8、未合并；106cd2e 之上的多起因提交 daa767f（已推送），其完整真实运行 /tmp/ear-p4-causality-full.log 为 1168 passed / 5 skipped（日志内 EXIT=0，/tmp/ear-p4-causality-full.exit 为 0）；daa767f 之上的⑦调用记录 `llm_call` 与正文策略 `ModelBodyPolicy` 已提交 e9391dd 并推送（状态记录 /tmp/ear-p4-modelcall-state.json、/tmp/ear-p4-bodies-state.json；e9391dd 本身未单独做完整真实运行）；e9391dd 之上的 P5 ①侧插件历史恢复（schema revision 11–14）已在本分支实现（提交状态以提交历史为准；完整真实运行 /tmp/ear-p5-checkpoint-full.log 为 1 failed / 1411 passed / 5 skipped，.exit 为 1；唯一失败测试已修正，定向重跑 /tmp/ear-p5-bootstrap-fixed.log 1 passed、.exit 为 0，未重跑完整，见 P5 节）；各阶段日志 /tmp/ear-p2b-mustfix/closing-*.log 及 .exit、/tmp/ear-p3-reliability-*.log、/tmp/ear-p3-credentials-{final,refresh}-*.log 与 /tmp/ear-p3-credentials-state.json、/tmp/ear-p3-checkpoint-validation.log（exit 0），以及 b7307e9 后的默认检查结果；项目负责人（用户）采用推荐方案并授权功能分支持续实现、分批提交推送提 PR、合并前由负责人兼 I 审核
+based-on: origin/dev 48d3c51 的代码与契约；docs/design/design-v1.2.md；docs/design/plugins-mvp.md；ADR-0001；6cea0b7 实施准备（当时无实现改动）；storage/implementation-preparation 分支 P0a 提交 a6a1c5a、P0b 提交 cf337d1、P1 提交 d7c9919（提交前完整检查日志 /tmp/ear-p1http-full-OK7Aeg.log，exit 0）、P2/P3 后端提交 d0d8875（schema revision 5–8：Relay 与持久消费者、管理反馈、凭据、订阅重配置）与合并提交 b7307e9（同步 dev 4afeae0 的模块④，未改④代码）、P4 集合守护提交 f747e89（schema revision 9）、P4 重判完成记录提交 106cd2e（完整真实运行日志 /tmp/ear-p4-completion-full.log，日志内 EXIT=0，并有 /tmp/ear-p4-completion-full.exit），均在 PR8、未合并；106cd2e 之上的多起因提交 daa767f（已推送），其完整真实运行 /tmp/ear-p4-causality-full.log 为 1168 passed / 5 skipped（日志内 EXIT=0，/tmp/ear-p4-causality-full.exit 为 0）；daa767f 之上的⑦调用记录 `llm_call` 与正文策略 `ModelBodyPolicy` 已提交 e9391dd 并推送（状态记录 /tmp/ear-p4-modelcall-state.json、/tmp/ear-p4-bodies-state.json；e9391dd 本身未单独做完整真实运行）；e9391dd 之上的 P5 ①侧插件历史恢复（schema revision 11–14）已在本分支实现（提交状态以提交历史为准；完整真实运行 /tmp/ear-p5-checkpoint-full.log 为 1 failed / 1411 passed / 5 skipped，.exit 为 1；唯一失败测试已修正，定向重跑 /tmp/ear-p5-bootstrap-fixed.log 1 passed、.exit 为 0，未重跑完整，见 P5 节）；各阶段日志 /tmp/ear-p2b-mustfix/closing-*.log 及 .exit、/tmp/ear-p3-reliability-*.log、/tmp/ear-p3-credentials-{final,refresh}-*.log 与 /tmp/ear-p3-credentials-state.json、/tmp/ear-p3-checkpoint-validation.log（exit 0），以及 b7307e9 后的默认检查结果；P5 已提交 9705b61、②适配器合并 84f20fe；存储切片部署已在本分支实现（提交状态以提交历史为准，无生产启动）及容器冒烟 /tmp/ear-storage-final-smoke.log（.exit 0，16 项）、备份新版真实往返与五种真实竞争 /tmp/ear-final-race-84lx9T/real.log（1 passed in 100.61s）及汇总 /tmp/ear-final-race-close.json（历史失败记录 /tmp/ear-backup-main-final.log 早于新版，已被取代，不代表当前状态）、三开启本地完整运行 /tmp/ear-repro-suite-ykxiUWmy（exit 为 0，1503 passed, 5 skipped, 1 warning in 890.20s；远程 CI 与人工审核尚待），见 deployment.md；项目负责人（用户）采用推荐方案并授权功能分支持续实现、分批提交推送提 PR、合并前由负责人兼 I 审核
 ---
 
 # ① 实现状态与新目标差距
@@ -19,7 +19,7 @@ based-on: origin/dev 48d3c51 的代码与契约；docs/design/design-v1.2.md；d
 
 | 目标 | 差距 |
 |---|---|
-| 独立服务、数据库和总线 | P1 与 P2（d0d8875）已有：PostgreSQL 事务与持久 Outbox、有序 Relay → JetStream、服务端授权的持久消费者（HTTP 代理）与 SDK 订阅。**缺**：生产流保留/清理与容量策略、按模块隔离的 NATS 账户、部署 Compose/NATS 运行环境与远程 CI 实跑（与 I 协作） |
+| 独立服务、数据库和总线 | P1 与 P2（d0d8875）已有：PostgreSQL 事务与持久 Outbox、有序 Relay → JetStream、服务端授权的持久消费者（HTTP 代理）与 SDK 订阅。①存储切片的隔离部署 Compose 与备份/恢复工具已在本分支实现（非生产，见[隔离部署指南](deployment.md)）。**缺**：生产流保留/清理与容量策略、按模块隔离的 NATS 账户、生产部署与升级迁移、备份文件保留/删除、远程 CI 实跑（与 I 协作） |
 | 字段依赖/强制登记/防环 | 内存（P0b）与 PostgreSQL（P1）已实现；核心类型 `requires_dependencies` 全为 false，需③④迁移验证后按类型启用 |
 | 动态注册与可信权限 | P3 后端（d0d8875）：运行时数据库登记表、动态创建模块 namespace、启停与权限替换、可信管理员角色、凭据经管理反馈的轮换/撤销与一次性领取（revision 7）、订阅完整重配置（revision 8），见 P3 节。**缺**：⑥管理页对接；按模块隔离的 NATS 账户（与 I） |
 | 管理反馈 | P3 后端（d0d8875）：①管理反馈处理器、可恢复阶段、`retry_task`、`rotate_credentials` / `revoke_credentials` 与一次性 claim、订阅重配置、管理结果系统记录。**缺**：⑥管理页面；`AuthOperator` 不能代替日常管理 |
@@ -30,7 +30,7 @@ based-on: origin/dev 48d3c51 的代码与契约；docs/design/design-v1.2.md；d
 
 ## 下一步
 
-P2/P3 后端已提交 d0d8875 并推送到 PR8；b7307e9 合并了 dev 4afeae0（模块④，①未改其代码或文档）。b7307e9 本身只跑了默认检查（见 P3 节“检查点与合并后验证”）；文档记录中合并后的首次完整真实运行在 106cd2e（1091 passed / 0 skipped，见 P4 节）；CI 已配置真实 PostgreSQL 与 NATS，但**尚未在远程运行过**。P3 剩余⑥管理页对接。P4 ①侧已提交集合守护（f747e89）与重判完成记录（106cd2e），多起因已提交 daa767f，⑦调用记录的①侧存储已提交 e9391dd（见 P4 节）；P5 ①侧历史恢复已在本分支实现，schema 硬编码测试已修正并定向通过，本批待提交（见 P5 节）；之后按[全局实施计划](../../../ai-docs/plans/mvp-implementation.md)完成 P4 其余部分（⑦网关服务与实际模型调用，③④⑤⑦接入完成记录、集合守护与调用记录）与 P5 其余部分（⑤实际调度接入、④业务改动、多层集成与示例插件）。部署与I合作，页面归⑥，传播调度归⑤；不要让①包办业务模块。
+P2/P3 后端已提交 d0d8875 并推送到 PR8；b7307e9 合并了 dev 4afeae0（模块④，①未改其代码或文档）。b7307e9 本身只跑了默认检查（见 P3 节“检查点与合并后验证”）；文档记录中合并后的首次完整真实运行在 106cd2e（1091 passed / 0 skipped，见 P4 节）；CI 已配置真实 PostgreSQL 与 NATS，但**尚未在远程运行过**。P3 剩余⑥管理页对接。P4 ①侧已提交集合守护（f747e89）与重判完成记录（106cd2e），多起因已提交 daa767f，⑦调用记录的①侧存储已提交 e9391dd（见 P4 节）；P5 ①侧历史恢复已在本分支实现（提交 9705b61），其中 schema 硬编码测试已修正，之后的三开启本地完整运行 1503 passed / 5 skipped 无失败（见“提交更新与存储切片部署”）；之后按[全局实施计划](../../../ai-docs/plans/mvp-implementation.md)完成 P4 其余部分（⑦网关服务与实际模型调用，③④⑤⑦接入完成记录、集合守护与调用记录）与 P5 其余部分（⑤实际调度接入、④业务改动、多层集成与示例插件）。部署与I合作，页面归⑥，传播调度归⑤；不要让①包办业务模块。
 
 不要把 `test_memory.py::test_concurrent_writers`（顺序旧版本冲突）当真正并发测试；真实多进程竞争在 `services/storage/tests/test_p1a_regressions.py`。SDK用法与命令见[工程指南](interface.md)。
 
@@ -270,5 +270,22 @@ P4：①侧规则集合守护（f747e89，schema revision 9）与重判完成记
   - 完整真实 PostgreSQL + NATS：`/tmp/ear-p5-checkpoint-full.log`（`/tmp/ear-p5-checkpoint-full.exit` 为 1，JUnit `/tmp/ear-p5-checkpoint-full.xml`）**1 failed、1411 passed、5 skipped**（共 1417），DURATION=717.45。唯一失败 `services/storage/tests/test_llm_calls.py::test_existing_database_requires_explicit_bootstrap`：测试硬编码 schema revision 11，实际为 14。已修正：测试改用 `SCHEMA_VERSION`，不再硬编码；定向重跑 `/tmp/ear-p5-bootstrap-fixed.log` 1 passed（3.70 s，`/tmp/ear-p5-bootstrap-fixed.exit` 为 0）。修正后未重新完整运行，上面的 1 failed 仍是最近一次完整运行的结果；定向通过不等于完整运行通过。5 个 skip 明细见 JUnit，本页未逐项核对。
   - 默认 `pytest` 876 passed / 541 skipped（`/tmp/ear-p5-default.log`）为此前历史结果。此前各定向组（history、execution、scheduler、management、reconfiguration、consumers、completion 等）互有重叠，**不能相加**。
   - 静态：此前 ruff、format、pyright 与 check_docs 通过（`/tmp/ear-p5-{ruff,format,pyright,docs}.log`）；测试修正后主会话最新一轮 ruff check、ruff format --check（112 个文件）、pyright（0 错误）、`uv lock --check`、check_docs（28 个文档）与 `git diff --check` 均通过。本批（P5 实现与该测试修正）待提交，提交状态以提交历史为准。远程 CI 未运行。
+
+### 提交更新与存储切片部署（本分支已实现，提交状态以提交历史为准）
+
+- 提交：P5 已提交 9705b61（上文 P5 节中的“待提交”“修正后未重新完整运行”是当时状态，已过时，该节历史数字不改）；②适配器经合并提交 84f20fe 同步；部署切片已在本分支实现，提交状态以提交历史为准。其后的三开启本地完整运行（见下）无失败，覆盖了该测试修正。远程 CI 尚未运行，合并前人工审核（负责人兼 I）尚未进行。
+- 部署切片（本分支已实现，提交状态以提交历史为准；**未合并、无生产启动**）：`deploy/compose.yaml`、`.env.example`、`Dockerfile`、`runtime.py`、`postgres-init.sh`、`nats.conf`；服务端 `health.py`（`HealthProbe` 只读 ready、`WorkerHealth` 最近成功轮询）、`deployment.py`（`init_identities` 只写 `deploy/.env` 或容器身份路径，0600、原子发布、不重签）、`cli.py` 与 `http.py` 改动；测试 `test_deployment.py`、`test_deployment_hardening.py`、`test_plugin_chain_e2e.py`；备份工具 `tools/storage_backup.py` 与 `tests/test_storage_backup{,_real}.py`。操作流程、健康差别、故障检查与卷保留见[隔离部署指南](deployment.md)。
+- 验证：容器冒烟 `/tmp/ear-storage-final-smoke.log`（`.exit` 0）16 项 PASS，结束时清理随机名项目；插件链 `test_plugin_chain_e2e.py` 2 passed，使用**固定⑤测试驱动**，不是⑤真实调度；二者结果不变。
+- 备份/恢复（新版，隔离环境）：真实往返与五种真实同名竞争通过——`/tmp/ear-final-race-84lx9T/real.log` 为 1 passed in 100.61 s，汇总 `/tmp/ear-final-race-close.json`（`roundtrip.phase=passed`、`production_touched=false`、`cleanupFailures=[]`）；PostgreSQL、NATS、身份与数据库数据校验通过。历史失败（`/tmp/ear-backup-main-final.log` exit 1，早于新版）已被取代，不是最新结果：根因定位为 Compose `create --no-recreate` 停止其他项目的容器（`systemd-repro` 复现项 exit 1，不是新版结果），现不再使用该命令。恢复只进独立的新项目，成功必须读取 JSON `.project` 并手动以该名字启动，`--start` 不接受，不在原目标项目执行 `up`；源需 `--allow-downtime`，备份必须可信（`--trust-backup`），manifest SHA-256 走独立渠道。仅隔离环境验证，**不是生产运行手册**，未生产使用。
+- 三开启本地完整运行 `/tmp/ear-repro-suite-ykxiUWmy/{pytest.log,exit}`（`EAR_RUN_POSTGRES_TESTS`、`EAR_RUN_NATS_TESTS`、`EAR_RUN_BACKUP_TESTS` 均为 1，`uv run pytest -q`）：已结束，`exit` 为 0，末行 **1503 passed, 5 skipped, 1 warning in 890.20s (0:14:50)**；同目录 `static.exit` 为 0（pyright 0 errors，文档检查通过）。5 个 skip 均为 `memory` 参数、原因 `requires authenticated PostgreSQL`，与既有 `test_causality_context_guard.py` 的三处 skip 一致；日志只有汇总行，未逐项列出。对应运行时本分支的工作区（运行开始后无非 Markdown 文件被修改）。这是本地一次运行，不替代远程 CI 与负责人兼 I 的人工审核，不是生产验收。
+- 未做：⑥管理页对接、⑤实际调度对接、保留/清理（流容量、幂等回执、snapshot 清理调度、退役资源）、备份文件的保留与删除（工具不提供）、升级迁移与管理员 token 交付流程；合并前审核（负责人兼 I）未进行；远程 CI 未运行（本地三开启完整运行已通过，不能替代）。
+
+### 运维交接（备份/恢复，简短）
+
+- 隔离环境验证，未生产、未合并；详见[隔离部署指南](deployment.md)第 8 节。
+- 备份：`--project` + `--allow-downtime`（停源的应用与 NATS）。恢复：只进独立新项目；备份必须可信（`--trust-backup`），manifest SHA-256 经独立渠道传入 `--trusted-manifest-sha256`；成功必须读 JSON `.project` 并手动以该名启动，`--start` 不接受；不在原目标项目执行 `up`。
+- `deploy/.env` 只许新建（noclobber），已存在即停止。
+- 三开启本地完整运行：已结束，exit 为 0，1503 passed / 5 skipped（5 个需要认证 PostgreSQL 的 `memory` 参数 skip，见上）；仍需远程 CI 与人工审核，不是生产验收。
+- 其余未做（保留/清理、⑥管理页与⑤实际调度对接等）不因备份通过而改变。
 
 未完成项不得因文档检查通过而标为完成；进度更新必须对应实际提交和测试结果。

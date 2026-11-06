@@ -37,11 +37,21 @@ jobs:
       - name: Prepare isolated NATS test image
         run: timeout 90 docker pull nats:2.11-alpine
 
-      - name: Tests (including real PostgreSQL and NATS)
+      - name: Prepare isolated backup roundtrip images
+        env:
+          EAR_TEST_BACKUP_IMAGE: ear-storage:ci-${{ github.sha }}
+        run: |
+          docker compose version
+          docker pull python:3.12-alpine
+          docker build -f deploy/Dockerfile -t "$EAR_TEST_BACKUP_IMAGE" .
+
+      - name: Tests (including real PostgreSQL, NATS and backup roundtrip)
         env:
           EAR_RUN_POSTGRES_TESTS: "1"
           EAR_RUN_NATS_TESTS: "1"
-        run: uv run pytest
+          EAR_RUN_BACKUP_TESTS: "1"
+          EAR_TEST_BACKUP_IMAGE: ear-storage:ci-${{ github.sha }}
+        run: uv run pytest -q
 
       - name: 文档结构与链接检查
         run: |

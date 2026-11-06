@@ -1,5 +1,144 @@
-# Ear 一键部署（一人一套）。各模块的服务在实现后加入。
-# 用法：cp deploy/.env.example deploy/.env，填好后 docker compose -f deploy/compose.yaml up -d
-name: ear
+# Storage slice ONLY, not a deployment of all Ear modules.
+# First use: explicitly run --profile init run --rm init-identities, then up -d.
+# Normal up never depends on migration/bootstrap or changes an existing schema.
+# Pass --env-file deploy/.env explicitly. Never print config --environment or secrets.
+# DB owner is a dedicated non-superuser; runtime DDL is needed for dynamic namespaces.
+# Identity tokens live ONLY in the container deployment-secret volume below, 0600.
+# Keep this volume with PostgreSQL backups; losing it does NOT auto-reissue identities.
+x-storage: &storage
+  image: ${EAR_STORAGE_IMAGE:-ear-storage:local}
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+  restart: unless-stopped
+  user: "10001:10001"
+  # Compose environment-sourced secrets require a writable container filesystem.
+  # Keep nonroot, dropped capabilities and no-new-privileges instead.
+  tmpfs: ['/tmp:size=16m,noexec,nosuid']
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  mem_limit: 256m
+  cpus: 1.0
+  pids_limit: 128
+  networks: [backend]
+  secrets: [service_db_password, nats_token]
+  environment: &broker-env
+    EAR_NATS_SERVERS: nats://nats:4222
+  depends_on: &runtime-deps
+    postgres:
+      condition: service_healthy
+    nats:
+      condition: service_healthy
+  stop_grace_period: 40s
 
-services: {}
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: ear
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password, service_db_password]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init.sh:/docker-entrypoint-initdb.d/10-ear.sh:ro
+    networks: [backend]
+    mem_limit: 512m
+    cpus: 1.0
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -q -U postgres -d ear']
+      interval: 3s
+      timeout: 2s
+      retries: 20
+  nats:
+    image: nats:2.11-alpine
+    restart: unless-stopped
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - 'export EAR_NATS_TOKEN="$$(cat /run/secrets/nats_token)"; test -n "$$EAR_NATS_TOKEN"; exec nats-server -c /etc/nats/ear.conf'
+    secrets: [nats_token]
+    volumes:
+      - nats_data:/data
+      - ./nats.conf:/etc/nats/ear.conf:ro
+    networks: [backend]
+    mem_limit: 128m
+    cpus: 1.0
+    healthcheck:
+      test: [CMD-SHELL, 'wget -q -O /dev/null http://127.0.0.1:8222/healthz']
+      interval: 3s
+      timeout: 2s
+      retries: 20
+  storage:
+    <<: *storage
+    networks: [backend, frontend]
+    command: [serve, --host, 0.0.0.0, --port, '8000']
+    ports: ['127.0.0.1:${EAR_STORAGE_PORT:-8000}:8000']
+    healthcheck:
+      test: [CMD, python, -c, 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/health/ready", timeout=7).close()']
+      interval: 10s
+      timeout: 8s
+      retries: 3
+      start_period: 15s
+  relay:
+    <<: *storage
+    command: [relay]
+  manage-worker:
+    <<: *storage
+    command: [manage-worker, --host, 0.0.0.0]
+    healthcheck:
+      test: [CMD, python, -c, 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8001/health/ready", timeout=2).close()']
+      interval: 3s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+    volumes: [identities:/run/secrets/ear:ro]
+  migrate:
+    <<: *storage
+    profiles: [init]
+    restart: 'no'
+    command: [migrate]
+    environment: {}
+    secrets: [service_db_password]
+    depends_on:
+      postgres:
+        condition: service_healthy
+  bootstrap:
+    <<: *storage
+    profiles: [init]
+    restart: 'no'
+    command: [bootstrap]
+    environment: {}
+    secrets: [service_db_password]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+  init-identities:
+    <<: *storage
+    profiles: [init]
+    restart: 'no'
+    command: [init-identities, --output, /run/secrets/ear/identities.env]
+    environment: {}
+    secrets: [service_db_password]
+    volumes: [identities:/run/secrets/ear]
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+
+# Values are resolved as Compose secrets, not interpolated into service commands.
+# A trusted Docker administrator can still read mounted secrets/process memory.
+secrets:
+  postgres_password:
+    environment: EAR_POSTGRES_PASSWORD
+  service_db_password:
+    environment: EAR_SERVICE_DB_PASSWORD
+  nats_token:
+    environment: EAR_NATS_TOKEN
+volumes:
+  postgres_data:
+  nats_data:
+  identities:
+networks:
+  backend:
+    internal: true
+  frontend: {}

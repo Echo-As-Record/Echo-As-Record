@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import Any
+import threading
+from typing import Any, cast
 
 import psycopg
 from ear_contracts import is_id
@@ -38,6 +39,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from ear_storage.auth import AuthenticationError
 from ear_storage.consumer_broker import ConsumerUnavailable
 from ear_storage.consumers import ConsumerPolicy
+from ear_storage.health import HealthProbe
 from ear_storage.relay import RelayConfig
 from ear_storage.schema import ProjectionLimit, SchemaMismatch
 from ear_storage.service import StorageService
@@ -129,12 +131,28 @@ class BoundaryMiddleware:
 
 
 def create_app(
-    service: StorageService, *, max_body_bytes: int = 8 * 1024 * 1024, body_timeout: float = 15.0
+    service: StorageService,
+    *,
+    max_body_bytes: int = 8 * 1024 * 1024,
+    body_timeout: float = 15.0,
+    health_probe: HealthProbe | None = None,
 ) -> FastAPI:
     if type(max_body_bytes) is not int or max_body_bytes < 1 or not 0 < body_timeout <= 120:
         raise ValueError("invalid HTTP resource limits")
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(BoundaryMiddleware, max_body_bytes=max_body_bytes, body_timeout=body_timeout)
+
+    @app.get("/health/live")
+    def live():
+        return json_response({"status": "alive"})
+
+    @app.get("/health/ready")
+    def ready():
+        healthy = health_probe is not None and health_probe.ready()
+        # This is storage readiness, NOT a claim that all Ear modules/workers are up.
+        return json_response(
+            {"status": "ready" if healthy else "unavailable"}, 200 if healthy else 503
+        )
 
     def authenticated(request: Request):
         headers = request.headers.getlist("authorization")
@@ -306,12 +324,27 @@ def create_app_from_dsn(
     **kwargs: Any,
 ) -> FastAPI:
     """Deployment-only composition; never reads .env or exposes configuration."""
+
+    class DeferredService:
+        # PostgresStorage validates the schema in its constructor. Defer this until
+        # a business request, so liveness stays reachable during DB outages/init.
+        def __init__(self) -> None:
+            self.instance: StorageService | None = None
+            self.lock = threading.Lock()
+
+        def __getattr__(self, name: str) -> Any:
+            with self.lock:
+                if self.instance is None:
+                    self.instance = StorageService(
+                        dsn,
+                        relay_config=relay_config,
+                        consumer_policy=consumer_policy,
+                        model_body_policy=model_body_policy,
+                    )
+            return getattr(self.instance, name)
+
     return create_app(
-        StorageService(
-            dsn,
-            relay_config=relay_config,
-            consumer_policy=consumer_policy,
-            model_body_policy=model_body_policy,
-        ),
+        cast(StorageService, DeferredService()),
+        health_probe=HealthProbe(dsn, relay_config),
         **kwargs,
     )

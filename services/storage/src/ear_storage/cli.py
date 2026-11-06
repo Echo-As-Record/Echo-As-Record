@@ -42,6 +42,8 @@ def main() -> None:
     parser.add_argument(
         "command",
         choices=(
+            "init-identities",
+            "snapshot-sweep",
             "migrate",
             "bootstrap",
             "serve",
@@ -55,12 +57,28 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--health-port", type=int, default=8001)
+    parser.add_argument("--output", type=str)
+    parser.add_argument("--batch-size", type=int, default=100)
     args = parser.parse_args()
     dsn = os.environ.get("EAR_STORAGE_DSN")
     if not dsn:
         parser.error("EAR_STORAGE_DSN is required (no .env or default database is read)")
     try:
-        if args.command == "migrate":
+        if args.command == "init-identities":
+            from pathlib import Path
+
+            from ear_storage.deployment import init_identities
+
+            if not args.output:
+                parser.error("init-identities requires --output (no stdout credential delivery)")
+            created = init_identities(dsn, Path(args.output))
+            print(json.dumps({"status": "created" if created else "unchanged"}))
+        elif args.command == "snapshot-sweep":
+            from ear_storage.snapshots import sweep_expired
+
+            print(json.dumps({"deleted": sweep_expired(dsn, batch_size=args.batch_size)}))
+        elif args.command == "migrate":
             migrate(dsn)
         elif args.command == "bootstrap":
             bootstrap(dsn)
@@ -69,8 +87,10 @@ def main() -> None:
 
             from ear_storage.backend import PostgresStorage
             from ear_storage.consumers import ConsumerService
-            from ear_storage.management import ManagementProcessor
+            from ear_storage.health import WorkerHealth
+            from ear_storage.management import CONSUMER, ManagementProcessor
             from ear_storage.relay import RelayConfig
+            from ear_storage.schema import connection
 
             config = RelayConfig(
                 servers=tuple(os.environ["EAR_NATS_SERVERS"].split(",")),
@@ -80,11 +100,18 @@ def main() -> None:
             )
             worker = ManagementProcessor(PostgresStorage(dsn), ConsumerService(dsn, config))
             token = os.environ["EAR_MANAGEMENT_WORKER_TOKEN"]
-            while True:
-                worker.poll_once(token)
-                if args.once:
-                    break
-                time.sleep(0.2)
+            with WorkerHealth(args.host, args.health_port) as health:
+                while True:
+                    worker.poll_once(token)
+                    with connection(dsn) as conn:
+                        row = conn.execute(
+                            "SELECT ready AND enabled FROM storage.consumers WHERE name=%s",
+                            (CONSUMER,),
+                        ).fetchone()
+                    health.record_poll(row == (True,))
+                    if args.once:
+                        break
+                    time.sleep(0.2)
         elif args.command.startswith("relay"):
             from ear_storage.relay import RelayConfig, RelayStore, run_relay
 
@@ -133,5 +160,18 @@ def main() -> None:
                 timeout_graceful_shutdown=35,
                 limit_concurrency=64,
             )
-    except Exception:
+    except Exception as exc:
+        import traceback
+
+        print(
+            json.dumps(
+                {
+                    "error": type(exc).__name__,
+                    "frames": [
+                        {"file": frame.filename, "line": frame.lineno}
+                        for frame in traceback.extract_tb(exc.__traceback__)
+                    ],
+                }
+            )
+        )
         parser.exit(1, "storage command failed; check deployment configuration privately\n")

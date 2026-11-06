@@ -8,7 +8,7 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 
 ## 0. 这不是实现完成报告
 
-负责人已明确采纳目标并授权设计同步，那一轮不改contracts、业务代码、依赖或部署；此后①按授权在功能分支 `storage/implementation-preparation` 提交 P0a（a6a1c5a）、P0b（cf337d1）、P1 核心（d7c9919）、P2（Relay、持久消费者与远程订阅）与 P3 后端（管理反馈、凭据、订阅重配置；d0d8875），并以 b7307e9 合并 dev 4afeae0，此后提交 P4 ①侧集合守护（f747e89）、重判完成记录（106cd2e）与多起因（daa767f），调用记录存储（e9391dd），并实现 P5 ①侧历史恢复（提交状态以提交历史为准）；均在 PR8，未合并、未经合并前审核，见[①进度](../../services/storage/ai-docs/progress.md)。现有内存行为与新目标不同是显式待实现差距，不因测试绿就认定完成。目标定义见[设计](../../docs/design/design-v1.2.md)、[插件](../../docs/design/plugins-mvp.md)及[决策来源](../../docs/decisions/mvp-confirmed-decisions.md)。
+负责人已明确采纳目标并授权设计同步，那一轮不改contracts、业务代码、依赖或部署；此后①按授权在功能分支 `storage/implementation-preparation` 提交 P0a（a6a1c5a）、P0b（cf337d1）、P1 核心（d7c9919）、P2（Relay、持久消费者与远程订阅）与 P3 后端（管理反馈、凭据、订阅重配置；d0d8875），并以 b7307e9 合并 dev 4afeae0，此后提交 P4 ①侧集合守护（f747e89）、重判完成记录（106cd2e）与多起因（daa767f），调用记录存储（e9391dd），并实现 P5 ①侧历史恢复与①存储切片隔离部署（提交状态均以提交历史为准）；均在 PR8，未合并、未经合并前审核，见[①进度](../../services/storage/ai-docs/progress.md)。现有内存行为与新目标不同是显式待实现差距，不因测试绿就认定完成。目标定义见[设计](../../docs/design/design-v1.2.md)、[插件](../../docs/design/plugins-mvp.md)及[决策来源](../../docs/decisions/mvp-confirmed-decisions.md)。
 
 ①的首批PR拆分、6cea0b7代码证据与阶段出入口见[①实施准备](../../services/storage/ai-docs/implementation-plan.md)。本页是工程执行顺序和风险清单，新增字段/类型名除已讨论术语外只是待设计项；不替代公共契约审核。协议、索引、超时等细节可由实施者提出，不反复问产品负责人；会改变已确认行为时再请求决策。
 
@@ -23,9 +23,10 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 | `libs/ear_storage_client/src/ear_storage_client/protocol.py` | 同步Reader/StorageClient/snapshot/subscribe及重试helper；P1（d7c9919）另有同包 `remote.py` 同步远程客户端与 `wire.py` | 可长期持有的快照（远程订阅已在 P2 实现，d0d8875） |
 | 同包 `ops.py`、`memory.py` | 批次、版本、依赖整体覆盖、内存总线；P0b 分支：`DependencyInput` 字段依赖、按能力强制登记、批末新鲜度、当前图无环（内存全局锁） | 持久化并发正确性、可信身份/动态权限、生产可靠投递 |
 | 同包 `queries.py`、`results.py` | 查询分页与冲突；P0b 分支 `DependencySet`、`dependency_cycle` | 远程游标一致性、所有读路径访问控制 |
-| `services/storage/` | 文档入口；P1 服务包 `ear_storage`（PostgreSQL、身份授权、snapshot、HTTP、CLI；d7c9919）；P2 `relay.py`、`consumers.py`（有序 Relay 与服务代理的持久消费者）与 P3 后端 `management.py`、`credentials.py`、`reconfiguration.py`（d0d8875，PR8 未合并） | ⑥管理页、流保留/清理、部署 Compose |
+| `services/storage/` | 文档入口；P1 服务包 `ear_storage`（PostgreSQL、身份授权、snapshot、HTTP、CLI；d7c9919）；P2 `relay.py`、`consumers.py`（有序 Relay 与服务代理的持久消费者）与 P3 后端 `management.py`、`credentials.py`、`reconfiguration.py`（d0d8875，PR8 未合并） | ⑥管理页、流保留/清理、生产部署（隔离 Compose 切片已实现，见[隔离部署指南](../../services/storage/ai-docs/deployment.md)） |
 | `services/adapters/` | ②：旧 Ear Evidence → 原始数据的转换、导入规则、内存试运行（[实现说明](../../services/adapters/ai-docs/implementation.md)） | 真实落库、旧 Ear 的列录音接口、GPS 采样密度 |
-| `deploy/compose.yaml`、`tests/e2e/` | 空部署服务和E2E骨架 | 部署或插件端到端完成 |
+| `deploy/compose.yaml` | ①存储切片的隔离 Compose（postgres、nats、storage、relay、manage-worker；显式 migrate/bootstrap/init-identities）与备份工具 `tools/storage_backup.py` 已在本分支实现（提交状态以提交历史为准；不含②③④⑤⑥⑦，非生产运行手册，见[隔离部署指南](../../services/storage/ai-docs/deployment.md)） | 生产部署与升级迁移、备份文件保留/删除、其他模块部署、远程 CI |
+| `tests/e2e/` | E2E骨架 | 插件端到端完成 |
 
 先复用正确的基础行为，不从零定义另一套category/ULID/事件命名。UUIDv7、data_type/payload、system根源、两类事件和单写者等保持既有公共约定。
 
@@ -96,7 +97,7 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 
 ### P5 插件历史交接与集成
 
-- **当前状态**：未完成。①侧已在本分支实现（提交状态以提交历史为准；schema revision 11–14）：管理反馈恢复 catch_up/skip（须 `expected_revision`）与显式范围 `history_backfill`、持久当前状态候选（不盲重放旧事件）、skip 不改旧结果/依赖且不伪造 Finish、W 之后交接即便首次 consumer 也保留、重叠门控与过期输入只读、所属方 claim（snapshot + 租约 + epoch/fence）与业务/进度原子提交，以及供⑤的真实请求关联（权限与起因覆盖）、所属方安全领取分配并自行 Finish、完成索引与历史依赖按 `commit_seq` 验新鲜、终态冻结。⑤实际调度、④业务改动、真实多层/分叉汇合示例、⑥恢复选择页、部署 Compose 与备份清理未做。完整真实运行 1 failed / 1411 passed / 5 skipped，不是全绿，见[①进度](../../services/storage/ai-docs/progress.md)。
+- **当前状态**：未完成。①侧已在本分支实现（提交状态以提交历史为准；schema revision 11–14）：管理反馈恢复 catch_up/skip（须 `expected_revision`）与显式范围 `history_backfill`、持久当前状态候选（不盲重放旧事件）、skip 不改旧结果/依赖且不伪造 Finish、W 之后交接即便首次 consumer 也保留、重叠门控与过期输入只读、所属方 claim（snapshot + 租约 + epoch/fence）与业务/进度原子提交，以及供⑤的真实请求关联（权限与起因覆盖）、所属方安全领取分配并自行 Finish、完成索引与历史依赖按 `commit_seq` 验新鲜、终态冻结。⑤实际调度、④业务改动、真实多层/分叉汇合示例、⑥恢复选择页未做；①存储切片的隔离 Compose 与备份/恢复工具已在本分支实现（非生产，见[隔离部署指南](../../services/storage/ai-docs/deployment.md)），生产部署、升级迁移与备份文件保留/删除未做。完整真实运行：早先检查点 1 failed / 1411 passed / 5 skipped（其唯一失败已修复，历史数字不改）；之后的三开启本地完整运行 1503 passed / 5 skipped、exit 0（5 个 skip 为需要认证 PostgreSQL 的 `memory` 参数）；远程 CI 与合并前人工审核尚待，见[①进度](../../services/storage/ai-docs/progress.md)。
 - 首次启用的快照/游标与实时事件无缝衔接需测试，不能误把历史读取变成默认全量批处理。
 - 主动停用恢复补/跳、意外断线自动续、越过消息保留窗口等边界明确；补处理读取当前状态，不盲跑旧事件。
 - 停用/撤权/上游替代的依赖查询与调度：①拒绝未授权输入，⑤标受阻，旧结果保留；恢复补处理尊重用户选择。
