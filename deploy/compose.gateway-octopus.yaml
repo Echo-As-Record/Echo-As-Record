@@ -1,0 +1,10 @@
+# Built-in adapter credential, provisioned as a regular UID 10001-owned 0600 file.
+# Apply after compose.api-gateway.yaml. No production endpoint is discovered.
+services:
+  gateway:
+    secrets:
+      - source: octopus_token
+        target: octopus-token
+secrets:
+  octopus_token:
+    file: ${EAR_OCTOPUS_TOKEN_FILE:?Explicit protected Octopus owner token required}

@@ -31,6 +31,7 @@ from ear_storage_client.ops import (
     Update,
     WriteOp,
 )
+from ear_storage_client.preflight import LLMCallPreflight, LLMPreflightClient
 from ear_storage_client.protocol import (
     EventHandler,
     Reader,
@@ -83,6 +84,8 @@ __all__ = [
     "EventHandler",
     "FinishReevaluation",
     "InvalidRequest",
+    "LLMCallPreflight",
+    "LLMPreflightClient",
     "MarkProcessed",
     "MemoryBus",
     "MemoryClient",

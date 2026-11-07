@@ -10,6 +10,8 @@ COPY libs/ear_storage_client/pyproject.toml libs/ear_storage_client/pyproject.to
 COPY services/storage/pyproject.toml services/storage/pyproject.toml
 COPY services/adapters/pyproject.toml services/adapters/pyproject.toml
 COPY services/extraction/pyproject.toml services/extraction/pyproject.toml
+COPY services/api/pyproject.toml services/api/pyproject.toml
+COPY services/llm_gateway/pyproject.toml services/llm_gateway/pyproject.toml
 COPY libs/ear_contracts/src libs/ear_contracts/src
 COPY libs/ear_storage_client/src libs/ear_storage_client/src
 COPY services/storage/src services/storage/src
@@ -19,7 +21,8 @@ FROM python:3.12-slim AS runtime
 WORKDIR /app
 ENV PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 COPY --from=build /app/.venv /app/.venv
-COPY deploy/runtime.py /app/runtime.py
+# Non-secret code must remain readable under a private build-context umask.
+COPY --chmod=0444 deploy/runtime.py /app/runtime.py
 RUN mkdir -p /run/secrets/ear && chown 10001:10001 /run/secrets/ear
 USER 10001:10001
 EXPOSE 8000
