@@ -20,16 +20,29 @@
     "skip_history"
   ],
   "properties": {
-    "event_id": { "$ref": "#/$defs/id", "description": "事件本身的 id，用于日志与去重" },
-    "event_type": { "const": "data_changed" },
-    "occurred_at": { "$ref": "#/$defs/timestamp" },
+    "event_id": {
+      "$ref": "#/$defs/id",
+      "description": "事件本身的 id，用于日志与去重"
+    },
+    "event_type": {
+      "const": "data_changed"
+    },
+    "occurred_at": {
+      "$ref": "#/$defs/timestamp"
+    },
     "data_type": {
       "$ref": "#/$defs/data_type",
       "description": "数据类型，例如 voiceprint、gps_point、feedback、attribution、artifact。扩展模块可登记新类型，因此不用枚举"
     },
-    "data_id": { "$ref": "#/$defs/id" },
+    "data_id": {
+      "$ref": "#/$defs/id"
+    },
     "operation": {
-      "enum": ["created", "updated", "superseded"],
+      "enum": [
+        "created",
+        "updated",
+        "superseded"
+      ],
       "description": "updated 时旧版本随之被替代，不另发 superseded。superseded 只用于对象整体被替代：① 新增一个 status 为 superseded 的版本（内容与上一版本相同），new_version 为它的版本号"
     },
     "new_version": {
@@ -38,12 +51,21 @@
       "description": "写入后的版本号；原始数据固定为 1"
     },
     "old_version": {
-      "type": ["integer", "null"],
+      "type": [
+        "integer",
+        "null"
+      ],
       "minimum": 1,
       "description": "写入前的版本号；新增时为 null"
     },
-    "root_feedback_id": { "$ref": "#/$defs/root_feedback_id" },
-    "depth": { "type": "integer", "minimum": 0, "description": "依赖分析深度" },
+    "root_feedback_id": {
+      "$ref": "#/$defs/root_feedback_id"
+    },
+    "depth": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "依赖分析深度"
+    },
     "skip_history": {
       "type": "boolean",
       "description": "「不处理历史」标记，为 true 时 ⑤ 跳过（补充章节 3.4）"
@@ -55,6 +77,17 @@
     "batch_id": {
       "$ref": "#/$defs/id",
       "description": "可选（DRAFT 新增）。同一次原子写入产生的事件共用一个 batch_id"
+    },
+    "additional_causes": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "$ref": "#/$defs/TracedCause"
+      },
+      "default": []
+    },
+    "request_event_id": {
+      "$ref": "#/$defs/id"
     }
   },
   "$defs": {
@@ -69,10 +102,95 @@
       "pattern": "Z$",
       "description": "RFC 3339，UTC，以 Z 结尾"
     },
-    "data_type": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "data_type": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
     "root_feedback_id": {
       "description": "引起这次修改的用户反馈 id；系统发起的行为为字面量 \"system\"",
-      "oneOf": [{ "$ref": "#/$defs/id" }, { "const": "system" }]
+      "oneOf": [
+        {
+          "$ref": "#/$defs/id"
+        },
+        {
+          "const": "system"
+        }
+      ]
+    },
+    "Cause": {
+      "additionalProperties": true,
+      "description": "引起「请求重新判断」的那次修改。",
+      "properties": {
+        "data_type": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Data Type",
+          "type": "string"
+        },
+        "data_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Data Id",
+          "type": "string"
+        },
+        "old_version": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Old Version"
+        },
+        "new_version": {
+          "minimum": 1,
+          "title": "New Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "data_type",
+        "data_id",
+        "old_version",
+        "new_version"
+      ],
+      "title": "Cause",
+      "type": "object"
+    },
+    "TracedCause": {
+      "additionalProperties": true,
+      "description": "An independent causal path; never a replacement for the primary root/depth.",
+      "properties": {
+        "cause": {
+          "$ref": "#/$defs/Cause"
+        },
+        "root_feedback_id": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            {
+              "const": "system",
+              "type": "string"
+            }
+          ],
+          "title": "Root Feedback Id"
+        },
+        "depth": {
+          "minimum": 1,
+          "title": "Depth",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cause",
+        "root_feedback_id",
+        "depth"
+      ],
+      "title": "TracedCause",
+      "type": "object"
     }
   }
 }

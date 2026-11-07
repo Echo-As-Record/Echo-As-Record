@@ -1,0 +1,691 @@
+"""Explicit, atomic migrations and trusted registry bootstrap. No implicit DDL on startup."""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from typing import Any, LiteralString
+
+import psycopg
+from ear_contracts import DEFAULT_REGISTRY, Registry
+from ear_storage_client.engine import canonical_json
+from psycopg import sql
+
+SCHEMA_VERSION = 14
+WRITER_GATE = 0x45415253544F5245
+
+
+class SchemaMismatch(RuntimeError):
+    pass
+
+
+class ProjectionLimit(RuntimeError):
+    """Fail closed: no graph nodes/edges or validator inputs were silently omitted."""
+
+
+def module_schema(module: str) -> str:
+    if not re.fullmatch(r"[a-z][a-z0-9_]{0,54}", module):
+        raise ValueError("unsafe or oversized module identifier")
+    return "ear_m_" + module
+
+
+def table(module: str, name: str) -> sql.Identifier:
+    return sql.Identifier(module_schema(module), name)
+
+
+@contextmanager
+def connection(dsn: str) -> Iterator[psycopg.Connection]:
+    # Each operation owns its connection; no hidden pool or idle transactions.
+    with psycopg.connect(
+        dsn,
+        autocommit=True,
+        connect_timeout=5,
+        options="-c lock_timeout=5s -c statement_timeout=30s -c search_path=pg_catalog",
+    ) as conn:
+        conn.isolation_level = psycopg.IsolationLevel.READ_COMMITTED
+        yield conn
+
+
+def one(
+    conn: psycopg.Connection,
+    query: sql.SQL | sql.Composed | LiteralString,
+    params: Sequence[Any] = (),
+) -> tuple[Any, ...]:
+    row = conn.execute(query, params).fetchone()
+    if row is None:
+        raise SchemaMismatch("expected database row missing")
+    return row
+
+
+@contextmanager
+def writer(conn: psycopg.Connection) -> Iterator[None]:
+    with conn.transaction():
+        # First application statement after BEGIN. Same gate for migrations/bootstrap/batches.
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (WRITER_GATE,))
+        yield
+
+
+DDL = (
+    "CREATE SCHEMA storage",
+    "CREATE TABLE storage.meta (singleton boolean PRIMARY KEY CHECK(singleton), "
+    "schema_revision integer NOT NULL, commit_seq bigint NOT NULL CHECK(commit_seq >= 0))",
+    "CREATE TABLE storage.registry (name text PRIMARY KEY, spec_text text NOT NULL, "
+    "is_core boolean NOT NULL)",
+    "CREATE TABLE storage.publishers (event_type text PRIMARY KEY, modules_text text NOT NULL)",
+    "CREATE TABLE storage.modules (module text PRIMARY KEY, schema_name text UNIQUE NOT NULL)",
+    "CREATE TABLE storage.identity (id text PRIMARY KEY, module text NOT NULL "
+    "REFERENCES storage.modules, data_type text NOT NULL REFERENCES storage.registry(name), "
+    "kind text NOT NULL CHECK(kind IN ('raw_record','semantic','rule','system_record')), "
+    "current_seq integer NOT NULL CHECK(current_seq > 0), dedup_key text, adapter_version text)",
+    "CREATE UNIQUE INDEX raw_dedup ON storage.identity(data_type,adapter_version,dedup_key) "
+    "WHERE kind='raw_record'",
+    "CREATE UNIQUE INDEX semantic_dedup ON storage.identity(data_type,dedup_key) "
+    "WHERE kind IN ('semantic','rule') AND dedup_key IS NOT NULL",
+    "CREATE INDEX identity_type ON storage.identity(data_type,id)",
+    "CREATE TABLE storage.dependency_sets (dependent_id text NOT NULL REFERENCES storage.identity, "
+    "dependent_version integer NOT NULL, commit_seq bigint NOT NULL, dependent_type text NOT NULL, "
+    "registered_by text NOT NULL, registered_at timestamptz NOT NULL, "
+    "PRIMARY KEY(dependent_id,dependent_version,commit_seq))",
+    "CREATE TABLE storage.dependency_edges (dependent_id text NOT NULL, "
+    "dependent_version integer NOT NULL, commit_seq bigint NOT NULL, target_id text NOT NULL "
+    "REFERENCES storage.identity, record_text text NOT NULL, "
+    "PRIMARY KEY(dependent_id,dependent_version,commit_seq,target_id), "
+    "FOREIGN KEY(dependent_id,dependent_version,commit_seq) "
+    "REFERENCES storage.dependency_sets)",
+    "CREATE INDEX dependency_target ON storage.dependency_edges(target_id)",
+    "CREATE TABLE storage.processed (consumer text NOT NULL, event_id text NOT NULL, "
+    "commit_seq bigint NOT NULL, PRIMARY KEY(consumer,event_id))",
+    "CREATE TABLE storage.published (event_id text PRIMARY KEY, commit_seq bigint NOT NULL)",
+    "CREATE TABLE storage.outbox (commit_seq bigint NOT NULL, ordinal integer NOT NULL, "
+    "event_id text UNIQUE NOT NULL, event_text text NOT NULL, "
+    "PRIMARY KEY(commit_seq,ordinal))",
+    "CREATE TABLE storage.idempotency (module text NOT NULL REFERENCES storage.modules, "
+    "request_id text NOT NULL, fingerprint text NOT NULL, result_text text NOT NULL, "
+    "required_types_text text NOT NULL, commit_seq bigint NOT NULL, "
+    "PRIMARY KEY(module,request_id))",
+    "CREATE VIEW storage.current_dependency_sets AS SELECT DISTINCT ON "
+    "(dependent_id,dependent_version) * FROM storage.dependency_sets "
+    "ORDER BY dependent_id,dependent_version,commit_seq DESC",
+    "CREATE VIEW storage.current_dependency_edges AS SELECT e.* FROM storage.dependency_edges e "
+    "JOIN storage.current_dependency_sets s USING(dependent_id,dependent_version,commit_seq)",
+)
+
+
+# DDL above is immutable revision 1; never label old DDL as revision 2.
+DDL_V2 = (
+    "CREATE TABLE storage.principals (id text PRIMARY KEY, module text NOT NULL "
+    "REFERENCES storage.modules, token_hash text UNIQUE NOT NULL "
+    "CHECK(token_hash ~ '^[0-9a-f]{64}$'), active boolean NOT NULL DEFAULT true)",
+    "CREATE TABLE storage.type_grants (principal_id text NOT NULL REFERENCES storage.principals, "
+    "data_type text NOT NULL REFERENCES storage.registry(name), "
+    "can_subscribe boolean NOT NULL DEFAULT false, PRIMARY KEY(principal_id,data_type))",
+    "ALTER TABLE storage.idempotency ADD COLUMN scope text",
+    "UPDATE storage.idempotency SET scope='internal:' || module",
+    "ALTER TABLE storage.idempotency ALTER COLUMN scope SET NOT NULL",
+    "ALTER TABLE storage.idempotency DROP CONSTRAINT idempotency_pkey",
+    "ALTER TABLE storage.idempotency ADD PRIMARY KEY(scope,request_id)",
+)
+
+
+# Explicit additive revision 3: leases and individually addressable canonical items.
+DDL_V3 = (
+    "CREATE TABLE storage.snapshot_leases (snapshot_id text PRIMARY KEY, "
+    "principal_id text NOT NULL REFERENCES storage.principals, "
+    "expires_at timestamptz NOT NULL, commit_seq bigint NOT NULL, "
+    "item_count bigint NOT NULL CHECK(item_count>=0), "
+    "byte_count bigint NOT NULL CHECK(byte_count>=0))",
+    "CREATE INDEX snapshot_owner_expiry ON storage.snapshot_leases(principal_id,expires_at)",
+    "CREATE INDEX snapshot_expiry ON storage.snapshot_leases(expires_at,snapshot_id)",
+    "CREATE TABLE storage.snapshot_items (snapshot_id text NOT NULL REFERENCES "
+    "storage.snapshot_leases ON DELETE CASCADE, kind text NOT NULL, item_key text NOT NULL, "
+    "data_type text NOT NULL, record_text text NOT NULL, "
+    "PRIMARY KEY(snapshot_id,kind,item_key))",
+)
+
+
+# Additive revision 4. The outbox event bytes and all previous revisions stay intact.
+DDL_V4 = (
+    "ALTER TABLE storage.outbox ADD COLUMN attempts bigint NOT NULL DEFAULT 0, "
+    "ADD COLUMN next_attempt_at timestamptz NOT NULL DEFAULT '-infinity', "
+    "ADD COLUMN last_error text, ADD COLUMN claim_token bigint, "
+    "ADD COLUMN delivered_at timestamptz, ADD COLUMN ack_stream text, "
+    "ADD COLUMN ack_seq bigint",
+    "CREATE INDEX outbox_pending ON storage.outbox(commit_seq,ordinal) WHERE delivered_at IS NULL",
+    "CREATE TABLE storage.relay_state (singleton boolean PRIMARY KEY CHECK(singleton), "
+    "fence bigint NOT NULL DEFAULT 0, lease_until timestamptz NOT NULL DEFAULT '-infinity', "
+    "paused boolean NOT NULL DEFAULT false, destination text)",
+    "INSERT INTO storage.relay_state(singleton) VALUES (true)",
+)
+
+
+# Revision 5 adds proxy-owned consumers; revisions 1--4 remain immutable.
+DDL_V5 = (
+    "CREATE TABLE storage.consumer_identities (name text PRIMARY KEY, "
+    "principal_id text NOT NULL REFERENCES storage.principals)",
+    "CREATE TABLE storage.consumers (name text PRIMARY KEY, principal_id text NOT NULL "
+    "REFERENCES storage.principals, module text NOT NULL, generation text UNIQUE NOT NULL, "
+    "config_text text NOT NULL, destination text NOT NULL, creation_cursor bigint NOT NULL, "
+    "created_at timestamptz NOT NULL DEFAULT clock_timestamp(), "
+    "ready boolean NOT NULL DEFAULT false, "
+    "enabled boolean NOT NULL DEFAULT true, fence bigint NOT NULL DEFAULT 0, "
+    "lease_until timestamptz NOT NULL DEFAULT '-infinity')",
+    "CREATE TABLE storage.consumer_deliveries "
+    "(consumer text NOT NULL REFERENCES storage.consumers, "
+    "delivery_id text NOT NULL, queue_seq bigint GENERATED ALWAYS AS IDENTITY UNIQUE, "
+    "event_id text NOT NULL REFERENCES storage.outbox(event_id), "
+    "replay_of text, attempt integer NOT NULL DEFAULT 0, token text UNIQUE, "
+    "state text NOT NULL CHECK(state IN ('retry','inflight','acked','dead')), "
+    "available_at timestamptz NOT NULL DEFAULT '-infinity', "
+    "lease_until timestamptz NOT NULL DEFAULT '-infinity', broker_reply text, "
+    "ack_pending boolean NOT NULL DEFAULT false, error_code text, "
+    "historical_filtered boolean NOT NULL DEFAULT false, broker_subject text, "
+    "CHECK(NOT historical_filtered OR (state='acked' AND replay_of IS NULL "
+    "AND attempt=0 AND token IS NULL AND broker_subject IS NOT NULL)), "
+    "PRIMARY KEY(consumer,delivery_id))",
+    "CREATE UNIQUE INDEX consumer_original_event ON storage.consumer_deliveries(consumer,event_id) "
+    "WHERE replay_of IS NULL",
+    "CREATE INDEX consumer_pending ON storage.consumer_deliveries(consumer,queue_seq) "
+    "WHERE state IN ('retry','inflight')",
+    "CREATE UNIQUE INDEX consumer_one_inflight ON storage.consumer_deliveries(consumer) "
+    "WHERE state='inflight'",
+    "CREATE TABLE storage.consumer_receipts (token text PRIMARY KEY, consumer text NOT NULL, "
+    "delivery_id text NOT NULL, FOREIGN KEY(consumer,delivery_id) "
+    "REFERENCES storage.consumer_deliveries(consumer,delivery_id))",
+)
+
+
+# Revision 6 is additive. Management authority is not ordinary record payload.
+DDL_V6 = (
+    "ALTER TABLE storage.principals ADD COLUMN admin boolean NOT NULL DEFAULT false",
+    "CREATE TABLE storage.module_lifecycle (module text PRIMARY KEY REFERENCES storage.modules, "
+    "enabled boolean NOT NULL DEFAULT false, resources_ready boolean NOT NULL DEFAULT false, "
+    "revision bigint NOT NULL DEFAULT 1, ever_enabled boolean NOT NULL DEFAULT false, "
+    "recovery_pending boolean NOT NULL DEFAULT false, interrupted_seq bigint, "
+    "recovery_types_text text NOT NULL DEFAULT '[]')",
+    "CREATE TABLE storage.module_permissions (module text NOT NULL REFERENCES "
+    "storage.module_lifecycle, data_type text NOT NULL REFERENCES storage.registry(name), "
+    "can_subscribe boolean NOT NULL, PRIMARY KEY(module,data_type))",
+    "CREATE TABLE storage.management_authority (feedback_id text PRIMARY KEY REFERENCES "
+    "storage.identity(id), principal_id text NOT NULL REFERENCES storage.principals, "
+    "request_id text NOT NULL, body_text text NOT NULL, UNIQUE(principal_id,request_id))",
+    "CREATE TABLE storage.management_tasks (feedback_id text PRIMARY KEY REFERENCES "
+    "storage.management_authority, event_id text NOT NULL REFERENCES storage.outbox(event_id), "
+    "result_id text UNIQUE NOT NULL, status text NOT NULL DEFAULT 'accepted', "
+    "stage text NOT NULL DEFAULT 'accepted', error_code text, "
+    "CHECK(status IN ('accepted','pending','succeeded','failed')))",
+    "CREATE TABLE storage.management_audit (feedback_id text PRIMARY KEY REFERENCES "
+    "storage.management_tasks, module text NOT NULL, revision bigint NOT NULL, "
+    "action text NOT NULL, state_text text NOT NULL)",
+)
+_REQUIRED_V6_COLUMNS = {
+    "principals": "admin",
+    "module_lifecycle": "module enabled resources_ready revision ever_enabled "
+    "recovery_pending interrupted_seq recovery_types_text",
+    "module_permissions": "module data_type can_subscribe",
+    "management_authority": "feedback_id principal_id request_id body_text",
+    "management_tasks": "feedback_id event_id result_id status stage error_code",
+    "management_audit": "feedback_id module revision action state_text",
+}
+
+# Revision 7: no plaintext or recoverable credential material in exchanges.
+# Nullable hash means no credential exists while an authorized claim is pending.
+DDL_V7 = (
+    "ALTER TABLE storage.principals ALTER COLUMN token_hash DROP NOT NULL",
+    "ALTER TABLE storage.principals ADD COLUMN credential_epoch bigint NOT NULL DEFAULT 0 "
+    "CHECK(credential_epoch>=0)",
+    "CREATE TABLE storage.credential_exchanges (feedback_id text PRIMARY KEY REFERENCES "
+    "storage.management_tasks, principal_id text NOT NULL REFERENCES storage.principals, "
+    "credential_epoch bigint NOT NULL, module_revision bigint NOT NULL, "
+    "expires_at timestamptz NOT NULL, claimed_at timestamptz, "
+    "status text NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','claimed')), "
+    "CHECK((status='claimed') = (claimed_at IS NOT NULL)))",
+)
+_REQUIRED_V7_COLUMNS = {
+    "principals": "credential_epoch",
+    "credential_exchanges": "feedback_id principal_id credential_epoch module_revision "
+    "expires_at claimed_at status",
+}
+
+
+# Revision 8 preserves v7 data and snapshots each immutable broker configuration.
+DDL_V8 = (
+    "CREATE TABLE storage.consumer_generations (consumer text NOT NULL REFERENCES "
+    "storage.consumers, generation text PRIMARY KEY, config_text text NOT NULL, "
+    "destination text NOT NULL, state text NOT NULL CHECK(state IN "
+    "('prepared','active','retired')), feedback_id text REFERENCES storage.management_tasks)",
+    "INSERT INTO storage.consumer_generations "
+    "SELECT name,generation,config_text,destination,'active',NULL FROM storage.consumers",
+    "ALTER TABLE storage.consumer_deliveries ADD COLUMN broker_generation text",
+    "UPDATE storage.consumer_deliveries d SET broker_generation=c.generation "
+    "FROM storage.consumers c WHERE c.name=d.consumer AND d.broker_reply IS NOT NULL",
+    "CREATE TABLE storage.consumer_type_cursors (consumer text NOT NULL REFERENCES "
+    "storage.consumers, data_type text NOT NULL REFERENCES storage.registry(name), "
+    "effective_commit_seq bigint NOT NULL CHECK(effective_commit_seq>=0), "
+    "PRIMARY KEY(consumer,data_type))",
+    "INSERT INTO storage.consumer_type_cursors SELECT DISTINCT c.name, "
+    "split_part(f.value,'.',array_length(string_to_array(f.value,'.'),1)-1), "
+    "c.creation_cursor FROM storage.consumers c CROSS JOIN LATERAL "
+    "jsonb_array_elements_text(c.config_text::jsonb->'filters') f(value)",
+    "CREATE TABLE storage.consumer_reconfigurations (feedback_id text PRIMARY KEY "
+    "REFERENCES storage.management_tasks, module text NOT NULL REFERENCES "
+    "storage.module_lifecycle, plan_text text NOT NULL, "
+    "state text NOT NULL DEFAULT 'prepared' CHECK(state IN ('prepared','active','cancelled')))",
+    "CREATE UNIQUE INDEX consumer_reconfiguration_pending ON "
+    "storage.consumer_reconfigurations(module) WHERE state='prepared'",
+)
+_REQUIRED_V8_COLUMNS = {
+    "consumer_generations": "consumer generation config_text destination state feedback_id",
+    "consumer_deliveries": "broker_generation",
+    "consumer_type_cursors": "consumer data_type effective_commit_seq",
+    "consumer_reconfigurations": "feedback_id module plan_text state",
+}
+
+
+# Explicit v9: counters are independent of record versions and lease watermarks.
+# snapshot_items.kind had no CHECK/enum in v8; a new kind is additive.
+DDL_V9 = (
+    "CREATE TABLE storage.type_revisions (data_type text PRIMARY KEY "
+    "REFERENCES storage.registry(name), revision bigint NOT NULL DEFAULT 0 CHECK(revision>=0))",
+    "INSERT INTO storage.type_revisions(data_type) SELECT name FROM storage.registry",
+)
+
+
+# Explicit v10: one terminal receipt per published request. Result ID equals
+# event ID, which is not a business identity until Finish creates its system row.
+# Registry capabilities are NOT inferred/backfilled by this migration. New result
+# types require explicit trusted bootstrap metadata (reevaluation_result=True).
+# Existing exact-name ordinary types retain Put access and cannot Finish; bootstrap
+# rejects capability changes. Deployment must audit/explicitly migrate such collisions
+# under the writer gate, never silently reclassify historical ordinary records.
+DDL_V10 = (
+    "CREATE TABLE storage.request_completions (event_id text PRIMARY KEY "
+    "REFERENCES storage.published(event_id), result_type text NOT NULL "
+    "REFERENCES storage.registry(name), commit_seq bigint NOT NULL)",
+)
+
+
+# Explicit v11: authorization/plans are internal, not plugin-writable results.
+DDL_V11 = (
+    "CREATE TABLE storage.recovery_decisions (decision_id text PRIMARY KEY, "
+    "feedback_id text NOT NULL REFERENCES storage.management_tasks, "
+    "module text NOT NULL REFERENCES storage.module_lifecycle, lifecycle_revision bigint NOT NULL, "
+    "mode text NOT NULL CHECK(mode IN ('catch_up','skip')), types_text text NOT NULL, "
+    "watermark bigint NOT NULL, coverage_lower_bound bigint NOT NULL DEFAULT 0, "
+    "state text NOT NULL CHECK(state IN ('authorized','switched')), "
+    "UNIQUE(module,lifecycle_revision))",
+    "CREATE TABLE storage.history_jobs (job_id text PRIMARY KEY, feedback_id text UNIQUE NOT NULL "
+    "REFERENCES storage.management_tasks, owner text NOT NULL REFERENCES storage.module_lifecycle, "
+    "mode text NOT NULL CHECK(mode IN ('catch_up','history_backfill')), types_text text NOT NULL, "
+    "range_start timestamptz,range_end timestamptz,recovery_boundary bigint NOT NULL, "
+    "decision_id text REFERENCES storage.recovery_decisions, "
+    "state text NOT NULL DEFAULT 'planned' CHECK(state IN ('planned','blocked')), "
+    "CHECK((mode='history_backfill')=(range_start IS NOT NULL AND range_end IS NOT NULL)), "
+    "CHECK(range_start IS NULL OR range_start<range_end))",
+    "CREATE TABLE storage.history_items (job_id text NOT NULL REFERENCES storage.history_jobs, "
+    "data_type text NOT NULL REFERENCES storage.registry(name),object_id text NOT NULL, "
+    "item_kind text NOT NULL CHECK(item_kind IN ('current_state','reevaluation_needed')), "
+    "state text NOT NULL CHECK(state IN ('candidate','unavailable')), "
+    "PRIMARY KEY(job_id,data_type,object_id))",
+    "CREATE TABLE storage.history_item_requests (job_id text NOT NULL,data_type text NOT NULL, "
+    "object_id text NOT NULL,request_id text NOT NULL REFERENCES storage.outbox(event_id), "
+    "PRIMARY KEY(job_id,request_id), FOREIGN KEY(job_id,data_type,object_id) "
+    "REFERENCES storage.history_items)",
+    "CREATE TABLE storage.recovery_exclusions (decision_id text NOT NULL REFERENCES "
+    "storage.recovery_decisions,consumer text NOT NULL REFERENCES storage.consumers, "
+    "data_type text NOT NULL REFERENCES storage.registry(name),lower_seq bigint NOT NULL, "
+    "upper_seq bigint NOT NULL,CHECK(lower_seq<=upper_seq), "
+    "PRIMARY KEY(decision_id,consumer,data_type))",
+    "CREATE TABLE storage.recovery_excluded_events (decision_id text NOT NULL REFERENCES "
+    "storage.recovery_decisions,consumer text NOT NULL REFERENCES storage.consumers, "
+    "event_id text NOT NULL REFERENCES storage.outbox(event_id), "
+    "PRIMARY KEY(decision_id,consumer,event_id))",
+    "ALTER TABLE storage.consumer_deliveries DROP CONSTRAINT consumer_deliveries_state_check",
+    "ALTER TABLE storage.consumer_deliveries ADD CHECK "
+    "(state IN ('retry','inflight','acked','dead','skipped'))",
+)
+_REQUIRED_V11_COLUMNS = {
+    "recovery_decisions": "decision_id feedback_id module lifecycle_revision mode types_text "
+    "watermark coverage_lower_bound state",
+    "history_jobs": "job_id feedback_id owner mode types_text range_start range_end "
+    "recovery_boundary decision_id state",
+    "history_items": "job_id data_type object_id item_kind state",
+    "history_item_requests": "job_id data_type object_id request_id",
+    "recovery_exclusions": "decision_id consumer data_type lower_seq upper_seq",
+    "recovery_excluded_events": "decision_id consumer event_id",
+}
+
+# Explicit v12: item leases and atomic chunk receipts, never plaintext tokens.
+DDL_V12 = (
+    "ALTER TABLE storage.history_jobs DROP CONSTRAINT history_jobs_state_check",
+    "ALTER TABLE storage.history_jobs ADD CHECK "
+    "(state IN ('planned','running','completed','blocked','failed'))",
+    "ALTER TABLE storage.history_jobs ADD COLUMN error_code text, "
+    "ADD COLUMN execution_revision bigint",
+    "UPDATE storage.history_jobs j SET execution_revision=l.revision "
+    "FROM storage.module_lifecycle l,storage.management_tasks t "
+    "WHERE j.owner=l.module AND j.feedback_id=t.feedback_id AND t.status='succeeded'",
+    "ALTER TABLE storage.history_items DROP CONSTRAINT history_items_state_check",
+    "ALTER TABLE storage.history_items ADD CHECK "
+    "(state IN ('candidate','unavailable','claimed','completed','blocked','failed'))",
+    "ALTER TABLE storage.history_items ADD COLUMN fence bigint NOT NULL DEFAULT 0, "
+    "ADD COLUMN attempts integer NOT NULL DEFAULT 0, ADD COLUMN claim_hash text, "
+    "ADD COLUMN principal_id text REFERENCES storage.principals, "
+    "ADD COLUMN credential_epoch bigint, ADD COLUMN lifecycle_revision bigint, "
+    "ADD COLUMN lease_until timestamptz, ADD COLUMN snapshot_id text, "
+    "ADD COLUMN current_version integer, ADD COLUMN guards_text text, ADD COLUMN error_code text",
+    "CREATE UNIQUE INDEX history_claim_hash ON storage.history_items(claim_hash)",
+    "CREATE TABLE storage.history_receipts (job_id text NOT NULL REFERENCES storage.history_jobs, "
+    "request_id text NOT NULL, fingerprint text NOT NULL, result_text text NOT NULL, "
+    "required_types_text text NOT NULL, PRIMARY KEY(job_id,request_id))",
+)
+_REQUIRED_V12_COLUMNS = {
+    "history_jobs": "error_code execution_revision",
+    "history_items": "fence attempts claim_hash principal_id credential_epoch lifecycle_revision "
+    "lease_until snapshot_id current_version guards_text error_code",
+    "history_receipts": "job_id request_id fingerprint result_text required_types_text",
+}
+
+# Explicit v14: approved scheduler scope and append-only request assignments.
+DDL_V14 = (
+    "CREATE TABLE storage.history_reevaluation_authority (job_id text NOT NULL, "
+    "data_type text NOT NULL,object_id text NOT NULL,refs_text text NOT NULL, "
+    "required_types_text text NOT NULL, PRIMARY KEY(job_id,data_type,object_id), "
+    "FOREIGN KEY(job_id,data_type,object_id) REFERENCES storage.history_items)",
+    "CREATE TABLE storage.history_request_links (assignment_id text PRIMARY KEY, "
+    "ordinal bigint GENERATED ALWAYS AS IDENTITY UNIQUE,job_id text NOT NULL, "
+    "data_type text NOT NULL,object_id text NOT NULL,request_event_id text NOT NULL "
+    "REFERENCES storage.outbox(event_id),principal_id text NOT NULL REFERENCES storage.principals, "
+    "authority_revision bigint NOT NULL,required_types_text text NOT NULL, "
+    "created_at timestamptz NOT NULL DEFAULT clock_timestamp(), "
+    "UNIQUE(job_id,data_type,object_id,request_event_id), "
+    "FOREIGN KEY(job_id,data_type,object_id) REFERENCES storage.history_items)",
+)
+_REQUIRED_V14_COLUMNS = {
+    "history_reevaluation_authority": "job_id data_type object_id refs_text required_types_text",
+    "history_request_links": "assignment_id ordinal job_id data_type object_id request_event_id "
+    "principal_id authority_revision required_types_text created_at",
+}
+
+# Explicit v13: approved per-module/type handoff, and auditable supersession.
+DDL_V13 = (
+    "ALTER TABLE storage.recovery_decisions DROP CONSTRAINT recovery_decisions_state_check",
+    "ALTER TABLE storage.recovery_decisions ADD CHECK "
+    "(state IN ('authorized','switched','superseded'))",
+    "ALTER TABLE storage.recovery_decisions DROP CONSTRAINT "
+    "recovery_decisions_module_lifecycle_revision_key",
+    "CREATE UNIQUE INDEX recovery_active_revision ON storage.recovery_decisions "
+    "(module,lifecycle_revision) WHERE state='authorized'",
+    "CREATE TABLE storage.module_type_handoffs (module text NOT NULL REFERENCES "
+    "storage.module_lifecycle, data_type text NOT NULL REFERENCES storage.registry(name), "
+    "watermark bigint NOT NULL CHECK(watermark>=0), decision_id text NOT NULL REFERENCES "
+    "storage.recovery_decisions, PRIMARY KEY(module,data_type))",
+    "INSERT INTO storage.module_type_handoffs "
+    "SELECT DISTINCT ON (d.module,t.value) d.module,t.value,d.watermark,d.decision_id "
+    "FROM storage.recovery_decisions d CROSS JOIN LATERAL "
+    "jsonb_array_elements_text(d.types_text::jsonb) t(value) "
+    "WHERE d.state='switched' ORDER BY d.module,t.value,d.watermark DESC,d.decision_id DESC",
+)
+_REQUIRED_V13_COLUMNS = {
+    "module_type_handoffs": "module data_type watermark decision_id",
+}
+
+# A revision number is not proof of a complete schema. Never repair local old-v5 implicitly.
+_REQUIRED_V5_COLUMNS = {
+    "meta": "singleton schema_revision commit_seq",
+    "registry": "name spec_text is_core",
+    "publishers": "event_type modules_text",
+    "modules": "module schema_name",
+    "identity": "id module data_type kind current_seq dedup_key adapter_version",
+    "dependency_sets": (
+        "dependent_id dependent_version commit_seq dependent_type registered_by registered_at"
+    ),
+    "dependency_edges": "dependent_id dependent_version commit_seq target_id record_text",
+    "current_dependency_sets": (
+        "dependent_id dependent_version commit_seq dependent_type registered_by registered_at"
+    ),
+    "current_dependency_edges": "dependent_id dependent_version commit_seq target_id record_text",
+    "processed": "consumer event_id commit_seq",
+    "published": "event_id commit_seq",
+    "outbox": (
+        "commit_seq ordinal event_id event_text attempts next_attempt_at last_error "
+        "claim_token delivered_at ack_stream ack_seq"
+    ),
+    "idempotency": "module request_id fingerprint result_text required_types_text commit_seq scope",
+    "principals": "id module token_hash active",
+    "type_grants": "principal_id data_type can_subscribe",
+    "snapshot_leases": "snapshot_id principal_id expires_at commit_seq item_count byte_count",
+    "snapshot_items": "snapshot_id kind item_key data_type record_text",
+    "relay_state": "singleton fence lease_until paused destination",
+    "consumer_identities": "name principal_id",
+    "consumers": (
+        "name principal_id module generation config_text destination creation_cursor "
+        "created_at ready enabled fence lease_until"
+    ),
+    "consumer_deliveries": (
+        "consumer delivery_id queue_seq event_id replay_of attempt token state "
+        "available_at lease_until broker_reply ack_pending error_code "
+        "historical_filtered broker_subject"
+    ),
+    "consumer_receipts": "token consumer delivery_id",
+}
+
+
+def check_schema(conn: psycopg.Connection) -> None:
+    if one(conn, "SELECT to_regclass('storage.meta')")[0] is None:
+        raise SchemaMismatch("schema absent: run explicit migrate()")
+    columns: list[tuple[Any, ...]] = []
+    present: set[tuple[str, str]] = set()
+    if SCHEMA_VERSION >= 5:
+        columns = conn.execute(
+            "SELECT c.relname,a.attname,a.attidentity FROM pg_class c "
+            "JOIN pg_namespace n ON n.oid=c.relnamespace "
+            "JOIN pg_attribute a ON a.attrelid=c.oid "
+            "WHERE n.nspname='storage' AND c.relkind IN ('r','v') "
+            "AND a.attnum>0 AND NOT a.attisdropped"
+        ).fetchall()
+        present = {(name, column) for name, column, _ in columns}
+        # Check revision before v5 structure so genuine v1--v4 still report migration required.
+        if not all(("meta", column) in present for column in _REQUIRED_V5_COLUMNS["meta"].split()):
+            raise SchemaMismatch("incomplete schema: meta")
+    rows = conn.execute("SELECT schema_revision FROM storage.meta WHERE singleton").fetchall()
+    if rows != [(SCHEMA_VERSION,)]:
+        raise SchemaMismatch("unsupported schema revision: run explicit migrations")
+    if SCHEMA_VERSION >= 5:
+        for name, required in _REQUIRED_V5_COLUMNS.items():
+            if any((name, column) not in present for column in required.split()):
+                raise SchemaMismatch("incomplete schema: " + name)
+        if SCHEMA_VERSION >= 6:
+            for name, required in _REQUIRED_V6_COLUMNS.items():
+                if any((name, column) not in present for column in required.split()):
+                    raise SchemaMismatch("incomplete schema: " + name)
+        if SCHEMA_VERSION >= 7:
+            for name, required in _REQUIRED_V7_COLUMNS.items():
+                if any((name, column) not in present for column in required.split()):
+                    raise SchemaMismatch("incomplete schema: " + name)
+        if SCHEMA_VERSION >= 8:
+            for name, required in _REQUIRED_V8_COLUMNS.items():
+                if any((name, column) not in present for column in required.split()):
+                    raise SchemaMismatch("incomplete schema: " + name)
+        if SCHEMA_VERSION >= 9 and any(
+            ("type_revisions", c) not in present for c in ("data_type", "revision")
+        ):
+            raise SchemaMismatch("incomplete schema: type_revisions")
+        if SCHEMA_VERSION >= 10 and any(
+            ("request_completions", c) not in present
+            for c in ("event_id", "result_type", "commit_seq")
+        ):
+            raise SchemaMismatch("incomplete schema: request_completions")
+        if SCHEMA_VERSION >= 11:
+            for name, required in _REQUIRED_V11_COLUMNS.items():
+                if any((name, column) not in present for column in required.split()):
+                    raise SchemaMismatch("incomplete schema: " + name)
+        if SCHEMA_VERSION >= 12:
+            for name, required in _REQUIRED_V12_COLUMNS.items():
+                if any((name, column) not in present for column in required.split()):
+                    raise SchemaMismatch("incomplete schema: " + name)
+        if SCHEMA_VERSION >= 13:
+            for name, required in _REQUIRED_V13_COLUMNS.items():
+                if any((name, column) not in present for column in required.split()):
+                    raise SchemaMismatch("incomplete schema: " + name)
+        if SCHEMA_VERSION >= 14:
+            for name, required in _REQUIRED_V14_COLUMNS.items():
+                if any((name, column) not in present for column in required.split()):
+                    raise SchemaMismatch("incomplete schema: " + name)
+        if ("consumer_deliveries", "queue_seq", "a") not in columns:
+            raise SchemaMismatch("incomplete schema: consumer_deliveries queue identity")
+
+
+def migrate(dsn: str) -> None:
+    """Explicit atomic v1 through v12 upgrade; retain data and internal replay scopes."""
+    with connection(dsn) as conn, writer(conn):
+        if one(conn, "SELECT to_regnamespace('storage')")[0] is None:
+            for statement in DDL:
+                conn.execute(statement)
+            conn.execute("INSERT INTO storage.meta VALUES (true,%s,0)", (1,))
+        revision = one(conn, "SELECT schema_revision FROM storage.meta WHERE singleton")[0]
+        if revision == 1:
+            for statement in DDL_V2:
+                conn.execute(statement)
+            conn.execute("UPDATE storage.meta SET schema_revision=2 WHERE singleton")
+        if revision in (1, 2):
+            for statement in DDL_V3:
+                conn.execute(statement)
+            conn.execute("UPDATE storage.meta SET schema_revision=3 WHERE singleton")
+        if revision in (1, 2, 3):
+            for statement in DDL_V4:
+                conn.execute(statement)
+            conn.execute("UPDATE storage.meta SET schema_revision=4 WHERE singleton")
+        if revision in (1, 2, 3, 4):
+            for statement in DDL_V5:
+                conn.execute(statement)
+            conn.execute("UPDATE storage.meta SET schema_revision=5 WHERE singleton")
+        if revision in (1, 2, 3, 4, 5):
+            for statement in DDL_V6:
+                conn.execute(statement)
+            conn.execute("UPDATE storage.meta SET schema_revision=6 WHERE singleton")
+        if revision in (1, 2, 3, 4, 5, 6):
+            for statement in DDL_V7:
+                conn.execute(statement)
+            conn.execute("UPDATE storage.meta SET schema_revision=7 WHERE singleton")
+        if revision in (1, 2, 3, 4, 5, 6, 7):
+            for statement in DDL_V8:
+                conn.execute(statement)
+            conn.execute("UPDATE storage.meta SET schema_revision=8 WHERE singleton")
+        if SCHEMA_VERSION >= 9 and revision in range(1, 9):
+            for statement in DDL_V9:
+                conn.execute(statement)
+            # MAX commit sequence is a monotonic migration starting point, never
+            # SUM(object versions), and never exposed as a snapshot watermark.
+            for (module,) in conn.execute("SELECT module FROM storage.modules").fetchall():
+                for name in ("raw_records", "versions", "system_records"):
+                    conn.execute(
+                        sql.SQL(
+                            "UPDATE storage.type_revisions t "
+                            "SET revision=greatest(t.revision,q.revision) "
+                            "FROM (SELECT data_type,max(commit_seq) AS revision "
+                            "FROM {} GROUP BY data_type) q "
+                            "WHERE t.data_type=q.data_type"
+                        ).format(table(module, name))
+                    )
+            conn.execute("UPDATE storage.meta SET schema_revision=9 WHERE singleton")
+        if SCHEMA_VERSION >= 10 and revision in range(1, 10):
+            for statement in DDL_V10:
+                conn.execute(statement)
+            conn.execute("UPDATE storage.meta SET schema_revision=10 WHERE singleton")
+        if SCHEMA_VERSION >= 11 and revision in range(1, 11):
+            for statement in DDL_V11:
+                conn.execute(statement)
+            conn.execute("UPDATE storage.meta SET schema_revision=11 WHERE singleton")
+        if SCHEMA_VERSION >= 12 and revision in range(1, 12):
+            for statement in DDL_V12:
+                conn.execute(statement)
+            conn.execute("UPDATE storage.meta SET schema_revision=12 WHERE singleton")
+        if SCHEMA_VERSION >= 13 and revision in range(1, 13):
+            for statement in DDL_V13:
+                conn.execute(statement)
+            conn.execute("UPDATE storage.meta SET schema_revision=13 WHERE singleton")
+        if SCHEMA_VERSION >= 14 and revision in range(1, 14):
+            for statement in DDL_V14:
+                conn.execute(statement)
+            from ear_storage.history_scheduler import capture_authority
+
+            for (job_id,) in conn.execute("SELECT job_id FROM storage.history_jobs").fetchall():
+                capture_authority(conn, job_id)
+            conn.execute("UPDATE storage.meta SET schema_revision=14 WHERE singleton")
+        check_schema(conn)
+
+
+def bootstrap(dsn: str, registry: Registry = DEFAULT_REGISTRY) -> None:
+    """Deployment-trusted registry only. Existing entries cannot be changed/upgraded implicitly."""
+    modules = {s.writer for s in registry.data_types.values()}
+    modules.update(m for ms in registry.event_publishers.values() for m in ms)
+    for module in modules:
+        module_schema(module)
+    for name, spec in registry.data_types.items():
+        if name != spec.name or not re.fullmatch(r"[a-z][a-z0-9_]*", name):
+            raise ValueError("invalid registry type")
+    with connection(dsn) as conn, writer(conn):
+        check_schema(conn)
+        for module in sorted(modules):
+            schema = module_schema(module)
+            row = conn.execute(
+                "SELECT schema_name FROM storage.modules WHERE module=%s", (module,)
+            ).fetchone()
+            if row is not None:
+                if row[0] != schema:
+                    raise SchemaMismatch("module schema mapping mismatch")
+                continue
+            create_module(conn, module)
+        for name, spec in sorted(registry.data_types.items()):
+            text, core = canonical_json(spec.to_json()), registry.is_core(name)
+            row = conn.execute(
+                "SELECT spec_text,is_core FROM storage.registry WHERE name=%s", (name,)
+            ).fetchone()
+            if row is not None and row != (text, core):
+                raise SchemaMismatch("registry bootstrap conflict: " + name)
+            if row is None:
+                conn.execute("INSERT INTO storage.registry VALUES (%s,%s,%s)", (name, text, core))
+                if SCHEMA_VERSION >= 9:
+                    conn.execute(
+                        "INSERT INTO storage.type_revisions(data_type) VALUES (%s)", (name,)
+                    )
+        for event, publishers in sorted(registry.event_publishers.items()):
+            text = canonical_json(publishers)
+            row = conn.execute(
+                "SELECT modules_text FROM storage.publishers WHERE event_type=%s", (event,)
+            ).fetchone()
+            if row is not None and row != (text,):
+                raise SchemaMismatch("publisher bootstrap conflict")
+            if row is None:
+                conn.execute("INSERT INTO storage.publishers VALUES (%s,%s)", (event, text))
+
+
+def has_type_revisions(conn: psycopg.Connection) -> bool:
+    """Internal compatibility for genuine pre-v9 migration fixtures.
+
+    Public service paths check_schema first: a missing v9 table still fails closed.
+    """
+    return one(conn, "SELECT to_regclass('storage.type_revisions')")[0] is not None
+
+
+def create_module(conn: psycopg.Connection, module: str) -> None:
+    """Trusted server-only DDL; caller holds writer gate and validates uniqueness."""
+    schema = module_schema(module)
+    conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+    for name in ("raw_records", "versions", "system_records"):
+        conn.execute(
+            sql.SQL(
+                "CREATE TABLE {} (id text NOT NULL REFERENCES "
+                "storage.identity, seq integer NOT NULL CHECK(seq>0), "
+                "data_type text NOT NULL, "
+                "record_text text NOT NULL, payload_text text NOT NULL, "
+                "event_start timestamptz, event_end timestamptz, source_user text, "
+                "superseded boolean NOT NULL DEFAULT false, commit_seq bigint NOT NULL, "
+                "PRIMARY KEY(id,seq))"
+            ).format(table(module, name))
+        )
+        conn.execute(
+            sql.SQL("CREATE INDEX ON {} (data_type,event_start,id)").format(table(module, name))
+        )
+    conn.execute("INSERT INTO storage.modules VALUES (%s,%s)", (module, schema))

@@ -1,0 +1,319 @@
+{
+  "$defs": {
+    "Cause": {
+      "additionalProperties": false,
+      "description": "\u5f15\u8d77\u300c\u8bf7\u6c42\u91cd\u65b0\u5224\u65ad\u300d\u7684\u90a3\u6b21\u4fee\u6539\u3002",
+      "properties": {
+        "data_type": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Data Type",
+          "type": "string"
+        },
+        "data_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Data Id",
+          "type": "string"
+        },
+        "old_version": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Old Version"
+        },
+        "new_version": {
+          "minimum": 1,
+          "title": "New Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "data_type",
+        "data_id",
+        "old_version",
+        "new_version"
+      ],
+      "title": "Cause",
+      "type": "object"
+    },
+    "LLMUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "input_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Tokens"
+        },
+        "output_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Tokens"
+        },
+        "total_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total Tokens"
+        }
+      },
+      "title": "LLMUsage",
+      "type": "object"
+    },
+    "TracedCause": {
+      "additionalProperties": false,
+      "description": "An independent causal path; never a replacement for the primary root/depth.",
+      "properties": {
+        "cause": {
+          "$ref": "#/$defs/Cause"
+        },
+        "root_feedback_id": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            {
+              "const": "system",
+              "type": "string"
+            }
+          ],
+          "title": "Root Feedback Id"
+        },
+        "depth": {
+          "minimum": 1,
+          "title": "Depth",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cause",
+        "root_feedback_id",
+        "depth"
+      ],
+      "title": "TracedCause",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A terminal logical call; absent usage means unknown, not zero consumption.",
+  "properties": {
+    "additional_causes": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/TracedCause"
+      },
+      "maxItems": 257,
+      "title": "Additional Causes",
+      "type": "array"
+    },
+    "caller_module": {
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "title": "Caller Module",
+      "type": "string"
+    },
+    "purpose": {
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "title": "Purpose",
+      "type": "string"
+    },
+    "model": {
+      "anyOf": [
+        {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_./:@+-]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Model"
+    },
+    "started_at": {
+      "format": "date-time",
+      "title": "Started At",
+      "type": "string",
+      "pattern": "Z$"
+    },
+    "ended_at": {
+      "format": "date-time",
+      "title": "Ended At",
+      "type": "string",
+      "pattern": "Z$"
+    },
+    "status": {
+      "enum": [
+        "success",
+        "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "usage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LLMUsage"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "latency_ms": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Latency Ms"
+    },
+    "request_event_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Request Event Id"
+    },
+    "root_feedback_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        {
+          "const": "system",
+          "type": "string"
+        }
+      ],
+      "title": "Root Feedback Id"
+    },
+    "depth": {
+      "minimum": 0,
+      "title": "Depth",
+      "type": "integer"
+    },
+    "error_code": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error Code"
+    },
+    "request_text": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Explicit call text only; deployment write policy defaults off. No secrets."
+    },
+    "response_text": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Explicit call text only; deployment write policy defaults off. No secrets."
+    }
+  },
+  "required": [
+    "caller_module",
+    "purpose",
+    "started_at",
+    "ended_at",
+    "status",
+    "root_feedback_id",
+    "depth"
+  ],
+  "title": "LLMCallRecord",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ear:contracts:records:llm-call-record",
+  "$comment": "SystemRecord payload, data_type=llm_call, writer=llm_gateway; envelope id is stable call_id. Optional request_text/response_text shape only: writes require deployment ModelBodyPolicy enabled and caller scope, cumulative UTF-8 byte limit (default 65536). llm_call_metadata is not an enable switch. Disabling writes does not delete or hide historical bodies; existing type/cause ACL applies. Only explicitly supplied call text; never collect environment, headers or API keys. Terminal immutable. No retention cleanup. Timestamp ordering, latency equality, request existence/root/origins checked by storage.",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "failed"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "error_code"
+        ],
+        "properties": {
+          "error_code": {
+            "type": "string"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "error_code": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}

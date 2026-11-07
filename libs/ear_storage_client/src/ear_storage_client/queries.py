@@ -8,7 +8,13 @@ from datetime import datetime
 from types import MappingProxyType
 from typing import Any, Literal
 
-from ear_contracts import RawRecord, SemanticRecord, SystemRecord, VersionRef
+from ear_contracts import (
+    DependencyRecord,
+    RawRecord,
+    SemanticRecord,
+    SystemRecord,
+    VersionRef,
+)
 
 from ear_storage_client.errors import InvalidRequest
 
@@ -39,7 +45,10 @@ class TimeRange:
 
         单点数据（start == end）满足 self.start <= start < self.end 即命中；
         有时长的数据满足 start < self.end 且 end > self.start 即命中。
+        本区间为空（self.start == self.end，即 [t, t)）时什么都不命中。
         """
+        if self.start == self.end:
+            return False
         if start == end:
             return self.start <= start < self.end
         return start < self.end and end > self.start
@@ -91,7 +100,15 @@ class Page:
 
 @dataclass(frozen=True, slots=True)
 class StaleDependency:
-    """一条已经过时的依赖登记：依赖方登记的被依赖方版本，已经不是被依赖方的当前版本。"""
+    """一条已经过时的依赖登记。
+
+    - 整个对象的依赖（fields 为 None）：登记的被依赖方版本已经不是被依赖方的当前版本，
+      或被依赖方已被整体替代。
+    - 字段依赖（fields 不为 None）：所选字段中任一字段的值与当前版本不同（缺失与 null 不同），
+      或被依赖方已被整体替代（此时无论字段值是否相同都过时）。
+
+    前四个字段的位置和含义与旧版相同；fields 是新增的可选字段，缺省 None。
+    """
 
     dependent: VersionRef
     depends_on: VersionRef
@@ -100,3 +117,29 @@ class StaleDependency:
     """被依赖方现在的当前版本。"""
     target_superseded: bool
     """被依赖方已被整体替代。"""
+    fields: tuple[str, ...] | None = None
+    """依赖登记中的 fields（与 DependencyRecord.fields 相同）；None 表示依赖整个对象。"""
+
+    @property
+    def whole_object(self) -> bool:
+        return self.fields is None
+
+
+@dataclass(frozen=True, slots=True)
+class DependencySet:
+    """一个依赖方版本已登记的完整依赖集。
+
+    用于区分「登记过空集」（dependencies 为空元组）与「从未登记」（读取接口返回 None）。
+    registered_by、registered_at 是这一依赖集最近一次实际写入（结果为 written）的登记方
+    和时间；同一集合重复登记为 unchanged，不改变它们。
+    """
+
+    dependent: VersionRef
+    dependencies: tuple[DependencyRecord, ...]
+    registered_by: str
+    registered_at: datetime
+
+    @property
+    def empty(self) -> bool:
+        """显式登记的空集。"""
+        return not self.dependencies

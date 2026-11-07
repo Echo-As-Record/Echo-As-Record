@@ -1,0 +1,17 @@
+{
+  "caller_module": "extraction",
+  "purpose": "activity_extraction",
+  "started_at": "2026-01-01T00:00:00Z",
+  "ended_at": "2026-01-01T00:00:01Z",
+  "latency_ms": 1000,
+  "status": "success",
+  "root_feedback_id": "system",
+  "depth": 0,
+  "usage": {
+    "input_tokens": 10,
+    "output_tokens": 2,
+    "total_tokens": null
+  },
+  "model": null,
+  "error_code": null
+}

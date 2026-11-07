@@ -1,0 +1,289 @@
+{
+  "$defs": {
+    "Cause": {
+      "additionalProperties": true,
+      "description": "引起「请求重新判断」的那次修改。",
+      "properties": {
+        "data_type": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Data Type",
+          "type": "string"
+        },
+        "data_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Data Id",
+          "type": "string"
+        },
+        "old_version": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Old Version"
+        },
+        "new_version": {
+          "minimum": 1,
+          "title": "New Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "data_type",
+        "data_id",
+        "old_version",
+        "new_version"
+      ],
+      "title": "Cause",
+      "type": "object"
+    },
+    "TracedCause": {
+      "additionalProperties": true,
+      "description": "An independent causal path; never a replacement for the primary root/depth.",
+      "properties": {
+        "cause": {
+          "$ref": "#/$defs/Cause"
+        },
+        "root_feedback_id": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            {
+              "const": "system",
+              "type": "string"
+            }
+          ],
+          "title": "Root Feedback Id"
+        },
+        "depth": {
+          "minimum": 1,
+          "title": "Depth",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cause",
+        "root_feedback_id",
+        "depth"
+      ],
+      "title": "TracedCause",
+      "type": "object"
+    }
+  },
+  "additionalProperties": true,
+  "properties": {
+    "request_event_id": {
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "title": "Request Event Id",
+      "type": "string"
+    },
+    "target_type": {
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "title": "Target Type",
+      "type": "string"
+    },
+    "target_id": {
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "title": "Target Id",
+      "type": "string"
+    },
+    "outcome": {
+      "enum": [
+        "changed",
+        "unchanged",
+        "not_applicable",
+        "failed"
+      ],
+      "title": "Outcome",
+      "type": "string"
+    },
+    "before_version": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Before Version"
+    },
+    "after_version": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "After Version"
+    },
+    "extra_causes": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Cause"
+      },
+      "title": "Extra Causes",
+      "type": "array"
+    },
+    "root_feedback_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        {
+          "const": "system",
+          "type": "string"
+        }
+      ],
+      "title": "Root Feedback Id"
+    },
+    "depth": {
+      "minimum": 1,
+      "title": "Depth",
+      "type": "integer"
+    },
+    "completed_at": {
+      "format": "date-time",
+      "title": "Completed At",
+      "type": "string",
+      "pattern": "Z$"
+    },
+    "error_code": {
+      "anyOf": [
+        {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error Code"
+    },
+    "reason_code": {
+      "anyOf": [
+        {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason Code"
+    },
+    "disposition": {
+      "anyOf": [
+        {
+          "enum": [
+            "kept_protected",
+            "terminated",
+            "unavailable"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Disposition"
+    },
+    "additional_causes": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "$ref": "#/$defs/TracedCause"
+      },
+      "default": []
+    }
+  },
+  "required": [
+    "request_event_id",
+    "target_type",
+    "target_id",
+    "outcome",
+    "before_version",
+    "after_version",
+    "root_feedback_id",
+    "depth",
+    "completed_at"
+  ],
+  "title": "ReevaluationResult",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "failed"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "error_code"
+        ],
+        "properties": {
+          "error_code": {
+            "type": "string"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "error_code": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "not_applicable"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "reason_code",
+          "disposition"
+        ],
+        "properties": {
+          "reason_code": {
+            "type": "string"
+          },
+          "disposition": {
+            "type": "string"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "reason_code": {
+            "type": "null"
+          },
+          "disposition": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}

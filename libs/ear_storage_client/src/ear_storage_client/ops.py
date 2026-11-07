@@ -7,12 +7,17 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
 
-from ear_contracts import Cause, NewRawRecord, VersionRef, is_id
+from ear_contracts import Cause, NewRawRecord, ReevaluationResult, VersionRef, is_id
+from ear_contracts.events import AdditionalCauses
+from pydantic import BaseModel, Field
+
+from ear_storage_client.context import checked_traces
+from ear_storage_client.errors import InvalidRequest
 
 _SNAKE = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -104,26 +109,117 @@ class Supersede:
 
 
 @dataclass(frozen=True, slots=True)
+class DependencyInput:
+    """登记依赖时的一个被依赖方：ref 指定「对象 + 读取的版本」，fields 选择 payload 顶层键。
+
+        DependencyInput(ref)                          # 依赖整个对象，同直接传 VersionRef
+        DependencyInput(ref, ("references",))         # 只依赖 payload.references
+        DependencyInput(ref, fields=("name", "references"))
+
+    - fields 为 None 表示依赖整个对象（与旧 VersionRef 输入相同，按严格版本规则检查）。
+    - fields 必须是字符串的集合（list、tuple、set、frozenset 等）；单个字符串、bytes、
+      映射、非字符串元素都以 InvalidRequest 拒绝，不会把字符串逐字拆开。空集合拒绝。
+    - 任意字符串键都允许，包括空字符串；构造时去重并按 Unicode 码点升序保存。
+    - ref 不能自带 fields 额外字段（含义不明），请只用本类型的 fields。
+    - data_type、id、version 是 ref 对应属性的只读别名。
+    """
+
+    ref: VersionRef
+    fields: tuple[str, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.ref, VersionRef):
+            raise InvalidRequest(f"ref 必须是 VersionRef，不是 {type(self.ref).__name__}")
+        _reject_ref_fields(self.ref)
+        if self.fields is None:
+            return
+        raw: object = self.fields
+        if isinstance(raw, str | bytes | bytearray | Mapping) or not isinstance(raw, Collection):
+            raise InvalidRequest(
+                f"fields 必须是字符串的集合（如 list、tuple），不是 {type(raw).__name__}"
+            )
+        items = tuple(raw)
+        for item in items:
+            if not isinstance(item, str):
+                raise InvalidRequest(f"fields 的元素必须是字符串，不是 {item!r}")
+        if not items:
+            raise InvalidRequest("fields 不能为空；依赖整个对象时传 None")
+        object.__setattr__(self, "fields", tuple(sorted({str(i) for i in items})))
+
+    @property
+    def whole_object(self) -> bool:
+        return self.fields is None
+
+    @property
+    def data_type(self) -> str:
+        return self.ref.data_type
+
+    @property
+    def id(self) -> str:
+        return self.ref.id
+
+    @property
+    def version(self) -> int:
+        return self.ref.version
+
+
+def _reject_ref_fields(ref: VersionRef) -> None:
+    if ref.model_extra and "fields" in ref.model_extra:
+        raise InvalidRequest(
+            f"VersionRef（{ref.data_type} {ref.id}）不能带 fields；"
+            "字段依赖请改用 DependencyInput(ref, fields)"
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class RegisterDependencies:
     """登记「依赖方的某个版本」依赖了哪些「对象 + 版本」，整体替换这个依赖方版本之前的登记。
 
     - 只有负责写依赖方的模块可以登记。
     - dependent_version 为 None 时，取本批前面的操作执行后依赖方的当前版本
       （适合和 Update 放在同一批：内容没变时版本号不变）。
-    - depends_on 的版本必须是被依赖方此刻的当前版本，且被依赖方未被整体替代，否则冲突
-      stale_dependency：说明计算所用的数据已经过时，应重新读取后重算。
+    - depends_on 是 VersionRef 与 DependencyInput 的混合序列。直接传 VersionRef 等同
+      DependencyInput(ref)：依赖整个对象，版本必须是被依赖方此刻的当前版本，且被依赖方
+      未被整体替代，否则冲突 stale_dependency：说明计算所用的数据已经过时，应重新读取后重算。
+    - 带 fields 额外字段的 VersionRef 以 InvalidRequest 拒绝（以前被静默丢弃），改用
+      DependencyInput。元素必须是这两种类型之一，单个对象或字符串不会被当作序列拆开。
     - 重新判断后结果不变时，也要用新的被依赖版本重新登记，否则会一直被查成「已过时」。
     """
 
     dependent_type: str
     dependent_id: str
-    depends_on: Sequence[VersionRef]
+    depends_on: Sequence[VersionRef | DependencyInput]
     dependent_version: int | None = None
 
     def __post_init__(self) -> None:
         _check_type(self.dependent_type)
         _check_id(self.dependent_id, "dependent_id")
-        object.__setattr__(self, "depends_on", tuple(self.depends_on))
+        raw: object = self.depends_on
+        if isinstance(raw, str | bytes | bytearray | Mapping | BaseModel | DependencyInput) or (
+            not isinstance(raw, Iterable)
+        ):
+            raise InvalidRequest(
+                f"depends_on 必须是 VersionRef / DependencyInput 的序列，不是 {type(raw).__name__}"
+            )
+        items = tuple(raw)
+        for item in items:
+            if isinstance(item, VersionRef):
+                _reject_ref_fields(item)
+            elif not isinstance(item, DependencyInput):
+                raise InvalidRequest(
+                    f"depends_on 的元素必须是 VersionRef 或 DependencyInput，不是 {item!r}"
+                )
+        object.__setattr__(self, "depends_on", items)
+
+    def inputs(self) -> tuple[DependencyInput, ...]:
+        """按提交顺序把 depends_on 统一成 DependencyInput（VersionRef → 整个对象）。
+
+        不合并重复项：同一对象多次出现时的合并或拒绝由 ① 执行（见 P0 契约提案 2.4）。
+        """
+        return tuple(
+            item if isinstance(item, DependencyInput) else DependencyInput(item)
+            for item in self.depends_on
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,10 +256,12 @@ class PublishReevaluation:
     cause: Cause
     change_description: str
     event_id: str | None = None
+    additional_causes: AdditionalCauses = ()
 
     def __post_init__(self) -> None:
         _check_type(self.target_type)
         _check_id(self.target_id, "target_id")
+        object.__setattr__(self, "additional_causes", checked_traces(self.additional_causes))
         if self.event_id is not None:
             _check_id(self.event_id, "event_id")
 
@@ -183,8 +281,54 @@ class MarkProcessed:
         _check_id(self.event_id, "event_id")
 
 
+TypeRevision = Annotated[int, Field(strict=True, ge=0)]
+"""Per-type mutation counter, NOT a timestamp, record version or snapshot watermark."""
+
+
+@dataclass(frozen=True, slots=True)
+class AssertTypeRevision:
+    """Commit-only collection guard; requires read permission, never emits an event/edge.
+
+    Both committed-start and final batch counters must equal expected_revision.
+    Mutating this type anywhere in the same batch therefore fails atomically.
+    Capture revision AND query results using the same snapshot Reader; separate
+    live reads do not promise a common consistency point. Unchanged writes and
+    dependency refreshes do not advance the counter; all actual raw, versioned
+    and system record changes do, including terminal versions.
+    """
+
+    data_type: str
+    expected_revision: TypeRevision
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.data_type, str) or not _SNAKE.fullmatch(self.data_type):
+            raise InvalidRequest("invalid collection data_type")
+        if type(self.expected_revision) is not int or self.expected_revision < 0:
+            raise InvalidRequest("expected_revision must be a nonnegative integer")
+
+
+@dataclass(frozen=True, slots=True)
+class FinishReevaluation:
+    """Write one terminal result, ID=request_event_id, with a matching MarkProcessed.
+
+    Validated against the persisted request and the FINAL batch target. Successful
+    active results require same-batch complete dependencies even if the type's
+    requires_dependencies flag is false. No ordinary Put may write completion types.
+    """
+
+    result: ReevaluationResult
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.result, ReevaluationResult):
+            raise InvalidRequest("result must be ReevaluationResult")
+        # Frozen dataclasses/models do not recursively freeze nested Cause extras.
+        object.__setattr__(self, "result", self.result.model_copy(deep=True))
+
+
 WriteOp = (
-    AppendRaw
+    FinishReevaluation
+    | AssertTypeRevision
+    | AppendRaw
     | Create
     | Update
     | Supersede

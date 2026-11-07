@@ -1,35 +1,36 @@
 ---
 audience: ai
 doc-type: guide
-based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisions/mvp-confirmed-decisions.md；docs/adr/0001-storage-and-runtime-modules.md；代码契约基线origin/dev 48d3c51
+based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisions/mvp-confirmed-decisions.md；docs/adr/0001-storage-and-runtime-modules.md；代码契约基线origin/dev 48d3c51；其后①在 storage/implementation-preparation 分支实现 P0a（首个提交 a6a1c5a）与 P0b（cf337d1），P1（d7c9919）与提交前本地检查日志 /tmp/ear-p1http-full-OK7Aeg.log，P2/P3 后端 d0d8875（日志 /tmp/ear-p2b-mustfix/closing-*.log、/tmp/ear-p3-*.log、/tmp/ear-p3-checkpoint-validation.log）及合并提交 b7307e9（同步 dev 4afeae0）；P4 ①侧集合守护 f747e89、重判完成记录 106cd2e、多起因 daa767f，调用记录存储 e9391dd，以及本分支已实现的 P5 ①侧历史恢复（schema revision 14；提交状态以提交历史为准）；PR8 未合并
 ---
 
 # 已采纳 MVP 的契约与实施计划
 
 ## 0. 这不是实现完成报告
 
-负责人已明确采纳目标并授权本轮同步文档，**本轮不改contracts、业务代码、依赖或部署**。现有内存行为与新目标不同是显式待实现差距，不因测试绿就认定完成。目标定义见[设计](../../docs/design/design-v1.2.md)、[插件](../../docs/design/plugins-mvp.md)及[决策来源](../../docs/decisions/mvp-confirmed-decisions.md)。
+负责人已明确采纳目标并授权设计同步，那一轮不改contracts、业务代码、依赖或部署；此后①按授权在功能分支 `storage/implementation-preparation` 提交 P0a（a6a1c5a）、P0b（cf337d1）、P1 核心（d7c9919）、P2（Relay、持久消费者与远程订阅）与 P3 后端（管理反馈、凭据、订阅重配置；d0d8875），并以 b7307e9 合并 dev 4afeae0，此后提交 P4 ①侧集合守护（f747e89）、重判完成记录（106cd2e）与多起因（daa767f），调用记录存储（e9391dd），并实现 P5 ①侧历史恢复与①存储切片隔离部署（提交状态均以提交历史为准）；均在 PR8，未合并、未经合并前审核，见[①进度](../../services/storage/ai-docs/progress.md)。现有内存行为与新目标不同是显式待实现差距，不因测试绿就认定完成。目标定义见[设计](../../docs/design/design-v1.2.md)、[插件](../../docs/design/plugins-mvp.md)及[决策来源](../../docs/decisions/mvp-confirmed-decisions.md)。
 
-本页是工程执行顺序和风险清单，新增字段/类型名除已讨论术语外只是待设计项；不替代公共契约审核。协议、索引、超时等细节可由实施者提出，不反复问产品负责人；会改变已确认行为时再请求决策。
+①的首批PR拆分、6cea0b7代码证据与阶段出入口见[①实施准备](../../services/storage/ai-docs/implementation-plan.md)。本页是工程执行顺序和风险清单，新增字段/类型名除已讨论术语外只是待设计项；不替代公共契约审核。协议、索引、超时等细节可由实施者提出，不反复问产品负责人；会改变已确认行为时再请求决策。
 
 ## 1. 基线与代码导航
 
 | 位置 | 当前能力 | 不应误认为已有 |
 |---|---|---|
-| `contracts/records/dependency-record.schema.json` | 对象版本引用 | fields、动态读取权限或当前图防环 |
-| `contracts/registry/data-types.json` | 核心类型/单写者、约束 | 持久热注册、可信身份、完整插件生命周期 |
-| `contracts/events/` | 两类事件、单cause及追踪字段 | 多cause/多root调度、完成信号的新Schema |
+| `contracts/records/dependency-record.schema.json` | 对象版本引用；P0b 分支新增可选顶层 `fields` | 动态读取权限、持久化后端的并发防环 |
+| `contracts/registry/data-types.json` | 核心类型/单写者、约束；P0b 分支 Schema 新增能力项（缺省 false，核心类型当前全 false） | 持久热注册、可信身份、完整插件生命周期、已启用的强制登记 |
+| `contracts/events/` | 两类事件、主cause及追踪字段；P4 多起因（daa767f）增加 `additional_causes` 与请求关联 | ⑤的多因调度与合并策略、各模块完成信号接入 |
 | `libs/ear_contracts/src/ear_contracts/` | 模型/UUIDv7/UTC/注册表 | 新结果、管理、外部未知状态已同步 |
-| `libs/ear_storage_client/src/ear_storage_client/protocol.py` | 同步Reader/StorageClient/snapshot/subscribe及重试helper | 已实现远程快照/订阅协议 |
-| 同包 `ops.py`、`memory.py` | 批次、版本、依赖整体覆盖、内存总线 | 强制依赖/字段比较/无环/动态权限/生产可靠投递 |
-| 同包 `queries.py`、`results.py` | 查询分页与冲突 | 远程游标一致性、所有读路径访问控制 |
-| `services/storage/` | 文档入口 | 正式服务包 |
+| `libs/ear_storage_client/src/ear_storage_client/protocol.py` | 同步Reader/StorageClient/snapshot/subscribe及重试helper；P1（d7c9919）另有同包 `remote.py` 同步远程客户端与 `wire.py` | 可长期持有的快照（远程订阅已在 P2 实现，d0d8875） |
+| 同包 `ops.py`、`memory.py` | 批次、版本、依赖整体覆盖、内存总线；P0b 分支：`DependencyInput` 字段依赖、按能力强制登记、批末新鲜度、当前图无环（内存全局锁） | 持久化并发正确性、可信身份/动态权限、生产可靠投递 |
+| 同包 `queries.py`、`results.py` | 查询分页与冲突；P0b 分支 `DependencySet`、`dependency_cycle` | 远程游标一致性、所有读路径访问控制 |
+| `services/storage/` | 文档入口；P1 服务包 `ear_storage`（PostgreSQL、身份授权、snapshot、HTTP、CLI；d7c9919）；P2 `relay.py`、`consumers.py`（有序 Relay 与服务代理的持久消费者）与 P3 后端 `management.py`、`credentials.py`、`reconfiguration.py`（d0d8875，PR8 未合并） | ⑥管理页、流保留/清理、生产部署（隔离 Compose 切片已实现，见[隔离部署指南](../../services/storage/ai-docs/deployment.md)） |
 | `services/adapters/` | ②：旧 Ear Evidence → 原始数据的转换、导入规则、内存试运行（[实现说明](../../services/adapters/ai-docs/implementation.md)） | 真实落库、旧 Ear 的列录音接口、GPS 采样密度 |
-| `deploy/compose.yaml`、`tests/e2e/` | 空部署服务和E2E骨架 | 部署或插件端到端完成 |
+| `deploy/compose.yaml` | ①存储切片的隔离 Compose（postgres、nats、storage、relay、manage-worker；显式 migrate/bootstrap/init-identities）与备份工具 `tools/storage_backup.py` 已在本分支实现（提交状态以提交历史为准；不含②③④⑤⑥⑦，非生产运行手册，见[隔离部署指南](../../services/storage/ai-docs/deployment.md)） | 生产部署与升级迁移、备份文件保留/删除、其他模块部署、远程 CI |
+| `tests/e2e/` | E2E骨架 | 插件端到端完成 |
 
 先复用正确的基础行为，不从零定义另一套category/ULID/事件命名。UUIDv7、data_type/payload、system根源、两类事件和单写者等保持既有公共约定。
 
-## 2. 契约改动清单（尚未执行）
+## 2. 契约改动清单（①已执行的部分见[①进度](../../services/storage/ai-docs/progress.md)，其余尚未执行）
 
 修改Schema仍由①与I审核，原则为只增加字段，不删除或改变旧字段含义。若现有结构无法无损表达目标，提出显式兼容版本方案，不把不兼容改义伪装成“增加字段”。
 
@@ -55,10 +56,12 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 - 强制需依赖类型的Create/Update（包括unchanged）同批完整依赖；不自动继承；显式空集；Supersede免新登记。
 - 处理批次最终图约束和历史图分离；不能只按单条操作检查，临时中间关系不应替代最终状态判断。
 - 当前MemoryStorage只按版本失效；fields不能仅进入extra字段后在构造VersionRef时丢掉。
-- 原可疑边界补回归后修：投递上限先出队、并发runner、空时间查询、系统记录更新时间。此任务不是本次文档同步的一部分。
+- 原可疑边界补回归后修：投递上限先出队、并发runner、空时间查询、系统记录更新时间。已作为 P0a 在 `storage/implementation-preparation` 分支实现并验证（提交与合并状态以提交历史和 PR 为准）；拆分与证据见[①实施准备](../../services/storage/ai-docs/implementation-plan.md)。
+- P0b（字段依赖、登记表能力、批末强制）的契约选择见[P0 契约提案](../../docs/proposals/storage-p0-contracts.md)，已 accepted 并获功能分支实现授权；**已在本分支实现内存版本**（全量 426 passed、0 xfail），合并前由①负责人兼 I 审核。上面依赖相关各项在内存实现中已覆盖，但核心类型能力项全部 false（启用需③④迁移验证），核心/插件来源是静态可信登记表而非动态鉴权，`dependency_cycle` 旧客户端兼容测试未做；持久化版本属于 P1。
 
 ### P1 独立服务与持久事务
 
+- 工程方案见[①P1 持久化服务方案](../../services/storage/ai-docs/persistent-service-plan.md)（已按实际实现修订；P1 已提交 d7c9919，未合并）。
 - 建正式storage包、迁移与PostgreSQL实现，同库模块schema+公共storage设施，不一类型强制一表。
 - 可信凭据绑定模块；所有读取路径做授权，批次写入检查所有权，不信任传参module。
 - 实现版本锁/唯一性、完整依赖、新鲜度和DAG的并发安全提交；不同事务分别添加边也不能并发形成环。
@@ -67,12 +70,15 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 
 ### P2 JetStream与可靠交接
 
+- **当前状态**：P2 已提交 d0d8875（PR8 未合并）：持久 Outbox、可恢复有序 Relay、服务端授权的持久消费者（HTTP 代理）、ack/重试/死信/同 consumer 重放、SDK `subscribe` 有界泵；有限去重的至少一次，不是恰好一次；流满拒收且无清理，生产保留仍欠，历史补/跳①侧见 P5。真实完整测试 802 项在 P2 工作区快照上两次通过；merge 前 P3 检查点 916 项全真实通过；b7307e9 合并后尚未完整真实运行。见[①进度](../../services/storage/ai-docs/progress.md)。
 - 持久Outbox和可恢复Relay，明确发送成功但标记前崩溃如何重投；不将自增序号自动等同于全局提交顺序。
 - 持久消费者、确认策略、退避、失败记录/死信、管理员检查和重放。跨消费者各自进度，授权投递不能共享错误的工作队列吞掉其他模块通知。
 - `write()`冲突不是默认异常；handler必须检查最终结果，失败不能正常返回当ack。already_processed是特例，不盲重试业务结果。
 - 最小必要事件内容；请求描述不得成为绕过权限传送未授权数据的通道。
 
 ### P3 动态注册、权限和管理页
+
+- **当前状态**：后端已提交 d0d8875（PR8 未合并）：管理反馈/结果类型、可信管理员角色、运行时登记表与动态 namespace、启停与权限、`retry_task`、凭据经管理反馈轮换/撤销与一次性领取（schema 7）、订阅完整重配置（schema 8：新增类型只收未来事件、原积压保留、原子切换，已撤销身份不复活）；⑥管理页未完成。merge 前检查点全真实 916 passed、0 skipped；b7307e9 后只有默认检查，见[①进度](../../services/storage/ai-docs/progress.md)。
 
 - 核心配置初始化+动态持久模块注册，校验身份/命名空间/类型唯一、读取/订阅权限、重判和依赖能力，完成记录类型不能只固定③④。
 - ①管理反馈消费者调用内部逻辑；⑥轻量页面提交反馈和查询阶段。管理HTTP入口如需存在也只是受控内部能力，不能取代已定日常反馈流程。
@@ -82,6 +88,7 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 
 ### P4 ③④⑤⑦业务与传播对齐（可在内存基线上并行）
 
+- **当前状态**：未完成。存储分支已提交①侧规则集合守护（`type_revision` / `AssertTypeRevision`，schema revision 9，f747e89）与按所属方验证的重判完成记录及权威查询（106cd2e）；多起因（`additional_causes`）已提交 daa767f；⑦调用记录的①侧存储已提交 e9391dd：`llm_gateway` 单写的终态 `llm_call` 系统记录、真实请求关联与按全部起因读授权，默认只存 metadata，正文由部署级 `ModelBodyPolicy` 显式开启（默认关闭、64 KiB），无 TTL。⑦网关服务与实际模型调用未做，③④⑤⑦尚未接入完成记录、守护与调用记录（④入队 marker 不是业务完成）；①侧存储协议不代表业务对齐完成。b7307e9 合入的模块④是演示基线，其说明注明不代表已完成 v1.2（见[④实现记录](../../services/extraction/ai-docs/implementation.md)），④的 v1.2 对齐仍属本阶段。
 - ③仅参考匹配时登记references，不因名字字段变化重归属；保留用户确认保护。
 - ④活动仅原始数据；纯Markdown；选择结果按当前规则集合更新，自动/手动来源分离；最新规则或规则失效处理。
 - ③④及插件提交完成记录，⑤查询无变化/失败/不适用，等待已知相关上游、合并原因并保留追溯；不再写死md终点。
@@ -90,6 +97,7 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 
 ### P5 插件历史交接与集成
 
+- **当前状态**：未完成。①侧已在本分支实现（提交状态以提交历史为准；schema revision 11–14）：管理反馈恢复 catch_up/skip（须 `expected_revision`）与显式范围 `history_backfill`、持久当前状态候选（不盲重放旧事件）、skip 不改旧结果/依赖且不伪造 Finish、W 之后交接即便首次 consumer 也保留、重叠门控与过期输入只读、所属方 claim（snapshot + 租约 + epoch/fence）与业务/进度原子提交，以及供⑤的真实请求关联（权限与起因覆盖）、所属方安全领取分配并自行 Finish、完成索引与历史依赖按 `commit_seq` 验新鲜、终态冻结。⑤实际调度、④业务改动、真实多层/分叉汇合示例、⑥恢复选择页未做；①存储切片的隔离 Compose 与备份/恢复工具已在本分支实现（非生产，见[隔离部署指南](../../services/storage/ai-docs/deployment.md)），生产部署、升级迁移与备份文件保留/删除未做。完整真实运行：早先检查点 1 failed / 1411 passed / 5 skipped（其唯一失败已修复，历史数字不改）；之后的三开启本地完整运行 1503 passed / 5 skipped、exit 0（5 个 skip 为需要认证 PostgreSQL 的 `memory` 参数）；远程 CI 与合并前人工审核尚待，见[①进度](../../services/storage/ai-docs/progress.md)。
 - 首次启用的快照/游标与实时事件无缝衔接需测试，不能误把历史读取变成默认全量批处理。
 - 主动停用恢复补/跳、意外断线自动续、越过消息保留窗口等边界明确；补处理读取当前状态，不盲跑旧事件。
 - 停用/撤权/上游替代的依赖查询与调度：①拒绝未授权输入，⑤标受阻，旧结果保留；恢复补处理尊重用户选择。

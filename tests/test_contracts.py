@@ -58,7 +58,23 @@ def optional_time_range(data: dict) -> list[str]:
     return raw_record_time_order(data)
 
 
+def completion_versions(data: dict) -> list[str]:
+    outcome, before, after = (
+        data.get("outcome"),
+        data.get("before_version"),
+        data.get("after_version"),
+    )
+    if outcome in {"failed", "unchanged"} and before != after:
+        return ["unchanged/failed version mismatch"]
+    if outcome == "unchanged" and after is None:
+        return ["unchanged requires target"]
+    if outcome == "changed" and (after is None or before == after):
+        return ["changed requires new version"]
+    return []
+
+
 SEMANTIC_CHECKS: dict[str, Callable[[dict], list[str]]] = {
+    "reevaluation-result": completion_versions,
     "raw-record": raw_record_time_order,
     "semantic-record": optional_time_range,
     "system-record": optional_time_range,

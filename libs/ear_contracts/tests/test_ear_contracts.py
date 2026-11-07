@@ -16,8 +16,10 @@ from ear_contracts import (
     DEFAULT_REGISTRY,
     DataChanged,
     DependencyRecord,
+    LLMCallRecord,
     RawRecord,
     ReevaluationRequested,
+    ReevaluationResult,
     Registry,
     SemanticRecord,
     SystemRecord,
@@ -32,12 +34,14 @@ from pydantic import BaseModel, ValidationError
 
 CONTRACTS = Path(__file__).resolve().parents[3] / "contracts"
 MODELS: dict[str, type[BaseModel]] = {
+    "llm-call-record": LLMCallRecord,
     "raw-record": RawRecord,
     "semantic-record": SemanticRecord,
     "system-record": SystemRecord,
     "dependency-record": DependencyRecord,
     "data-changed": DataChanged,
     "reevaluation-requested": ReevaluationRequested,
+    "reevaluation-result": ReevaluationResult,
 }
 EXAMPLES = sorted(
     p for p in CONTRACTS.rglob("examples/*.json") if p.name.split(".", 1)[0] in MODELS

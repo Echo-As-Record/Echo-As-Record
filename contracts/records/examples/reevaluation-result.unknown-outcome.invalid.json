@@ -1,0 +1,15 @@
+{
+  "request_event_id": "01a1ac01-0245-704c-ae10-c459f83e7374",
+  "target_type": "artifact",
+  "target_id": "01a1ac01-0245-704d-8d34-24af4057444e",
+  "outcome": "success",
+  "before_version": 1,
+  "after_version": 1,
+  "extra_causes": [],
+  "root_feedback_id": "system",
+  "depth": 1,
+  "completed_at": "2026-11-05T00:00:00Z",
+  "error_code": null,
+  "reason_code": null,
+  "disposition": null
+}

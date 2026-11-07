@@ -15,6 +15,7 @@ from ear_contracts import (
     DependencyRecord,
     Event,
     Record,
+    ReevaluationResult,
     Registry,
     SemanticRecord,
     SystemRecord,
@@ -22,7 +23,7 @@ from ear_contracts import (
 
 from ear_storage_client.context import Context
 from ear_storage_client.ops import WriteOp
-from ear_storage_client.queries import Page, Query, QueryItem, StaleDependency
+from ear_storage_client.queries import DependencySet, Page, Query, QueryItem, StaleDependency
 from ear_storage_client.results import WriteResult
 
 EventHandler = Callable[[Event], None]
@@ -30,6 +31,14 @@ EventHandler = Callable[[Event], None]
 
 class Reader(Protocol):
     """读取接口。返回的对象是副本，修改它不影响 ①。"""
+
+    def type_revision(self, data_type: str) -> int:
+        """Monotonic actual-record-change counter (initially zero), not a watermark.
+
+        Use the SAME snapshot Reader for this counter and the candidate query.
+        Separate live reads do not capture a common consistency point.
+        """
+        ...
 
     def get(self, id: str) -> Record | None:
         """按 id 读当前版本（原始数据或有版本的数据）。已被整体替代的对象也能读到，
@@ -54,14 +63,31 @@ class Reader(Protocol):
         """满足条件的数量（忽略 limit 和 cursor）。"""
         ...
 
+    def get_reevaluation_result(self, request_event_id: str) -> ReevaluationResult | None:
+        """Read only registered Finish results, subject to result-type read permission.
+
+        Snapshots use their captured completion index; legacy snapshots without
+        that index fail explicitly rather than reporting false absence.
+        """
+        ...
+
     def get_system_record(self, id: str) -> SystemRecord | None: ...
 
     def stale_dependencies(
         self, targets: Sequence[str], *, only_current_dependents: bool = True
     ) -> list[StaleDependency]:
-        """依赖了 targets 中某个对象、且登记的版本已经不是它当前版本的依赖登记。
+        """依赖了 targets 中某个对象且已过时的登记：全对象按版本，字段模式按完整 JSON 值。
+        被依赖方整体替代始终使登记过时。
 
         only_current_dependents=True（默认）：只看依赖方当前版本的登记，且依赖方未被整体替代。
+        """
+        ...
+
+    def dependency_set(self, dependent_id: str, version: int | None = None) -> DependencySet | None:
+        """完整依赖集及最近实际写入的登记元数据；默认取当前版本。
+
+        从未登记返回 None；显式空集返回 empty=True 的 DependencySet。
+        返回值是副本；重复同集登记为 unchanged，不改变 registered_at。
         """
         ...
 

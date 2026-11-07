@@ -6,10 +6,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
-from typing import Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    Strict,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from ear_contracts.base import (
     DataType,
@@ -19,6 +29,7 @@ from ear_contracts.base import (
     SnakeCase,
     UtcDatetime,
 )
+from ear_contracts.events import TraceFields
 
 DataKind = Literal["raw_record", "semantic", "rule", "system_record"]
 VersionStatus = Literal["active", "superseded"]
@@ -101,7 +112,7 @@ class RawRecord(BaseModel):
         return "raw_record"
 
 
-class SemanticRecord(BaseModel):
+class SemanticRecord(TraceFields):
     """语义信息、归属关系、规则的一个版本（contracts/records/semantic-record.schema.json）。"""
 
     model_config = _READ
@@ -114,6 +125,7 @@ class SemanticRecord(BaseModel):
     dedup_key: str | None = Field(min_length=1)
     payload: dict[str, Any]
     writer: ModuleName
+    request_event_id: Id | None = None
     root_feedback_id: RootFeedbackId
     depth: int = Field(ge=0)
     skip_history: bool
@@ -168,14 +180,51 @@ class VersionRef(BaseModel):
     version: int = Field(ge=1)
 
 
+FieldName = Annotated[str, Strict()]
+"""被依赖方 payload 的一个顶层键：任意字符串（含空字符串），不接受 bytes、数字等。"""
+
+
 class DependencyRecord(BaseModel):
-    """依赖登记（contracts/records/dependency-record.schema.json）。"""
+    """依赖登记（contracts/records/dependency-record.schema.json）。
+
+    fields 修饰 depends_on：None（JSON 中省略）表示依赖整个对象；否则只依赖被依赖方
+    payload 的这些顶层键。与 Schema 一致：不接受 JSON null、空数组、单个字符串、非字符串
+    元素和重复元素；序列化时 fields 为 None 则省略该键，旧依赖记录的 JSON 原样不变。
+    去重和排序由 ① 的写入路径保证，读取时不因顺序拒绝、也不重排。
+    """
 
     model_config = _READ
     dependent: VersionRef
     depends_on: VersionRef
     registered_by: ModuleName
     registered_at: UtcDatetime
+    fields: Annotated[tuple[FieldName, ...], Field(min_length=1)] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_explicit_null_fields(cls, data: Any) -> Any:
+        if isinstance(data, Mapping) and "fields" in data and data["fields"] is None:
+            raise ValueError("fields 不能为 null：依赖整个对象时省略 fields")
+        return data
+
+    @field_validator("fields")
+    @classmethod
+    def _unique_fields(cls, value: tuple[str, ...] | None) -> tuple[str, ...] | None:
+        if value is not None and len(set(value)) != len(value):
+            raise ValueError("fields 不能有重复元素")
+        return value
+
+    @model_serializer(mode="wrap")
+    def _omit_whole_object_fields(self, handler: SerializerFunctionWrapHandler) -> Any:
+        data = handler(self)
+        if self.fields is None and isinstance(data, dict):
+            data.pop("fields", None)
+        return data
+
+    @property
+    def whole_object(self) -> bool:
+        """依赖被依赖方整个对象（没有 fields）。"""
+        return self.fields is None
 
 
 def record_from_dict(data: dict[str, Any]) -> Record:

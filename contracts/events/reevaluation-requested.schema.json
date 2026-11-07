@@ -18,24 +18,50 @@
     "depth"
   ],
   "properties": {
-    "event_id": { "$ref": "#/$defs/id" },
-    "event_type": { "const": "reevaluation_requested" },
-    "occurred_at": { "$ref": "#/$defs/timestamp" },
+    "event_id": {
+      "$ref": "#/$defs/id"
+    },
+    "event_type": {
+      "const": "reevaluation_requested"
+    },
+    "occurred_at": {
+      "$ref": "#/$defs/timestamp"
+    },
     "target_type": {
       "$ref": "#/$defs/data_type",
       "description": "要重新判断的数据类型；MVP 只有 attribution（→ ③）和 artifact（→ ④）"
     },
-    "target_id": { "$ref": "#/$defs/id" },
+    "target_id": {
+      "$ref": "#/$defs/id"
+    },
     "cause": {
       "type": "object",
       "description": "引起这次请求的那次修改",
       "additionalProperties": true,
-      "required": ["data_type", "data_id", "old_version", "new_version"],
+      "required": [
+        "data_type",
+        "data_id",
+        "old_version",
+        "new_version"
+      ],
       "properties": {
-        "data_type": { "$ref": "#/$defs/data_type" },
-        "data_id": { "$ref": "#/$defs/id" },
-        "old_version": { "type": ["integer", "null"], "minimum": 1 },
-        "new_version": { "type": "integer", "minimum": 1 }
+        "data_type": {
+          "$ref": "#/$defs/data_type"
+        },
+        "data_id": {
+          "$ref": "#/$defs/id"
+        },
+        "old_version": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "new_version": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "change_description": {
@@ -43,11 +69,24 @@
       "minLength": 1,
       "description": "可读的修改描述，交给大模型使用，例如「局部说话人 C：丙 → 丁」"
     },
-    "root_feedback_id": { "$ref": "#/$defs/root_feedback_id" },
+    "root_feedback_id": {
+      "$ref": "#/$defs/root_feedback_id"
+    },
     "depth": {
       "type": "integer",
       "minimum": 1,
       "description": "触发它的事件的深度 + 1"
+    },
+    "additional_causes": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "$ref": "#/$defs/TracedCause"
+      },
+      "default": []
+    },
+    "trigger_request_event_id": {
+      "$ref": "#/$defs/id"
     }
   },
   "$defs": {
@@ -62,10 +101,95 @@
       "pattern": "Z$",
       "description": "RFC 3339，UTC，以 Z 结尾"
     },
-    "data_type": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "data_type": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
     "root_feedback_id": {
       "description": "引起这次修改的用户反馈 id；系统发起的行为为字面量 \"system\"",
-      "oneOf": [{ "$ref": "#/$defs/id" }, { "const": "system" }]
+      "oneOf": [
+        {
+          "$ref": "#/$defs/id"
+        },
+        {
+          "const": "system"
+        }
+      ]
+    },
+    "Cause": {
+      "additionalProperties": true,
+      "description": "引起「请求重新判断」的那次修改。",
+      "properties": {
+        "data_type": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Data Type",
+          "type": "string"
+        },
+        "data_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Data Id",
+          "type": "string"
+        },
+        "old_version": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Old Version"
+        },
+        "new_version": {
+          "minimum": 1,
+          "title": "New Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "data_type",
+        "data_id",
+        "old_version",
+        "new_version"
+      ],
+      "title": "Cause",
+      "type": "object"
+    },
+    "TracedCause": {
+      "additionalProperties": true,
+      "description": "An independent causal path; never a replacement for the primary root/depth.",
+      "properties": {
+        "cause": {
+          "$ref": "#/$defs/Cause"
+        },
+        "root_feedback_id": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            {
+              "const": "system",
+              "type": "string"
+            }
+          ],
+          "title": "Root Feedback Id"
+        },
+        "depth": {
+          "minimum": 1,
+          "title": "Depth",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cause",
+        "root_feedback_id",
+        "depth"
+      ],
+      "title": "TracedCause",
+      "type": "object"
     }
   }
 }

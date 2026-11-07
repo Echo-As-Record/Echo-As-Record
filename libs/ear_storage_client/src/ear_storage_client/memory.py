@@ -15,118 +15,54 @@
 
 from __future__ import annotations
 
-import json
 import threading
 from collections import deque
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, NoReturn
 
 from ear_contracts import (
     DEFAULT_REGISTRY,
-    DataChanged,
     DataTypeSpec,
     DependencyRecord,
     Event,
-    RawRecord,
     Record,
-    ReevaluationRequested,
+    ReevaluationResult,
     Registry,
     SemanticRecord,
     SystemRecord,
     UnknownDataTypeError,
-    VersionRef,
     new_id,
     utcnow,
 )
-from pydantic import BaseModel, ValidationError
 
+from ear_storage_client.completion import _indexed_result
 from ear_storage_client.context import Context
+from ear_storage_client.engine import (
+    Abort as _Abort,
+)
+from ear_storage_client.engine import (
+    State as _State,
+)
+from ear_storage_client.engine import (
+    Transaction as _Txn,
+)
+from ear_storage_client.engine import (
+    _copy,
+    canonical_json,
+)
+from ear_storage_client.engine import (
+    stale as _stale,
+)
 from ear_storage_client.errors import InvalidRequest, PermissionDenied
+from ear_storage_client.model_body import ModelBodyPolicy
 from ear_storage_client.ops import (
-    AppendRaw,
-    Create,
-    MarkProcessed,
-    PublishReevaluation,
-    PutSystemRecord,
-    RegisterDependencies,
-    Supersede,
-    Update,
     WriteOp,
 )
 from ear_storage_client.protocol import EventHandler, Reader
-from ear_storage_client.queries import Page, Query, QueryItem, StaleDependency
-from ear_storage_client.results import Conflict, ConflictReason, OpResult, WriteResult
-
-
-def canonical_json(value: Any) -> str:
-    """内容比较用的规范形式：键排序、不转义非 ASCII；字符串逐字保留。"""
-    return json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
-    )
-
-
-def _json_payload(payload: Any) -> dict[str, Any]:
-    try:
-        data = json.loads(canonical_json(payload))
-    except (TypeError, ValueError) as exc:
-        raise InvalidRequest(f"payload 必须是可序列化为 JSON 的对象：{exc}") from None
-    if not isinstance(data, dict):
-        raise InvalidRequest("payload 必须是 JSON 对象")
-    return data
-
-
-def _build[M: BaseModel](model: type[M], **fields: Any) -> M:
-    try:
-        return model(**fields)
-    except ValidationError as exc:
-        raise InvalidRequest(str(exc)) from None
-
-
-def _copy[M: BaseModel](record: M) -> M:
-    return record.model_copy(deep=True)
-
-
-# ---------------------------------------------------------------------------
-# 状态
-
-
-@dataclass(slots=True)
-class _State:
-    raw: dict[str, RawRecord] = field(default_factory=dict)
-    raw_keys: dict[tuple[str, str, str], str] = field(default_factory=dict)
-    versions: dict[str, tuple[SemanticRecord, ...]] = field(default_factory=dict)
-    semantic_keys: dict[tuple[str, str], str] = field(default_factory=dict)
-    system: dict[str, SystemRecord] = field(default_factory=dict)
-    deps: dict[tuple[str, int], tuple[DependencyRecord, ...]] = field(default_factory=dict)
-    deps_by_target: dict[str, frozenset[tuple[str, int]]] = field(default_factory=dict)
-    processed: dict[tuple[str, str], None] = field(default_factory=dict)
-    published: dict[str, None] = field(default_factory=dict)
-
-    def copy(self) -> _State:
-        return _State(
-            dict(self.raw),
-            dict(self.raw_keys),
-            dict(self.versions),
-            dict(self.semantic_keys),
-            dict(self.system),
-            dict(self.deps),
-            dict(self.deps_by_target),
-            dict(self.processed),
-            dict(self.published),
-        )
-
-    def current(self, id: str) -> Record | None:
-        if id in self.raw:
-            return self.raw[id]
-        versions = self.versions.get(id)
-        return versions[-1] if versions else None
-
-    def id_in_use(self, id: str) -> bool:
-        return id in self.raw or id in self.versions or id in self.system
-
+from ear_storage_client.queries import DependencySet, Page, Query, QueryItem, StaleDependency
+from ear_storage_client.results import WriteResult
 
 # ---------------------------------------------------------------------------
 # 读取
@@ -145,17 +81,17 @@ class _StateReader:
         except UnknownDataTypeError as exc:
             raise InvalidRequest(str(exc)) from None
 
+    def type_revision(self, data_type: str) -> int:
+        self._spec(data_type)
+        return self._s.type_revisions.get(data_type, 0)
+
     def get(self, id: str) -> Record | None:
         record = self._s.current(id)
         return None if record is None else _copy(record)
 
     def get_version(self, id: str, version: int) -> Record | None:
-        if id in self._s.raw:
-            return _copy(self._s.raw[id]) if version == 1 else None
-        versions = self._s.versions.get(id, ())
-        if 1 <= version <= len(versions):
-            return _copy(versions[version - 1])
-        return None
+        record = self._s.version(id, version)
+        return None if record is None else _copy(record)
 
     def history(self, id: str) -> list[SemanticRecord]:
         return [_copy(v) for v in self._s.versions.get(id, ())]
@@ -167,6 +103,21 @@ class _StateReader:
             if record is not None:
                 found[id] = _copy(record)
         return found
+
+    def get_reevaluation_result(self, request_event_id: str) -> ReevaluationResult | None:
+        dtype = self._s.completions.get(request_event_id)
+        if dtype is None:
+            return None
+        result = _indexed_result(
+            self._registry, request_event_id, dtype, self._s.system.get(request_event_id)
+        )
+        request = self._s.requests.get(request_event_id)
+        if request is None or (result.target_type, result.target_id) != (
+            request.target_type,
+            request.target_id,
+        ):
+            raise InvalidRequest("invalid completion request metadata")
+        return result
 
     def get_system_record(self, id: str) -> SystemRecord | None:
         record = self._s.system.get(id)
@@ -269,27 +220,45 @@ class _StateReader:
             for key in sorted(self._s.deps_by_target.get(target_id, frozenset())):
                 if only_current_dependents and not self._current_dependent(*key):
                     continue
-                for dep in self._s.deps.get(key, ()):
-                    if dep.depends_on.id == target_id and dep.depends_on.version < target.version:
+                group = self._s.deps.get(key)
+                if group is None:
+                    continue
+                for dep in group.dependencies:
+                    if dep.depends_on.id == target_id and _stale(
+                        self._s, dep.depends_on, dep.fields
+                    ):
                         stale.append(
                             StaleDependency(
-                                dependent=dep.dependent.model_copy(),
-                                depends_on=dep.depends_on.model_copy(),
+                                dependent=_copy(dep.dependent),
+                                depends_on=_copy(dep.depends_on),
                                 current_version=target.version,
                                 target_superseded=superseded,
+                                fields=dep.fields,
                             )
                         )
         return stale
 
-    def dependencies_of(
-        self, dependent_id: str, version: int | None = None
-    ) -> list[DependencyRecord]:
+    def dependency_set(self, dependent_id: str, version: int | None = None) -> DependencySet | None:
         if version is None:
             versions = self._s.versions.get(dependent_id)
             if not versions:
-                return []
+                return None
             version = versions[-1].version
-        return [_copy(d) for d in self._s.deps.get((dependent_id, version), ())]
+        group = self._s.deps.get((dependent_id, version))
+        if group is None:
+            return None
+        return DependencySet(
+            _copy(group.dependent),
+            tuple(_copy(d) for d in group.dependencies),
+            group.registered_by,
+            group.registered_at,
+        )
+
+    def dependencies_of(
+        self, dependent_id: str, version: int | None = None
+    ) -> list[DependencyRecord]:
+        group = self.dependency_set(dependent_id, version)
+        return [] if group is None else list(group.dependencies)
 
     def dependents_of(
         self, target_id: str, *, only_current_dependents: bool = True
@@ -298,9 +267,9 @@ class _StateReader:
         for key in sorted(self._s.deps_by_target.get(target_id, frozenset())):
             if only_current_dependents and not self._current_dependent(*key):
                 continue
-            found.extend(
-                _copy(d) for d in self._s.deps.get(key, ()) if d.depends_on.id == target_id
-            )
+            group = self._s.deps.get(key)
+            if group is not None:
+                found.extend(_copy(d) for d in group.dependencies if d.depends_on.id == target_id)
         return found
 
     def is_processed(self, consumer: str, event_id: str) -> bool:
@@ -309,596 +278,6 @@ class _StateReader:
 
 # ---------------------------------------------------------------------------
 # 写入
-
-
-class _Abort(Exception):
-    def __init__(self, conflict: Conflict) -> None:
-        super().__init__(conflict.message)
-        self.conflict = conflict
-
-
-class _Txn:
-    """在状态副本上执行一批操作。
-
-    遇到冲突抛 _Abort；请求错误抛 InvalidRequest / PermissionDenied。
-    """
-
-    def __init__(
-        self,
-        state: _State,
-        registry: Registry,
-        module: str,
-        context: Context,
-        now: datetime,
-        batch_id: str,
-    ) -> None:
-        self.s = state
-        self.registry = registry
-        self.module = module
-        self.context = context
-        self.now = now
-        self.batch_id = batch_id
-        self.results: list[OpResult] = []
-        self.events: list[Event] = []
-        self.touched: dict[str, int] = {}  # 本批写过的有版本对象 → 最后一条相关操作的序号
-        self.index = 0
-
-    # -- 工具 --
-
-    def conflict(
-        self,
-        reason: ConflictReason,
-        message: str,
-        *,
-        data_type: str | None = None,
-        id: str | None = None,
-        **details: Any,
-    ) -> NoReturn:
-        raise _Abort(Conflict(self.index, reason, message, data_type, id, details))
-
-    def spec(self, data_type: str) -> DataTypeSpec:
-        try:
-            return self.registry.get(data_type)
-        except UnknownDataTypeError as exc:
-            raise InvalidRequest(f"第 {self.index} 条操作：{exc}") from None
-
-    def require_writer(self, spec: DataTypeSpec) -> None:
-        if spec.writer != self.module:
-            raise PermissionDenied(
-                f"第 {self.index} 条操作：{self.module} 不能写 {spec.name}"
-                f"（负责模块：{spec.writer}）"
-            )
-
-    def invalid(self, message: str) -> NoReturn:
-        raise InvalidRequest(f"第 {self.index} 条操作：{message}")
-
-    def result(
-        self,
-        outcome: Any,
-        data_type: str | None,
-        id: str | None,
-        version: int | None,
-        previous: int | None = None,
-        event: Event | None = None,
-    ) -> None:
-        if event is not None:
-            self.events.append(event)
-        self.results.append(
-            OpResult(
-                self.index,
-                outcome,
-                data_type,
-                id,
-                version,
-                previous,
-                None if event is None else event.event_id,
-            )
-        )
-
-    def changed(
-        self,
-        data_type: str,
-        id: str,
-        operation: str,
-        new_version: int,
-        old_version: int | None,
-        skip_history: bool,
-    ) -> DataChanged:
-        return _build(
-            DataChanged,
-            event_id=new_id(),
-            occurred_at=self.now,
-            data_type=data_type,
-            data_id=id,
-            operation=operation,
-            new_version=new_version,
-            old_version=old_version,
-            root_feedback_id=self.context.root_feedback_id,
-            depth=self.context.depth,
-            skip_history=skip_history,
-            writer=self.module,
-            batch_id=self.batch_id,
-        )
-
-    def time_range(
-        self,
-        spec: DataTypeSpec,
-        payload: dict[str, Any],
-        start: datetime | None,
-        end: datetime | None,
-        current: SemanticRecord | None = None,
-    ) -> tuple[datetime | None, datetime | None]:
-        if spec.time_from is not None:
-            if start is not None or end is not None:
-                self.invalid(f"{spec.name} 的时间由 ① 从 payload.{spec.time_from} 复制，写入方不填")
-            subject = payload.get(spec.time_from)
-            raw = self.s.raw.get(subject) if isinstance(subject, str) else None
-            if raw is None:
-                self.invalid(f"payload.{spec.time_from} 必须是已存在的原始数据 id")
-            return raw.event_start, raw.event_end
-        if start is None and end is None and current is not None:
-            return current.event_start, current.event_end
-        if (start is None) != (end is None):
-            self.invalid("event_start、event_end 必须同时给出")
-        if start is not None and end is not None and end < start:
-            self.invalid("event_end 早于 event_start")
-        return start, end
-
-    def current_versioned(self, data_type: str, id: str) -> SemanticRecord:
-        versions = self.s.versions.get(id)
-        if not versions:
-            self.conflict("not_found", f"{data_type} {id} 不存在", data_type=data_type, id=id)
-        current = versions[-1]
-        if current.data_type != data_type:
-            self.invalid(f"{id} 的类型是 {current.data_type}，不是 {data_type}")
-        return current
-
-    def push_version(self, record: SemanticRecord) -> None:
-        self.s.versions[record.id] = (*self.s.versions.get(record.id, ()), record)
-        self.touched[record.id] = self.index
-
-    def new_version(
-        self,
-        current: SemanticRecord | None,
-        *,
-        data_type: str,
-        id: str,
-        status: str,
-        payload: dict[str, Any],
-        start: datetime | None,
-        end: datetime | None,
-        dedup_key: str | None,
-        skip_history: bool,
-    ) -> SemanticRecord:
-        return _build(
-            SemanticRecord,
-            id=id,
-            data_type=data_type,
-            version=1 if current is None else current.version + 1,
-            status=status,
-            event_start=start,
-            event_end=end,
-            dedup_key=dedup_key,
-            payload=payload,
-            writer=self.module,
-            root_feedback_id=self.context.root_feedback_id,
-            depth=self.context.depth,
-            skip_history=skip_history,
-            batch_id=self.batch_id,
-            created_at=self.now,
-        )
-
-    # -- 操作 --
-
-    def run(self, ops: Sequence[WriteOp]) -> None:
-        handlers: dict[type, Callable[[Any], None]] = {
-            AppendRaw: self.append_raw,
-            Create: self.create,
-            Update: self.update,
-            Supersede: self.supersede,
-            RegisterDependencies: self.register,
-            PutSystemRecord: self.put_system,
-            PublishReevaluation: self.publish,
-            MarkProcessed: self.mark_processed,
-        }
-        for self.index, op in enumerate(ops):
-            handler = handlers.get(type(op))
-            if handler is None:
-                self.invalid(f"未知的操作：{type(op).__name__}")
-            handler(op)
-        self.check_constraints()
-
-    def append_raw(self, op: AppendRaw) -> None:
-        rec = op.record
-        spec = self.spec(rec.data_type)
-        if spec.kind != "raw_record":
-            self.invalid(f"{rec.data_type} 不是原始数据，不能用 AppendRaw")
-        self.require_writer(spec)
-        key = (rec.data_type, rec.adapter_version, rec.dedup_key)
-        existing = self.s.raw_keys.get(key)
-        if existing is not None:
-            self.result("deduplicated", rec.data_type, existing, 1)
-            return
-        if self.s.id_in_use(rec.id):
-            self.conflict("id_exists", f"id {rec.id} 已被使用", data_type=rec.data_type, id=rec.id)
-        fields = rec.model_dump()
-        fields["payload"] = _json_payload(rec.payload)
-        stored = _build(RawRecord, **fields, version=1, ingested_at=self.now)
-        self.s.raw[rec.id] = stored
-        self.s.raw_keys[key] = rec.id
-        event = self.changed(rec.data_type, rec.id, "created", 1, None, False)
-        self.result("written", rec.data_type, rec.id, 1, None, event)
-
-    def create(self, op: Create) -> None:
-        spec = self.spec(op.data_type)
-        if not spec.versioned:
-            self.invalid(f"{op.data_type} 不是有版本的数据，不能用 Create")
-        self.require_writer(spec)
-        payload = _json_payload(op.payload)
-        if self.s.id_in_use(op.id):
-            self.conflict("id_exists", f"id {op.id} 已被使用", data_type=op.data_type, id=op.id)
-        if op.dedup_key is not None:
-            existing = self.s.semantic_keys.get((op.data_type, op.dedup_key))
-            if existing is not None:
-                self.conflict(
-                    "dedup_key_exists",
-                    f"{op.data_type} 的去重键 {op.dedup_key!r} 已被 {existing} 使用",
-                    data_type=op.data_type,
-                    id=op.id,
-                    existing_id=existing,
-                )
-        start, end = self.time_range(spec, payload, op.event_start, op.event_end)
-        record = self.new_version(
-            None,
-            data_type=op.data_type,
-            id=op.id,
-            status="active",
-            payload=payload,
-            start=start,
-            end=end,
-            dedup_key=op.dedup_key,
-            skip_history=op.skip_history,
-        )
-        self.push_version(record)
-        if op.dedup_key is not None:
-            self.s.semantic_keys[(op.data_type, op.dedup_key)] = op.id
-        event = self.changed(op.data_type, op.id, "created", 1, None, op.skip_history)
-        self.result("written", op.data_type, op.id, 1, None, event)
-
-    def update(self, op: Update) -> None:
-        spec = self.spec(op.data_type)
-        if not spec.versioned:
-            self.invalid(f"{op.data_type} 不是有版本的数据，不能用 Update")
-        self.require_writer(spec)
-        payload = _json_payload(op.payload)
-        current = self.current_versioned(op.data_type, op.id)
-        if current.superseded:
-            self.conflict(
-                "object_superseded",
-                f"{op.data_type} {op.id} 已被整体替代",
-                data_type=op.data_type,
-                id=op.id,
-                current_version=current.version,
-            )
-        if current.version != op.expected_version:
-            self.conflict(
-                "version_mismatch",
-                f"{op.data_type} {op.id} 的当前版本是 {current.version}，"
-                f"不是 {op.expected_version}",
-                data_type=op.data_type,
-                id=op.id,
-                expected_version=op.expected_version,
-                current_version=current.version,
-            )
-        start, end = self.time_range(spec, payload, op.event_start, op.event_end, current)
-        if (
-            canonical_json(payload) == canonical_json(current.payload)
-            and start == current.event_start
-            and end == current.event_end
-        ):
-            self.result("unchanged", op.data_type, op.id, current.version, current.version)
-            return
-        record = self.new_version(
-            current,
-            data_type=op.data_type,
-            id=op.id,
-            status="active",
-            payload=payload,
-            start=start,
-            end=end,
-            dedup_key=current.dedup_key,
-            skip_history=op.skip_history,
-        )
-        self.push_version(record)
-        event = self.changed(
-            op.data_type, op.id, "updated", record.version, current.version, op.skip_history
-        )
-        self.result("written", op.data_type, op.id, record.version, current.version, event)
-
-    def supersede(self, op: Supersede) -> None:
-        spec = self.spec(op.data_type)
-        if not spec.versioned:
-            self.invalid(f"{op.data_type} 不是有版本的数据，不能整体替代")
-        self.require_writer(spec)
-        current = self.current_versioned(op.data_type, op.id)
-        if current.superseded:
-            self.result("unchanged", op.data_type, op.id, current.version, current.version)
-            return
-        if current.version != op.expected_version:
-            self.conflict(
-                "version_mismatch",
-                f"{op.data_type} {op.id} 的当前版本是 {current.version}，"
-                f"不是 {op.expected_version}",
-                data_type=op.data_type,
-                id=op.id,
-                expected_version=op.expected_version,
-                current_version=current.version,
-            )
-        record = self.new_version(
-            current,
-            data_type=op.data_type,
-            id=op.id,
-            status="superseded",
-            payload=current.payload,
-            start=current.event_start,
-            end=current.event_end,
-            dedup_key=current.dedup_key,
-            skip_history=op.skip_history,
-        )
-        self.push_version(record)
-        event = self.changed(
-            op.data_type, op.id, "superseded", record.version, current.version, op.skip_history
-        )
-        self.result("written", op.data_type, op.id, record.version, current.version, event)
-
-    def register(self, op: RegisterDependencies) -> None:
-        spec = self.spec(op.dependent_type)
-        if not spec.versioned:
-            self.invalid("只能为有版本的数据登记依赖")
-        self.require_writer(spec)
-        current = self.current_versioned(op.dependent_type, op.dependent_id)
-        if current.superseded:
-            self.conflict(
-                "object_superseded",
-                f"{op.dependent_type} {op.dependent_id} 已被整体替代，不能再登记依赖",
-                data_type=op.dependent_type,
-                id=op.dependent_id,
-            )
-        version = current.version if op.dependent_version is None else op.dependent_version
-        if version != current.version:
-            self.conflict(
-                "version_mismatch",
-                f"只能为当前版本 {current.version} 登记依赖，不是 {version}",
-                data_type=op.dependent_type,
-                id=op.dependent_id,
-                expected_version=version,
-                current_version=current.version,
-            )
-        refs: dict[str, VersionRef] = {}
-        for ref in op.depends_on:
-            if ref.id == op.dependent_id:
-                self.invalid("不能依赖自己")
-            target = self.s.current(ref.id)
-            if target is None:
-                self.conflict(
-                    "not_found",
-                    f"被依赖的 {ref.data_type} {ref.id} 不存在",
-                    data_type=ref.data_type,
-                    id=ref.id,
-                )
-            if target.data_type != ref.data_type:
-                self.invalid(f"{ref.id} 的类型是 {target.data_type}，不是 {ref.data_type}")
-            superseded = isinstance(target, SemanticRecord) and target.superseded
-            if superseded or target.version != ref.version:
-                self.conflict(
-                    "stale_dependency",
-                    f"{ref.data_type} {ref.id} 的当前版本是 {target.version}"
-                    f"{'（已被整体替代）' if superseded else ''}，不能登记版本 {ref.version}",
-                    data_type=ref.data_type,
-                    id=ref.id,
-                    registered_version=ref.version,
-                    current_version=target.version,
-                    target_superseded=superseded,
-                )
-            refs[ref.id] = VersionRef(data_type=ref.data_type, id=ref.id, version=ref.version)
-
-        key = (op.dependent_id, version)
-        old = self.s.deps.get(key, ())
-        old_set = {(d.depends_on.id, d.depends_on.version) for d in old}
-        new_set = {(r.id, r.version) for r in refs.values()}
-        if old_set == new_set and old:
-            self.result("unchanged", op.dependent_type, op.dependent_id, version)
-            return
-        dependent = VersionRef(data_type=op.dependent_type, id=op.dependent_id, version=version)
-        self.s.deps[key] = tuple(
-            DependencyRecord(
-                dependent=dependent,
-                depends_on=ref,
-                registered_by=self.module,
-                registered_at=self.now,
-            )
-            for ref in sorted(refs.values(), key=lambda r: r.id)
-        )
-        for target_id in {d.depends_on.id for d in old} - set(refs):
-            remaining = self.s.deps_by_target.get(target_id, frozenset()) - {key}
-            if remaining:
-                self.s.deps_by_target[target_id] = remaining
-            else:
-                self.s.deps_by_target.pop(target_id, None)
-        for target_id in refs:
-            self.s.deps_by_target[target_id] = self.s.deps_by_target.get(target_id, frozenset()) | {
-                key
-            }
-        self.result("written", op.dependent_type, op.dependent_id, version)
-
-    def put_system(self, op: PutSystemRecord) -> None:
-        spec = self.spec(op.data_type)
-        if spec.kind != "system_record":
-            self.invalid(f"{op.data_type} 不是系统记录，不能用 PutSystemRecord")
-        self.require_writer(spec)
-        payload = _json_payload(op.payload)
-        current = self.s.system.get(op.id)
-        if op.expected_revision is None:
-            if self.s.id_in_use(op.id):
-                self.conflict("id_exists", f"id {op.id} 已被使用", data_type=op.data_type, id=op.id)
-            start, end = self.time_range(spec, payload, op.event_start, op.event_end)
-            self.s.system[op.id] = _build(
-                SystemRecord,
-                id=op.id,
-                data_type=op.data_type,
-                revision=1,
-                event_start=start,
-                event_end=end,
-                payload=payload,
-                writer=self.module,
-                created_at=self.now,
-                updated_at=self.now,
-            )
-            self.result("written", op.data_type, op.id, 1)
-            return
-        if current is None:
-            self.conflict(
-                "not_found", f"{op.data_type} {op.id} 不存在", data_type=op.data_type, id=op.id
-            )
-        if current.data_type != op.data_type:
-            self.invalid(f"{op.id} 的类型是 {current.data_type}，不是 {op.data_type}")
-        if current.revision != op.expected_revision:
-            self.conflict(
-                "revision_mismatch",
-                f"{op.data_type} {op.id} 的 revision 是 {current.revision}，"
-                f"不是 {op.expected_revision}",
-                data_type=op.data_type,
-                id=op.id,
-                expected_revision=op.expected_revision,
-                current_revision=current.revision,
-            )
-        if op.event_start is None and op.event_end is None:
-            start, end = current.event_start, current.event_end
-        else:
-            start, end = self.time_range(spec, payload, op.event_start, op.event_end)
-        if (
-            canonical_json(payload) == canonical_json(current.payload)
-            and start == current.event_start
-            and end == current.event_end
-        ):
-            self.result("unchanged", op.data_type, op.id, current.revision, current.revision)
-            return
-        self.s.system[op.id] = current.model_copy(
-            update={
-                "revision": current.revision + 1,
-                "event_start": start,
-                "event_end": end,
-                "payload": payload,
-                "writer": self.module,
-                "updated_at": self.now,
-            }
-        )
-        self.result("written", op.data_type, op.id, current.revision + 1, current.revision)
-
-    def publish(self, op: PublishReevaluation) -> None:
-        if self.module not in self.registry.publishers_of("reevaluation_requested"):
-            raise PermissionDenied(f"{self.module} 不能发布 reevaluation_requested")
-        if self.context.depth < 1:
-            self.invalid("「请求重新判断」的 depth 至少为 1，请用 Context.deeper()")
-        self.spec(op.target_type)
-        target = self.s.current(op.target_id)
-        if target is None:
-            self.conflict(
-                "not_found",
-                f"目标 {op.target_type} {op.target_id} 不存在",
-                data_type=op.target_type,
-                id=op.target_id,
-            )
-        if target.data_type != op.target_type:
-            self.invalid(f"{op.target_id} 的类型是 {target.data_type}，不是 {op.target_type}")
-        event_id = op.event_id or new_id()
-        if event_id in self.s.published:
-            self.result("deduplicated", op.target_type, op.target_id, None)
-            return
-        event = _build(
-            ReevaluationRequested,
-            event_id=event_id,
-            occurred_at=self.now,
-            target_type=op.target_type,
-            target_id=op.target_id,
-            cause=op.cause,
-            change_description=op.change_description,
-            root_feedback_id=self.context.root_feedback_id,
-            depth=self.context.depth,
-        )
-        self.s.published[event_id] = None
-        self.result("written", op.target_type, op.target_id, None, None, event)
-
-    def mark_processed(self, op: MarkProcessed) -> None:
-        if op.consumer != self.module and not op.consumer.startswith(self.module + "."):
-            raise PermissionDenied(f"consumer 必须是 {self.module} 或以 {self.module}. 开头")
-        key = (op.consumer, op.event_id)
-        if key in self.s.processed:
-            self.conflict(
-                "already_processed",
-                f"{op.consumer} 已处理过事件 {op.event_id}",
-                id=op.event_id,
-                consumer=op.consumer,
-            )
-        self.s.processed[key] = None
-        self.result("written", None, op.event_id, None)
-
-    # -- 批末检查 --
-
-    def check_constraints(self) -> None:
-        """唯一字段、互斥成员：在整批执行完之后检查，所以同一批里可以先移出再加入。"""
-        by_type: dict[str, list[str]] = {}
-        for id in self.touched:
-            by_type.setdefault(self.s.versions[id][-1].data_type, []).append(id)
-        for data_type, ids in by_type.items():
-            spec = self.registry.get(data_type)
-            if not (spec.unique_fields or spec.exclusive_members):
-                continue
-            active = [
-                vs[-1]
-                for vs in self.s.versions.values()
-                if vs[-1].data_type == data_type and not vs[-1].superseded
-            ]
-            touched = set(ids)
-            for field_name in spec.unique_fields:
-                owners: dict[str, list[str]] = {}
-                for record in active:
-                    value = record.payload.get(field_name)
-                    if value is not None:
-                        owners.setdefault(canonical_json(value), []).append(record.id)
-                self.report(data_type, field_name, owners, touched, "unique_field_taken")
-            for field_name in spec.exclusive_members:
-                owners = {}
-                for record in active:
-                    members = record.payload.get(field_name, [])
-                    if not isinstance(members, list):
-                        self.index = self.touched.get(record.id, self.index)
-                        self.invalid(f"{data_type}.{field_name} 必须是数组")
-                    for member in members:
-                        owners.setdefault(canonical_json(member), []).append(record.id)
-                self.report(data_type, field_name, owners, touched, "member_taken")
-
-    def report(
-        self,
-        data_type: str,
-        field_name: str,
-        owners: dict[str, list[str]],
-        touched: set[str],
-        reason: ConflictReason,
-    ) -> None:
-        for value, ids in owners.items():
-            if len(ids) > 1 and touched.intersection(ids):
-                id = next(i for i in ids if i in touched)
-                self.index = self.touched[id]
-                self.conflict(
-                    reason,
-                    f"{data_type}.{field_name} 的值 {value} 同时出现在 {sorted(set(ids))}",
-                    data_type=data_type,
-                    id=id,
-                    field=field_name,
-                    value=json.loads(value),
-                    owners=sorted(set(ids)),
-                )
 
 
 # ---------------------------------------------------------------------------
@@ -920,6 +299,7 @@ class _Subscription:
     queue: deque[tuple[Event, int, bool]] = field(
         default_factory=deque
     )  # 事件、已失败次数、是否重复投递
+    busy: bool = False  # 有 runner 正在处理它的一个事件（在总线锁下读写）
 
     def wants(self, event: Event) -> bool:
         return self.event_types is None or event.event_type in self.event_types
@@ -963,37 +343,52 @@ class MemoryBus:
             return sum(len(s.queue) for s in self._subs.values())
 
     def run_until_idle(self, max_deliveries: int = 100_000) -> int:
-        """轮流给各 consumer 投递一个事件，直到没有待投递的事件。返回投递次数。
+        """轮流给各 consumer 投递一个事件，直到没有可投递的事件。返回本次调用的投递次数。
 
         handler 抛出异常时，同一事件稍后重投（保持该 consumer 的顺序）；失败 max_attempts 次
-        进入 dead_letters。超过 max_deliveries 次投递时抛出 RuntimeError（多半是传播没有停）。
+        进入 dead_letters。再投递就会超过 max_deliveries 次时抛出 RuntimeError（多半是传播没有停），
+        尚未投递的事件留在队列里。
+
+        同一 consumer 同时只处理一个事件：handler 在总线锁外执行；其他 runner（包括 handler 里
+        嵌套的调用）跳过正在处理的 consumer，由持有它的 runner 继续投递，其余 consumer 照常轮转。
         """
         delivered = 0
         while True:
             with self._lock:
-                ready = [s for s in self._subs.values() if s.queue]
+                ready = [s for s in self._subs.values() if s.queue and not s.busy]
             if not ready:
                 return delivered
             for sub in ready:
                 with self._lock:
-                    if not sub.queue:
+                    if sub.busy or not sub.queue:
                         continue
+                    if delivered >= max_deliveries:
+                        raise RuntimeError(
+                            f"投递超过 {max_deliveries} 次仍未结束，可能存在无限传播"
+                        )
                     event, failures, duplicate = sub.queue.popleft()
+                    sub.busy = True
                 delivered += 1
-                if delivered > max_deliveries:
-                    raise RuntimeError(f"投递超过 {max_deliveries} 次仍未结束，可能存在无限传播")
                 try:
-                    sub.handler(event)
-                except Exception as exc:
+                    self._deliver(sub, event, failures, duplicate)
+                finally:
                     with self._lock:
-                        if failures + 1 >= self.max_attempts:
-                            self.dead_letters.append(DeadLetter(sub.consumer, event, exc))
-                        else:
-                            sub.queue.appendleft((event, failures + 1, duplicate))
-                    continue
-                if self.duplicate_delivery and not duplicate:
-                    with self._lock:
-                        sub.queue.append((event, 0, True))
+                        sub.busy = False
+
+    def _deliver(self, sub: _Subscription, event: Event, failures: int, duplicate: bool) -> None:
+        """调用 handler；重投或重复投递的事件在释放 busy 之前放回队列，保证顺序。"""
+        try:
+            sub.handler(event)
+        except Exception as exc:
+            with self._lock:
+                if failures + 1 >= self.max_attempts:
+                    self.dead_letters.append(DeadLetter(sub.consumer, event, exc))
+                else:
+                    sub.queue.appendleft((event, failures + 1, duplicate))
+            return
+        if self.duplicate_delivery and not duplicate:
+            with self._lock:
+                sub.queue.append((event, 0, True))
 
 
 # ---------------------------------------------------------------------------
@@ -1010,7 +405,9 @@ class MemoryStorage:
         clock: Callable[[], datetime] = utcnow,
         max_attempts: int = 5,
         duplicate_delivery: bool = False,
+        model_body_policy: ModelBodyPolicy | None = None,
     ) -> None:
+        self.model_body_policy = model_body_policy or ModelBodyPolicy()
         self.registry = registry
         self.bus = MemoryBus(max_attempts=max_attempts, duplicate_delivery=duplicate_delivery)
         self._clock = clock
@@ -1045,7 +442,15 @@ class MemoryStorage:
         with self._lock:
             now = self._clock()
             batch_id = new_id()
-            txn = _Txn(self._state.copy(), self.registry, module, context, now, batch_id)
+            txn = _Txn(
+                self._state.copy(),
+                self.registry,
+                module,
+                context,
+                now,
+                batch_id,
+                model_body_policy=self.model_body_policy,
+            )
             try:
                 txn.run(ops)
             except _Abort as abort:
@@ -1111,6 +516,9 @@ class MemoryClient:
 
     # -- 读 --
 
+    def type_revision(self, data_type: str) -> int:
+        return self._reader().type_revision(data_type)
+
     def get(self, id: str) -> Record | None:
         return self._reader().get(id)
 
@@ -1129,6 +537,9 @@ class MemoryClient:
     def count(self, query: Query) -> int:
         return self._reader().count(query)
 
+    def get_reevaluation_result(self, request_event_id: str) -> ReevaluationResult | None:
+        return self._reader().get_reevaluation_result(request_event_id)
+
     def get_system_record(self, id: str) -> SystemRecord | None:
         return self._reader().get_system_record(id)
 
@@ -1138,6 +549,9 @@ class MemoryClient:
         return self._reader().stale_dependencies(
             targets, only_current_dependents=only_current_dependents
         )
+
+    def dependency_set(self, dependent_id: str, version: int | None = None) -> DependencySet | None:
+        return self._reader().dependency_set(dependent_id, version)
 
     def dependencies_of(
         self, dependent_id: str, version: int | None = None

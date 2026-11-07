@@ -23,36 +23,95 @@
     "created_at"
   ],
   "properties": {
-    "id": { "$ref": "#/$defs/id", "description": "对象 id，所有版本相同，永远不变。由写入方生成" },
+    "id": {
+      "$ref": "#/$defs/id",
+      "description": "对象 id，所有版本相同，永远不变。由写入方生成"
+    },
     "data_type": {
       "$ref": "#/$defs/snake_case",
       "description": "例如 person、place、attribution、activity、artifact、action_suggestion、rule。扩展模块可登记新类型，因此不用枚举"
     },
-    "version": { "type": "integer", "minimum": 1, "description": "从 1 开始，每次加 1，不跳号" },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "从 1 开始，每次加 1，不跳号"
+    },
     "status": {
-      "enum": ["active", "superseded"],
+      "enum": [
+        "active",
+        "superseded"
+      ],
       "description": "这个版本写入时对象的状态。整体替代会新增一个 status 为 superseded 的版本（内容与上一版本相同），之后对象不能再写入"
     },
     "event_start": {
-      "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }],
+      "oneOf": [
+        {
+          "$ref": "#/$defs/timestamp"
+        },
+        {
+          "type": "null"
+        }
+      ],
       "description": "对象描述的时间段起点，用于按时间查询；没有时间的对象为 null。活动、md 产物由写入方填写；归属关系由 ① 从它的原始数据复制"
     },
     "event_end": {
-      "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }],
+      "oneOf": [
+        {
+          "$ref": "#/$defs/timestamp"
+        },
+        {
+          "type": "null"
+        }
+      ],
       "description": "时间段终点，与 event_start 同时为 null 或同时有值，且 >= event_start"
     },
     "dedup_key": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "minLength": 1,
       "description": "新建时可选的去重键，例如 unnamed_person:<声纹 id>。同一 data_type 内永远唯一（包括已被替代的对象）"
     },
-    "payload": { "type": "object", "description": "这个版本的完整内容" },
-    "writer": { "$ref": "#/$defs/snake_case", "description": "写入这个版本的模块名（术语表「模块」）" },
-    "root_feedback_id": { "$ref": "#/$defs/root_feedback_id" },
-    "depth": { "type": "integer", "minimum": 0, "description": "写入这个版本时的依赖分析深度" },
-    "skip_history": { "type": "boolean", "description": "写入这个版本时的「不处理历史」标记" },
-    "batch_id": { "$ref": "#/$defs/id", "description": "同一次原子写入的所有数据共用一个 batch_id" },
-    "created_at": { "$ref": "#/$defs/timestamp", "description": "这个版本的写入时间" }
+    "payload": {
+      "type": "object",
+      "description": "这个版本的完整内容"
+    },
+    "writer": {
+      "$ref": "#/$defs/snake_case",
+      "description": "写入这个版本的模块名（术语表「模块」）"
+    },
+    "root_feedback_id": {
+      "$ref": "#/$defs/root_feedback_id"
+    },
+    "depth": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "写入这个版本时的依赖分析深度"
+    },
+    "skip_history": {
+      "type": "boolean",
+      "description": "写入这个版本时的「不处理历史」标记"
+    },
+    "batch_id": {
+      "$ref": "#/$defs/id",
+      "description": "同一次原子写入的所有数据共用一个 batch_id"
+    },
+    "created_at": {
+      "$ref": "#/$defs/timestamp",
+      "description": "这个版本的写入时间"
+    },
+    "additional_causes": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "$ref": "#/$defs/TracedCause"
+      },
+      "default": []
+    },
+    "request_event_id": {
+      "$ref": "#/$defs/id"
+    }
   },
   "$defs": {
     "id": {
@@ -66,10 +125,95 @@
       "pattern": "Z$",
       "description": "RFC 3339，UTC，以 Z 结尾"
     },
-    "snake_case": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "snake_case": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
     "root_feedback_id": {
       "description": "引起这次修改的用户反馈 id；系统发起的行为为字面量 \"system\"",
-      "oneOf": [{ "$ref": "#/$defs/id" }, { "const": "system" }]
+      "oneOf": [
+        {
+          "$ref": "#/$defs/id"
+        },
+        {
+          "const": "system"
+        }
+      ]
+    },
+    "Cause": {
+      "additionalProperties": true,
+      "description": "引起「请求重新判断」的那次修改。",
+      "properties": {
+        "data_type": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Data Type",
+          "type": "string"
+        },
+        "data_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Data Id",
+          "type": "string"
+        },
+        "old_version": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Old Version"
+        },
+        "new_version": {
+          "minimum": 1,
+          "title": "New Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "data_type",
+        "data_id",
+        "old_version",
+        "new_version"
+      ],
+      "title": "Cause",
+      "type": "object"
+    },
+    "TracedCause": {
+      "additionalProperties": true,
+      "description": "An independent causal path; never a replacement for the primary root/depth.",
+      "properties": {
+        "cause": {
+          "$ref": "#/$defs/Cause"
+        },
+        "root_feedback_id": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            {
+              "const": "system",
+              "type": "string"
+            }
+          ],
+          "title": "Root Feedback Id"
+        },
+        "depth": {
+          "minimum": 1,
+          "title": "Depth",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cause",
+        "root_feedback_id",
+        "depth"
+      ],
+      "title": "TracedCause",
+      "type": "object"
     }
   }
 }

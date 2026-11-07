@@ -4,6 +4,9 @@
 接口说明见 services/storage/ai-docs/interface.md。
 """
 
+from ear_contracts import TracedCause
+
+from ear_storage_client.completion import reevaluation_result
 from ear_storage_client.context import Context
 from ear_storage_client.errors import (
     ConflictError,
@@ -12,14 +15,19 @@ from ear_storage_client.errors import (
     StorageError,
 )
 from ear_storage_client.memory import DeadLetter, MemoryBus, MemoryClient, MemoryStorage
+from ear_storage_client.model_body import ModelBodyPolicy
 from ear_storage_client.ops import (
     AppendRaw,
+    AssertTypeRevision,
     Create,
+    DependencyInput,
+    FinishReevaluation,
     MarkProcessed,
     PublishReevaluation,
     PutSystemRecord,
     RegisterDependencies,
     Supersede,
+    TypeRevision,
     Update,
     WriteOp,
 )
@@ -30,7 +38,23 @@ from ear_storage_client.protocol import (
     iter_query,
     write_with_retry,
 )
-from ear_storage_client.queries import MAX_LIMIT, Page, Query, StaleDependency, TimeRange
+from ear_storage_client.queries import (
+    MAX_LIMIT,
+    DependencySet,
+    Page,
+    Query,
+    StaleDependency,
+    TimeRange,
+)
+from ear_storage_client.remote_errors import (
+    AuthenticationError,
+    CommitUnknown,
+    DeliveryExpired,
+    ProtocolError,
+    ResourceLimit,
+    ServiceUnavailable,
+    SnapshotUnavailable,
+)
 from ear_storage_client.results import (
     RETRYABLE,
     Conflict,
@@ -44,35 +68,50 @@ __all__ = [
     "MAX_LIMIT",
     "RETRYABLE",
     "AppendRaw",
+    "AssertTypeRevision",
+    "AuthenticationError",
+    "CommitUnknown",
     "Conflict",
     "ConflictError",
     "ConflictReason",
     "Context",
     "Create",
     "DeadLetter",
+    "DeliveryExpired",
+    "DependencyInput",
+    "DependencySet",
     "EventHandler",
+    "FinishReevaluation",
     "InvalidRequest",
     "MarkProcessed",
     "MemoryBus",
     "MemoryClient",
     "MemoryStorage",
+    "ModelBodyPolicy",
     "OpResult",
     "Outcome",
     "Page",
     "PermissionDenied",
+    "ProtocolError",
     "PublishReevaluation",
     "PutSystemRecord",
     "Query",
     "Reader",
     "RegisterDependencies",
+    "ResourceLimit",
+    "ServiceUnavailable",
+    "SnapshotUnavailable",
     "StaleDependency",
     "StorageClient",
     "StorageError",
     "Supersede",
     "TimeRange",
+    "TracedCause",
+    "TypeRevision",
     "Update",
     "WriteOp",
     "WriteResult",
     "iter_query",
+    "reevaluation_result",
     "write_with_retry",
 ]
