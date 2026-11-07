@@ -1,7 +1,7 @@
 ---
 audience: ai
 doc-type: guide
-based-on: docs/design/design-v1.2.md 3.3–3.4；docs/design/work-breakdown-v1.2.md ②；contracts/records/raw-record.schema.json；旧 Ear doc/0929_evidence_read_api.md、doc/audio-ingestion.md；负责人 2026-11-05 确认：音频走旧 Ear Evidence API、补列录音接口、每版本只导入一次、确定性 id；旧 Ear ear/evidence/readiness.py（availability 规则）、ear/runtime/model_lifecycle.py；2026-11-05 旧 Ear 卡住根因排查（日志 + 数据库，只读）
+based-on: docs/design/design-v1.2.md 3.3–3.4；docs/design/work-breakdown-v1.2.md ②；contracts/records/raw-record.schema.json；旧 Ear doc/0929_evidence_read_api.md、doc/audio-ingestion.md；负责人 2026-11-05 确认：音频走旧 Ear Evidence API、补列录音接口、每版本只导入一次、确定性 id；旧 Ear ear/evidence/readiness.py（availability 规则）、ear/runtime/model_lifecycle.py；2026-11-05 旧 Ear 卡住根因排查（日志 + 数据库，只读）；2026-11 文档同步：更正 5.3 中 ① 持久化服务“未实现”的过期描述（① 已随 PR8 合入 dev 376294d；② 命令行仍写内存，已核对 __main__.py）
 ---
 
 # ② 适配器：实现说明
@@ -152,6 +152,6 @@ set -a && . deploy/.env && set +a && uv run ear-adapter --dry-run
 
 ### 5.3 尚未覆盖
 
-- ① 持久化服务未实现，没有真实落库、并发与断电恢复的验证。
+- ② 命令行 `ear-adapter` 仍写 `MemoryStorage`（`__main__.py`），**没有对真实 ① 服务的落库联调**：② → ① 的远程写入、并发与断电恢复都未验证。① 的持久化服务已实现并随 PR8 合入 dev 376294d（隔离部署切片非生产，见[① 存储](../../storage/README.md)），但它自己的测试不能代替 ② 的落库验证。
 - 时间抽查只验证了落在录音范围内，还没有听录音核对具体时刻；允许误差和要跑几天仍待团队决定。
 - GPS 密度不足（见 payloads.md），属于手机侧问题。

@@ -60,6 +60,7 @@ from ear_storage_client.model_body import ModelBodyPolicy
 from ear_storage_client.ops import (
     WriteOp,
 )
+from ear_storage_client.preflight import LLMCallPreflight, validate_preflight
 from ear_storage_client.protocol import EventHandler, Reader
 from ear_storage_client.queries import DependencySet, Page, Query, QueryItem, StaleDependency
 from ear_storage_client.results import WriteResult
@@ -494,6 +495,32 @@ class MemoryClient:
 
     def _reader(self) -> _StateReader:
         return _StateReader(self._storage._state, self._storage.registry)
+
+    def call_id_occupied(self, call_id: str) -> bool:
+        """Trusted gateway admission check, not a reservation or ordinary ACL read."""
+        from ear_contracts import is_id
+
+        if self.module != "llm_gateway":
+            raise PermissionDenied("access denied")
+        if not is_id(call_id):
+            raise InvalidRequest("invalid call id")
+        with self._storage._lock:
+            state = self._storage._state
+            return state.id_in_use(call_id)
+
+    def preflight_llm_call(self, call: LLMCallPreflight) -> LLMCallPreflight:
+        call = LLMCallPreflight.model_validate(call.model_dump())
+        with self._storage._lock:
+            state = self._storage._state
+            return validate_preflight(
+                call,
+                module=self.module,
+                registry=self.registry,
+                request=state.requests.get(call.request_event_id),
+                get=state.current,
+                get_version=state.version,
+                require_read=lambda types: None,  # Memory has no credential/ACL boundary.
+            )
 
     # -- 写 --
 

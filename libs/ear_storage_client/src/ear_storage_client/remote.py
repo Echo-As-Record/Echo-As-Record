@@ -28,6 +28,7 @@ from ear_storage_client import Context, InvalidRequest, Query, WriteOp, WriteRes
 from ear_storage_client.consumer_wire import RegisterConsumer
 from ear_storage_client.engine import canonical_json
 from ear_storage_client.errors import ConflictError, PermissionDenied
+from ear_storage_client.preflight import LLMCallPreflight
 from ear_storage_client.protocol import EventHandler
 from ear_storage_client.queries import DependencySet, Page, StaleDependency
 from ear_storage_client.remote_errors import (
@@ -176,6 +177,37 @@ class RemoteStorageClient(RemoteReader):
                 self.close()
                 raise
 
+    def call_id_occupied(self, call_id: str) -> bool:
+        """Gateway-only authoritative occupancy; old servers fail closed, no fallback."""
+        import json
+
+        from ear_contracts import is_id
+
+        if not is_id(call_id):
+            raise InvalidRequest("invalid call id")
+        response = self._request("POST", "/v1/llm/call-id-check", json.dumps({"call_id": call_id}))
+        value = load_json(response.text)
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"occupied"}
+            or type(value["occupied"]) is not bool
+        ):
+            raise ProtocolError("invalid occupancy response")
+        return value["occupied"]
+
+    def preflight_llm_call(self, call: LLMCallPreflight) -> LLMCallPreflight:
+        call = LLMCallPreflight.model_validate(call.model_dump())
+        response = self._request("POST", "/v1/llm/preflight", call.model_dump_json())
+        try:
+            result = LLMCallPreflight.model_validate(load_json(response.text))
+            if result.model_dump(exclude={"additional_causes"}) != call.model_dump(
+                exclude={"additional_causes"}
+            ) or any(t not in result.additional_causes for t in call.additional_causes):
+                raise ValueError
+            return result
+        except (InvalidRequest, ValueError, KeyError, TypeError):
+            raise ProtocolError("invalid preflight response") from None
+
     def __repr__(self) -> str:
         return "<RemoteStorageClient credentials redacted>"
 
@@ -267,6 +299,82 @@ class RemoteStorageClient(RemoteReader):
         except (ValueError, KeyError, TypeError):
             # Includes unknown future ConflictReason/Outcome Literals.
             raise CommitUnknown(request_id) from None
+
+    def list_plugin_directory(self, *, limit: int = 50, after: str = "") -> dict[str, Any]:
+        """Admin-only metadata; no fallback to the business ACL-filtered registry."""
+        if (
+            type(limit) is not int
+            or not 1 <= limit <= 100
+            or not isinstance(after, str)
+            or (after and re.fullmatch(r"[a-z][a-z0-9_]{0,54}", after) is None)
+        ):
+            raise InvalidRequest("invalid directory pagination")
+        data = self._metadata(f"/v1/management/plugins?limit={limit}&after={after}")
+        try:
+            items, following = data["items"], data["next_after"]
+            if not isinstance(items, list) or len(items) > limit:
+                raise ValueError
+            names = []
+            for item in items:
+                name = item["module"]
+                if not isinstance(name, str) or re.fullmatch(r"[a-z][a-z0-9_]{0,54}", name) is None:
+                    raise ValueError
+                if name <= (names[-1] if names else after):
+                    raise ValueError
+                names.append(name)
+                if (
+                    (item["enabled"] is not None and type(item["enabled"]) is not bool)
+                    or item["online"] is not None
+                    or item["status_source"] != "storage_management"
+                    or not isinstance(item["types"], list)
+                    or len(item["types"]) > 128
+                ):
+                    raise ValueError
+                allowed = {
+                    "module",
+                    "types",
+                    "enabled",
+                    "online",
+                    "status_source",
+                    "revision",
+                    "resources_ready",
+                    "ever_enabled",
+                    "need_recovery_decision",
+                    "read_types",
+                    "subscribe_types",
+                }
+                if not set(item) <= allowed:
+                    raise ValueError
+                for key in ("resources_ready", "ever_enabled", "need_recovery_decision"):
+                    if key in item and type(item[key]) is not bool:
+                        raise ValueError
+                if "revision" in item and (
+                    type(item["revision"]) is not int or item["revision"] < 1
+                ):
+                    raise ValueError
+                for key in ("read_types", "subscribe_types"):
+                    if key in item and (
+                        not isinstance(item[key], list)
+                        or len(item[key]) > 512
+                        or any(not isinstance(v, str) or len(v) > 128 for v in item[key])
+                    ):
+                        raise ValueError
+                for spec in item["types"]:
+                    if (
+                        set(spec)
+                        != {"name", "kind", "supports_reevaluation", "requires_dependencies"}
+                        or not isinstance(spec["name"], str)
+                        or len(spec["name"]) > 128
+                        or spec["kind"] not in {"raw_record", "semantic", "rule", "system_record"}
+                        or type(spec["supports_reevaluation"]) is not bool
+                        or type(spec["requires_dependencies"]) is not bool
+                    ):
+                        raise ValueError
+            if following is not None and (len(names) != limit or following != names[-1]):
+                raise ValueError
+            return {"items": items, "next_after": following}
+        except (ValueError, KeyError, TypeError):
+            raise ProtocolError("invalid plugin directory response") from None
 
     def list_history_reevaluations(
         self, job_id: str | None = None, *, limit: int = 50, cursor: str | None = None

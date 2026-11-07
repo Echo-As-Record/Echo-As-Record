@@ -1,12 +1,19 @@
 ---
 audience: ai
 doc-type: status
-based-on: origin/dev 48d3c51 的代码与契约；docs/design/design-v1.2.md；docs/design/plugins-mvp.md；ADR-0001；6cea0b7 实施准备（当时无实现改动）；storage/implementation-preparation 分支 P0a 提交 a6a1c5a、P0b 提交 cf337d1、P1 提交 d7c9919（提交前完整检查日志 /tmp/ear-p1http-full-OK7Aeg.log，exit 0）、P2/P3 后端提交 d0d8875（schema revision 5–8：Relay 与持久消费者、管理反馈、凭据、订阅重配置）与合并提交 b7307e9（同步 dev 4afeae0 的模块④，未改④代码）、P4 集合守护提交 f747e89（schema revision 9）、P4 重判完成记录提交 106cd2e（完整真实运行日志 /tmp/ear-p4-completion-full.log，日志内 EXIT=0，并有 /tmp/ear-p4-completion-full.exit），均在 PR8、未合并；106cd2e 之上的多起因提交 daa767f（已推送），其完整真实运行 /tmp/ear-p4-causality-full.log 为 1168 passed / 5 skipped（日志内 EXIT=0，/tmp/ear-p4-causality-full.exit 为 0）；daa767f 之上的⑦调用记录 `llm_call` 与正文策略 `ModelBodyPolicy` 已提交 e9391dd 并推送（状态记录 /tmp/ear-p4-modelcall-state.json、/tmp/ear-p4-bodies-state.json；e9391dd 本身未单独做完整真实运行）；e9391dd 之上的 P5 ①侧插件历史恢复（schema revision 11–14）已在本分支实现（提交状态以提交历史为准；完整真实运行 /tmp/ear-p5-checkpoint-full.log 为 1 failed / 1411 passed / 5 skipped，.exit 为 1；唯一失败测试已修正，定向重跑 /tmp/ear-p5-bootstrap-fixed.log 1 passed、.exit 为 0，未重跑完整，见 P5 节）；各阶段日志 /tmp/ear-p2b-mustfix/closing-*.log 及 .exit、/tmp/ear-p3-reliability-*.log、/tmp/ear-p3-credentials-{final,refresh}-*.log 与 /tmp/ear-p3-credentials-state.json、/tmp/ear-p3-checkpoint-validation.log（exit 0），以及 b7307e9 后的默认检查结果；P5 已提交 9705b61、②适配器合并 84f20fe；存储切片部署已在本分支实现（提交状态以提交历史为准，无生产启动）及容器冒烟 /tmp/ear-storage-final-smoke.log（.exit 0，16 项）、备份新版真实往返与五种真实竞争 /tmp/ear-final-race-84lx9T/real.log（1 passed in 100.61s）及汇总 /tmp/ear-final-race-close.json（历史失败记录 /tmp/ear-backup-main-final.log 早于新版，已被取代，不代表当前状态）、三开启本地完整运行 /tmp/ear-repro-suite-ykxiUWmy（exit 为 0，1503 passed, 5 skipped, 1 warning in 890.20s；远程 CI 与人工审核尚待），见 deployment.md；项目负责人（用户）采用推荐方案并授权功能分支持续实现、分批提交推送提 PR、合并前由负责人兼 I 审核
+based-on: origin/dev 48d3c51 的代码与契约；docs/design/design-v1.2.md；docs/design/plugins-mvp.md；ADR-0001；6cea0b7 实施准备（当时无实现改动）；storage/implementation-preparation 分支 P0a 提交 a6a1c5a、P0b 提交 cf337d1、P1 提交 d7c9919（提交前完整检查日志 /tmp/ear-p1http-full-OK7Aeg.log，exit 0）、P2/P3 后端提交 d0d8875（schema revision 5–8：Relay 与持久消费者、管理反馈、凭据、订阅重配置）与合并提交 b7307e9（同步 dev 4afeae0 的模块④，未改④代码）、P4 集合守护提交 f747e89（schema revision 9）、P4 重判完成记录提交 106cd2e（完整真实运行日志 /tmp/ear-p4-completion-full.log，日志内 EXIT=0，并有 /tmp/ear-p4-completion-full.exit），均在 PR8、未合并；106cd2e 之上的多起因提交 daa767f（已推送），其完整真实运行 /tmp/ear-p4-causality-full.log 为 1168 passed / 5 skipped（日志内 EXIT=0，/tmp/ear-p4-causality-full.exit 为 0）；daa767f 之上的⑦调用记录 `llm_call` 与正文策略 `ModelBodyPolicy` 已提交 e9391dd 并推送（状态记录 /tmp/ear-p4-modelcall-state.json、/tmp/ear-p4-bodies-state.json；e9391dd 本身未单独做完整真实运行）；e9391dd 之上的 P5 ①侧插件历史恢复（schema revision 11–14）已在本分支实现（提交状态以提交历史为准；完整真实运行 /tmp/ear-p5-checkpoint-full.log 为 1 failed / 1411 passed / 5 skipped，.exit 为 1；唯一失败测试已修正，定向重跑 /tmp/ear-p5-bootstrap-fixed.log 1 passed、.exit 为 0，未重跑完整，见 P5 节）；各阶段日志 /tmp/ear-p2b-mustfix/closing-*.log 及 .exit、/tmp/ear-p3-reliability-*.log、/tmp/ear-p3-credentials-{final,refresh}-*.log 与 /tmp/ear-p3-credentials-state.json、/tmp/ear-p3-checkpoint-validation.log（exit 0），以及 b7307e9 后的默认检查结果；P5 已提交 9705b61、②适配器合并 84f20fe；存储切片部署已在本分支实现（提交状态以提交历史为准，无生产启动）及容器冒烟 /tmp/ear-storage-final-smoke.log（.exit 0，16 项）、备份新版真实往返与五种真实竞争 /tmp/ear-final-race-84lx9T/real.log（1 passed in 100.61s）及汇总 /tmp/ear-final-race-close.json（历史失败记录 /tmp/ear-backup-main-final.log 早于新版，已被取代，不代表当前状态）、三开启本地完整运行 /tmp/ear-repro-suite-ykxiUWmy（exit 为 0，1503 passed, 5 skipped, 1 warning in 890.20s；远程 CI 与人工审核尚待），见 deployment.md；项目负责人（用户）采用推荐方案并授权功能分支持续实现、分批提交推送提 PR、合并前由负责人兼 I 审核；当前基线 origin/dev 376294d：PR8 已于 2026-11-07T09:32:19Z 合并（gh 只读核对，用户述已审核并合并），dev 上 CI run 42360158060 success（1503 passed, 5 skipped, 1 warning in 583.04s，三真实开关均为 1）；⑥⑦ 全套验收记录 /tmp/ear-67-full-v2.log（.exit 为 0，2067 passed, 11 skipped, 2 warnings in 1001.65s）与 /tmp/ear-67-static-final.log（.exit 为 0）；本次仅改 Markdown 同步当前状态，历史测试数字不改
 ---
 
 # ① 实现状态与新目标差距
 
-[设计](../../../docs/design/design-v1.2.md)、[插件](../../../docs/design/plugins-mvp.md)和[ADR](../../../docs/adr/0001-storage-and-runtime-modules.md)已采纳；采纳决定不等于已实现。本分支已提交 P0a（a6a1c5a）、P0b（cf337d1）、P1（d7c9919）、P2 与 P3 后端（d0d8875），并以 b7307e9 合并 dev 4afeae0（模块④，未改其代码）；均在 PR8，未合并、未经合并前审核（负责人兼 I）。P3 只余⑥管理页对接；P4 已提交①侧集合守护（f747e89，schema revision 9）与按所属方验证的重判完成记录及权威查询（106cd2e），多起因（`additional_causes`）已提交 daa767f；⑦调用记录的①侧存储（`llm_call`、`ModelBodyPolicy`）已提交 e9391dd（见 P4 节）；⑦网关服务与实际模型调用、③④⑤⑦业务接入未做，不是完整 P4；P5 ①侧插件历史恢复已在本分支实现（提交状态以提交历史为准，见 P5 节），⑤实际调度、④业务改动与真实多层示例未做，不是完整 P5，也不是完整 MVP。所有权及接口目标见[人读说明](../../../docs/modules/storage.md)。
+[设计](../../../docs/design/design-v1.2.md)、[插件](../../../docs/design/plugins-mvp.md)和[ADR](../../../docs/adr/0001-storage-and-runtime-modules.md)已采纳；采纳决定不等于已实现。本分支已提交 P0a（a6a1c5a）、P0b（cf337d1）、P1（d7c9919）、P2 与 P3 后端（d0d8875），并以 b7307e9 合并 dev 4afeae0（模块④，未改其代码）；均在 PR8；PR8 已于 2026-11-07T09:32:19Z 合并为 dev 376294d（见下方“当前状态”）。P3 只余⑥管理页对接；P4 已提交①侧集合守护（f747e89，schema revision 9）与按所属方验证的重判完成记录及权威查询（106cd2e），多起因（`additional_causes`）已提交 daa767f；⑦调用记录的①侧存储（`llm_call`、`ModelBodyPolicy`）已提交 e9391dd（见 P4 节）；⑦网关服务与实际模型调用、③④⑤⑦业务接入未做，不是完整 P4；P5 ①侧插件历史恢复已在本分支实现（提交状态以提交历史为准，见 P5 节），⑤实际调度、④业务改动与真实多层示例未做，不是完整 P5，也不是完整 MVP。所有权及接口目标见[人读说明](../../../docs/modules/storage.md)。
+
+## 当前状态（dev 376294d；以本节为准）
+
+- **合并与 CI（`gh` 只读核对）**：PR8（`storage/implementation-preparation`，标题“feat(storage): 存储与事件服务、动态插件及隔离部署恢复”）于 2026-11-07T09:32:19Z 合并，合并提交 `dev` 376294d（合并人 aytony；用户述已审核并合并，本页不代填任何 reviewed 字段）。dev 上 push 触发的 GitHub Actions CI run 42360158060（workflow CI，headSha 376294d）结论 success；日志中 `EAR_RUN_POSTGRES_TESTS`、`EAR_RUN_NATS_TESTS`、`EAR_RUN_BACKUP_TESTS` 均为 1，pytest 末行 **1503 passed, 5 skipped, 1 warning in 583.04s (0:09:43)**。
+- **含义**：①存储切片（P0–P5 ①侧与隔离部署/备份切片）在 CI 隔离环境的真实 PostgreSQL + NATS + 备份往返下通过，**不是生产验收**：没有生产启动；生产部署与升级迁移、流保留/清理与容量、备份文件保留/删除、按模块隔离的 NATS 账户仍未做。
+- **仍未完成**：③④⑤尚未与①完整业务联调（④仍是 v1.1 演示基线，⑤调度未实现，通过的只有固定⑤测试驱动的插件链）；②适配器命令行仍写内存存储（`MemoryStorage`），未接入①远程服务；⑥管理页与 ⑥ API、⑦网关服务**不是完成**，只是功能分支 `api/gateway-mvp`（基线 dev 376294d，**待合并**）里的部分交付、待审（见[⑥入口](../../api/README.md)、[⑦入口](../../llm_gateway/README.md)）：⑥ 的 34 项真实浏览器检查只对内存假①；API/网关 HTTP 层对真实回环①+隔离 PostgreSQL/NATS 的集成测试（`test_api_gateway_integration` 26 项）与①侧预检测试已通过（12:07 快照，合成 provider）；⑦ 没有任何真实模型调用或 Octopus wire 验证；没有真实浏览器↔真实①的页面联调，⑤调度未接入。这些不计入①切片的验证和生产验收；⑥⑦ 的全套验收（四个开关全开）当前结果：修复后的最终全量 `/tmp/ear-67-full-v2.log` 退出 0，2067 passed、11 skipped、2 warnings、1001.65 秒，最终静态检查 `/tmp/ear-67-static-final.log` 退出 0（合成/隔离环境，不是生产验收）；历史失败保留：12:35 全套 3 failed（部署/备份测试环境问题，已修复）、14:26 静态检查 `ruff format` 失败（已修复）。详见文末“⑥⑦ 与①的真实边界”。
+- **对历史记录的说明**：下文各节（P0a…P5、部署切片）里“未合并”“未经合并前人工审核”“远程 CI 尚未运行”等措辞是当时状态，保留原文与历史测试数字（如 802、916、1091、1168、1411 + 1 failed、本地 1503 的 890.20s），不据此改写；`reviewed-by` / `reviewed-at` 未触碰。以本节为当前状态。
 
 ## 已有代码
 
@@ -21,8 +28,8 @@ based-on: origin/dev 48d3c51 的代码与契约；docs/design/design-v1.2.md；d
 |---|---|
 | 独立服务、数据库和总线 | P1 与 P2（d0d8875）已有：PostgreSQL 事务与持久 Outbox、有序 Relay → JetStream、服务端授权的持久消费者（HTTP 代理）与 SDK 订阅。①存储切片的隔离部署 Compose 与备份/恢复工具已在本分支实现（非生产，见[隔离部署指南](deployment.md)）。**缺**：生产流保留/清理与容量策略、按模块隔离的 NATS 账户、生产部署与升级迁移、备份文件保留/删除、远程 CI 实跑（与 I 协作） |
 | 字段依赖/强制登记/防环 | 内存（P0b）与 PostgreSQL（P1）已实现；核心类型 `requires_dependencies` 全为 false，需③④迁移验证后按类型启用 |
-| 动态注册与可信权限 | P3 后端（d0d8875）：运行时数据库登记表、动态创建模块 namespace、启停与权限替换、可信管理员角色、凭据经管理反馈的轮换/撤销与一次性领取（revision 7）、订阅完整重配置（revision 8），见 P3 节。**缺**：⑥管理页对接；按模块隔离的 NATS 账户（与 I） |
-| 管理反馈 | P3 后端（d0d8875）：①管理反馈处理器、可恢复阶段、`retry_task`、`rotate_credentials` / `revoke_credentials` 与一次性 claim、订阅重配置、管理结果系统记录。**缺**：⑥管理页面；`AuthOperator` 不能代替日常管理 |
+| 动态注册与可信权限 | P3 后端（d0d8875）：运行时数据库登记表、动态创建模块 namespace、启停与权限替换、可信管理员角色、凭据经管理反馈的轮换/撤销与一次性领取（revision 7）、订阅完整重配置（revision 8），见 P3 节。**缺**：⑥管理页与真实①的浏览器联调（页面已在⑥实现，功能分支待合并，仅对假①做过真实浏览器检查，API 层另有对真实①的集成测试，见文末“⑥⑦ 与①的真实边界”）；按模块隔离的 NATS 账户（与 I） |
+| 管理反馈 | P3 后端（d0d8875）：①管理反馈处理器、可恢复阶段、`retry_task`、`rotate_credentials` / `revoke_credentials` 与一次性 claim、订阅重配置、管理结果系统记录。**缺**：⑥管理页与真实①的浏览器联调（⑥ 页面已实现，同上）；`AuthOperator` 不能代替日常管理 |
 | 完成记录与调度交接 | ①侧：集合守护（f747e89，schema revision 9）与重判完成记录（106cd2e：权威索引验真，需显式 `reevaluation_result` 能力）已提交；多起因与请求关联已提交（daa767f，见 P4 节）。**缺**：③④⑤接入（④入队 marker 不是业务完成，④业务未改）（P4） |
 | 调用记录（⑦经①保存） | ①侧 `llm_call` 系统记录（`llm_gateway` 单写终态、真实请求关联、按全部起因读授权）与部署级正文策略已在本分支实现（提交状态以提交历史为准，见 P4 节）。**缺**：⑦网关服务与实际模型调用、各调用方接入、正文保留期/TTL 与清理、包含本切片的完整真实运行（P4） |
 | 最新规则/纯Markdown/选择结果 | 主要属于③④⑤业务对齐；①提供所需类型、依赖及事务支持（P4） |
@@ -30,7 +37,7 @@ based-on: origin/dev 48d3c51 的代码与契约；docs/design/design-v1.2.md；d
 
 ## 下一步
 
-P2/P3 后端已提交 d0d8875 并推送到 PR8；b7307e9 合并了 dev 4afeae0（模块④，①未改其代码或文档）。b7307e9 本身只跑了默认检查（见 P3 节“检查点与合并后验证”）；文档记录中合并后的首次完整真实运行在 106cd2e（1091 passed / 0 skipped，见 P4 节）；CI 已配置真实 PostgreSQL 与 NATS，但**尚未在远程运行过**。P3 剩余⑥管理页对接。P4 ①侧已提交集合守护（f747e89）与重判完成记录（106cd2e），多起因已提交 daa767f，⑦调用记录的①侧存储已提交 e9391dd（见 P4 节）；P5 ①侧历史恢复已在本分支实现（提交 9705b61），其中 schema 硬编码测试已修正，之后的三开启本地完整运行 1503 passed / 5 skipped 无失败（见“提交更新与存储切片部署”）；之后按[全局实施计划](../../../ai-docs/plans/mvp-implementation.md)完成 P4 其余部分（⑦网关服务与实际模型调用，③④⑤⑦接入完成记录、集合守护与调用记录）与 P5 其余部分（⑤实际调度接入、④业务改动、多层集成与示例插件）。部署与I合作，页面归⑥，传播调度归⑤；不要让①包办业务模块。
+P2/P3 后端已提交 d0d8875 并推送到 PR8；b7307e9 合并了 dev 4afeae0（模块④，①未改其代码或文档）。b7307e9 本身只跑了默认检查（见 P3 节“检查点与合并后验证”）；文档记录中合并后的首次完整真实运行在 106cd2e（1091 passed / 0 skipped，见 P4 节）；CI 配置真实 PostgreSQL 与 NATS；该配置已在 dev 376294d 远程运行通过（run 42360158060，见“当前状态”）。P3 剩余⑥管理页对接。P4 ①侧已提交集合守护（f747e89）与重判完成记录（106cd2e），多起因已提交 daa767f，⑦调用记录的①侧存储已提交 e9391dd（见 P4 节）；P5 ①侧历史恢复已在本分支实现（提交 9705b61），其中 schema 硬编码测试已修正，之后的三开启本地完整运行 1503 passed / 5 skipped 无失败（见“提交更新与存储切片部署”）；之后按[全局实施计划](../../../ai-docs/plans/mvp-implementation.md)完成 P4 其余部分（⑦网关服务与实际模型调用，③④⑤⑦接入完成记录、集合守护与调用记录）与 P5 其余部分（⑤实际调度接入、④业务改动、多层集成与示例插件）。部署与I合作，页面归⑥，传播调度归⑤；不要让①包办业务模块。
 
 不要把 `test_memory.py::test_concurrent_writers`（顺序旧版本冲突）当真正并发测试；真实多进程竞争在 `services/storage/tests/test_p1a_regressions.py`。SDK用法与命令见[工程指南](interface.md)。
 
@@ -39,7 +46,7 @@ P2/P3 后端已提交 d0d8875 并推送到 PR8；b7307e9 合并了 dev 4afeae0�
 - 模块④：合入的 `services/extraction/` 是 v1.1 演示基线，其文档注明不代表 v1.2（见[④实现记录](../../extraction/ai-docs/implementation.md)）。仍使用特殊实体标记、旧规则阻塞，没有 `rule_selection`；其原有 39 项测试通过**不等于**已与 v1.2 对齐。①未改④的代码或文档；④按类型启用强制依赖登记、完成记录、接入集合守护等仍待④迁移（P4）。P4 集合守护后，默认运行中④原有 39 项仍通过；这不代表④已与①远程服务集成。
 - `services/extraction/README.md` 不存在（AGENTS 要求的模块入口缺口），已报告，由④负责方补；①不代写。
 - 待通知：P0b 契约字段与能力项、P3 新增的两个登记类型，尚未通知③④及 `api` 负责方；P4 新增的 `llm_call` 登记类型、`llm_call_metadata` 能力项与调用记录契约，未记录已通知⑦（`llm_gateway`）负责方。
-- 待办：合并前人工审核（负责人兼 I）；包含调用记录切片的完整真实运行（正在准备，尚无结果）；远程 CI；⑥管理页对接。
+- 待办（写下时的状态；⑥⑦ 现状见文末“⑥⑦ 与①的真实边界”）：⑥管理页与真实①的浏览器联调（⑥ 页面已在功能分支 `api/gateway-mvp` 实现，待审、待合并）；生产验收与部署。原待办“合并前人工审核”“包含调用记录切片的完整真实运行”“远程 CI”已完成：PR8 已合并，完整真实运行与远程 CI 见“当前状态”。
 
 ## 实施准备（历史记录，基线 6cea0b7）
 
@@ -78,7 +85,7 @@ P2/P3 后端已提交 d0d8875 并推送到 PR8；b7307e9 合并了 dev 4afeae0�
 
 边界：核心类型能力项全部 false，强制登记目前不对任何内置类型生效；内存实现中 `client(module)` 仍信任自报模块名（可信身份只在服务路径）；提案 2.10 要求的 `dependency_cycle` 旧客户端端到端兼容测试**未确认已补**，合并前审核须核对。
 
-## P1：持久化服务、可信身份与远程 SDK（提交 d7c9919，**未合并**）
+## P1：持久化服务、可信身份与远程 SDK（提交 d7c9919，已随 PR8 合入 dev）
 
 依据：ADR-0001；[P1 工程指南](persistent-service-plan.md)；上述用户授权。以分支历史与 PR8 为准。**未经合并前人工审核**（负责人兼 I），未通知③④。下表描述 d7c9919 提交时的状态；P2/P3（d0d8875）的增量见后两节。
 
@@ -106,7 +113,7 @@ P2/P3 后端已提交 d0d8875 并推送到 PR8；b7307e9 合并了 dev 4afeae0�
 
 边界：全局写闸使所有操作串行（保正确不保吞吐）；幂等回执不清理，保留策略需与 I 确定；核心能力项仍为 false。
 
-## P2：Relay、持久消费者与远程订阅（提交 d0d8875，PR8 未合并）
+## P2：Relay、持久消费者与远程订阅（提交 d0d8875，已随 PR8 合入 dev）
 
 依据：ADR-0001（JetStream + Outbox/Relay）、[全局实施计划](../../../ai-docs/plans/mvp-implementation.md) P2、上述用户授权。代码随 d0d8875 提交（与 P3 同一提交）。**未经合并前人工审核**，未通知③④⑤或任何订阅方。P2 完成时 `SCHEMA_VERSION = 5`；d0d8875 为 8（P3 管理 6、凭据 7、订阅重配置 8）。工程细节见[工程指南](persistent-service-plan.md)第 8、9 节（其中消费者部分以本页和代码为准）。
 
@@ -265,7 +272,7 @@ P4：①侧规则集合守护（f747e89，schema revision 9）与重判完成记
 - 执行（插件所属方）：`POST /v1/history/jobs/{job_id}/claim`（SDK `claim_history_job`，无参数）领取条目，带 snapshot、租约与 epoch/fence，库中只存 claim 哈希、不存明文 token；`POST /v1/history/jobs/{job_id}/commit`（`commit_history_job(job_id, claim_token, fence, ops, context, *, request_id, outcome="completed", error_code=None)`）使业务写入与进度回执同一事务原子提交；`GET /v1/history/jobs/{job_id}`（`history_job`）查状态。
 - 供⑤：`POST /v1/history/reevaluations/list`（`list_history_reevaluations(job_id=None, *, limit=50, cursor=None)`）；`POST /v1/history/jobs/{job_id}/requests`（`attach_history_request(job_id, item_id, request_event_id)`）只接受真实已提交请求，复核权限与起因覆盖；所属方经 `POST /v1/history/jobs/{job_id}/assignments/claim`（`claim_history_assignment(job_id, *, consumer)`）安全领取分配——consumer 须已登记且启用或部署预留给本 principal，至少一次交接，重复领取返回同一事件/consumer——之后由所属方自行 Finish，①与⑤不代为完成。完成索引与历史依赖按 `commit_seq` 验新鲜；作业终态后冻结（`history_job_final`）。
 - 迁移：显式迁移 11–14（`schema.py` `DDL_V11`…`DDL_V14`，`SCHEMA_VERSION = 14`）：11 引入历史作业与条目等表；12 条目租约与原子分块回执（`history_receipts`）；13 已批准的按模块/类型交接与可审计替代（`recovery_decisions`、`module_type_handoffs`）；14 已批准的调度范围与只追加的请求分配（`history_reevaluation_authority`、`history_request_links`）。
-- 未做：⑤实际调度（①只提供接口，未改⑤）；④业务改动；真实多层/分叉汇合示例插件与演示；⑥管理页的恢复/补处理选择；部署 Compose、备份与清理。**不是 P5 完成。**
+- 未做：⑤实际调度（①只提供接口，未改⑤）；④业务改动；真实多层/分叉汇合示例插件与演示；⑥管理页的恢复/补处理选择；部署 Compose、备份与清理。**不是 P5 完成。**（当时状态；现状见文末“⑥⑦ 与①的真实边界”）
 - 验证（本地工作区；不是全绿）：
   - 完整真实 PostgreSQL + NATS：`/tmp/ear-p5-checkpoint-full.log`（`/tmp/ear-p5-checkpoint-full.exit` 为 1，JUnit `/tmp/ear-p5-checkpoint-full.xml`）**1 failed、1411 passed、5 skipped**（共 1417），DURATION=717.45。唯一失败 `services/storage/tests/test_llm_calls.py::test_existing_database_requires_explicit_bootstrap`：测试硬编码 schema revision 11，实际为 14。已修正：测试改用 `SCHEMA_VERSION`，不再硬编码；定向重跑 `/tmp/ear-p5-bootstrap-fixed.log` 1 passed（3.70 s，`/tmp/ear-p5-bootstrap-fixed.exit` 为 0）。修正后未重新完整运行，上面的 1 failed 仍是最近一次完整运行的结果；定向通过不等于完整运行通过。5 个 skip 明细见 JUnit，本页未逐项核对。
   - 默认 `pytest` 876 passed / 541 skipped（`/tmp/ear-p5-default.log`）为此前历史结果。此前各定向组（history、execution、scheduler、management、reconfiguration、consumers、completion 等）互有重叠，**不能相加**。
@@ -273,19 +280,36 @@ P4：①侧规则集合守护（f747e89，schema revision 9）与重判完成记
 
 ### 提交更新与存储切片部署（本分支已实现，提交状态以提交历史为准）
 
-- 提交：P5 已提交 9705b61（上文 P5 节中的“待提交”“修正后未重新完整运行”是当时状态，已过时，该节历史数字不改）；②适配器经合并提交 84f20fe 同步；部署切片已在本分支实现，提交状态以提交历史为准。其后的三开启本地完整运行（见下）无失败，覆盖了该测试修正。远程 CI 尚未运行，合并前人工审核（负责人兼 I）尚未进行。
-- 部署切片（本分支已实现，提交状态以提交历史为准；**未合并、无生产启动**）：`deploy/compose.yaml`、`.env.example`、`Dockerfile`、`runtime.py`、`postgres-init.sh`、`nats.conf`；服务端 `health.py`（`HealthProbe` 只读 ready、`WorkerHealth` 最近成功轮询）、`deployment.py`（`init_identities` 只写 `deploy/.env` 或容器身份路径，0600、原子发布、不重签）、`cli.py` 与 `http.py` 改动；测试 `test_deployment.py`、`test_deployment_hardening.py`、`test_plugin_chain_e2e.py`；备份工具 `tools/storage_backup.py` 与 `tests/test_storage_backup{,_real}.py`。操作流程、健康差别、故障检查与卷保留见[隔离部署指南](deployment.md)。
+- 提交：P5 已提交 9705b61（上文 P5 节中的“待提交”“修正后未重新完整运行”是当时状态，已过时，该节历史数字不改）；②适配器经合并提交 84f20fe 同步；部署切片已在本分支实现，提交状态以提交历史为准。其后的三开启本地完整运行（见下）无失败，覆盖了该测试修正。（当时状态；PR8 已合并、远程 CI 已通过，见上方“当前状态”。）
+- 部署切片（本分支已实现，提交状态以提交历史为准；**已随 PR8 合入 dev、无生产启动**）：`deploy/compose.yaml`、`.env.example`、`Dockerfile`、`runtime.py`、`postgres-init.sh`、`nats.conf`；服务端 `health.py`（`HealthProbe` 只读 ready、`WorkerHealth` 最近成功轮询）、`deployment.py`（`init_identities` 只写 `deploy/.env` 或容器身份路径，0600、原子发布、不重签）、`cli.py` 与 `http.py` 改动；测试 `test_deployment.py`、`test_deployment_hardening.py`、`test_plugin_chain_e2e.py`；备份工具 `tools/storage_backup.py` 与 `tests/test_storage_backup{,_real}.py`。操作流程、健康差别、故障检查与卷保留见[隔离部署指南](deployment.md)。
 - 验证：容器冒烟 `/tmp/ear-storage-final-smoke.log`（`.exit` 0）16 项 PASS，结束时清理随机名项目；插件链 `test_plugin_chain_e2e.py` 2 passed，使用**固定⑤测试驱动**，不是⑤真实调度；二者结果不变。
 - 备份/恢复（新版，隔离环境）：真实往返与五种真实同名竞争通过——`/tmp/ear-final-race-84lx9T/real.log` 为 1 passed in 100.61 s，汇总 `/tmp/ear-final-race-close.json`（`roundtrip.phase=passed`、`production_touched=false`、`cleanupFailures=[]`）；PostgreSQL、NATS、身份与数据库数据校验通过。历史失败（`/tmp/ear-backup-main-final.log` exit 1，早于新版）已被取代，不是最新结果：根因定位为 Compose `create --no-recreate` 停止其他项目的容器（`systemd-repro` 复现项 exit 1，不是新版结果），现不再使用该命令。恢复只进独立的新项目，成功必须读取 JSON `.project` 并手动以该名字启动，`--start` 不接受，不在原目标项目执行 `up`；源需 `--allow-downtime`，备份必须可信（`--trust-backup`），manifest SHA-256 走独立渠道。仅隔离环境验证，**不是生产运行手册**，未生产使用。
 - 三开启本地完整运行 `/tmp/ear-repro-suite-ykxiUWmy/{pytest.log,exit}`（`EAR_RUN_POSTGRES_TESTS`、`EAR_RUN_NATS_TESTS`、`EAR_RUN_BACKUP_TESTS` 均为 1，`uv run pytest -q`）：已结束，`exit` 为 0，末行 **1503 passed, 5 skipped, 1 warning in 890.20s (0:14:50)**；同目录 `static.exit` 为 0（pyright 0 errors，文档检查通过）。5 个 skip 均为 `memory` 参数、原因 `requires authenticated PostgreSQL`，与既有 `test_causality_context_guard.py` 的三处 skip 一致；日志只有汇总行，未逐项列出。对应运行时本分支的工作区（运行开始后无非 Markdown 文件被修改）。这是本地一次运行，不替代远程 CI 与负责人兼 I 的人工审核，不是生产验收。
-- 未做：⑥管理页对接、⑤实际调度对接、保留/清理（流容量、幂等回执、snapshot 清理调度、退役资源）、备份文件的保留与删除（工具不提供）、升级迁移与管理员 token 交付流程；合并前审核（负责人兼 I）未进行；远程 CI 未运行（本地三开启完整运行已通过，不能替代）。
+- 未做（当时状态，现状见文末“⑥⑦ 与①的真实边界”）：⑥管理页对接、⑤实际调度对接、保留/清理（流容量、幂等回执、snapshot 清理调度、退役资源）、备份文件的保留与删除（工具不提供）、升级迁移与管理员 token 交付流程；生产验收未做（PR8 已合并、远程 CI 已通过，见“当前状态”，但不是生产验收）。
 
 ### 运维交接（备份/恢复，简短）
 
 - 隔离环境验证，未生产、未合并；详见[隔离部署指南](deployment.md)第 8 节。
 - 备份：`--project` + `--allow-downtime`（停源的应用与 NATS）。恢复：只进独立新项目；备份必须可信（`--trust-backup`），manifest SHA-256 经独立渠道传入 `--trusted-manifest-sha256`；成功必须读 JSON `.project` 并手动以该名启动，`--start` 不接受；不在原目标项目执行 `up`。
 - `deploy/.env` 只许新建（noclobber），已存在即停止。
-- 三开启本地完整运行：已结束，exit 为 0，1503 passed / 5 skipped（5 个需要认证 PostgreSQL 的 `memory` 参数 skip，见上）；仍需远程 CI 与人工审核，不是生产验收。
-- 其余未做（保留/清理、⑥管理页与⑤实际调度对接等）不因备份通过而改变。
+- 三开启本地完整运行：已结束，exit 为 0，1503 passed / 5 skipped（5 个需要认证 PostgreSQL 的 `memory` 参数 skip，见上）；该配置随后已在 dev 的远程 CI 通过（583.04s），仍不是生产验收。
+- 其余未做（保留/清理、⑤实际调度对接，以及⑥ 页面与真实①的浏览器联调等）不因备份通过而改变；⑥⑦ 现状见下一节。
+
+### ⑥⑦ 与①的真实边界（`api/gateway-mvp` 功能分支，待合并，基线 dev 376294d；以本节和“当前状态”为准）
+
+- **性质**：⑥（`services/api`）与⑦（`services/llm_gateway`）是**部分交付、待审**，不是完整 MVP，也不属于①切片的验证；代码在功能分支 `api/gateway-mvp`，待合并，尚未合入 dev。上文各节里“缺：⑥管理页对接/管理页面”“未做：⑥管理页的恢复/补处理选择”等措辞是写下时的状态，保留原文作为历史；⑥ 页面现已在 `services/api` 实现（功能分支待合并）。
+- **①侧新入口（功能分支待合并，不在 dev 376294d）**：`GET /v1/management/plugins`、`POST /v1/llm/preflight`、`POST /v1/llm/call-id-check` 及 SDK，规则见[接口说明](interface.md)。旧①缺这些入口时，⑦ 对相应调用失败关闭（503），不回退普通读取。
+- **验证边界**：
+
+| 检查 | 结果 | 不能说明什么 |
+|---|---|---|
+| 真实 Chromium 对 `create_app` + 回环**内存假①** | 34 项通过 | 不是真实①：没有真实管理处理器、PostgreSQL、NATS |
+| `test_api_gateway_integration`（真实回环①/⑥/⑦ + 隔离 PostgreSQL，NATS 开关开启，合成 provider；12:07） | 26 passed（与 `test_llm_preflight` 47 passed/6 skipped 合计 73 passed/6 skipped） | 只覆盖 API/网关 HTTP 层；管理处理步骤由测试显式驱动；不含浏览器、⑤调度、真实模型/Octopus、生产 |
+| 全套·当前（`/tmp/ear-67-full-v2.log`，14:09 起、14:26 结束，四个开关全开） | 退出 0：2067 passed、11 skipped、2 warnings、1001.65 秒 | 合成/隔离环境；11 个跳过为需要认证 PostgreSQL 的 `test_causality_context_guard.py` ×5、`test_llm_preflight.py` ×6；不是生产验收 |
+| 静态检查·当前（`/tmp/ear-67-static-final.log`，14:36） | 退出 0：ruff check/format --check、pyright、uv lock --check、check_docs（含 `--base origin/dev`）、git diff --check、Node UI 测试 | 只是静态检查 |
+| 全套·历史失败（保留，12:35） | 3 failed、2058 passed、11 skipped（部署烟测缺镜像变量 ×2；旧 storage 镜像入口文件权限 ×1） | 未通过；已按根因修复，并由上面 14:26 的全套重跑取代 |
+| 静态检查·历史失败（保留，`/tmp/ear-67-static-v2.log`，14:26） | 退出 1：`ruff format --check` 要求重排 ⑦ README 的 Python 示例代码块，其后各项当次未运行 | 仅格式；已修复，14:36 整条链重跑退出 0 |
+
+- **仍未做**：真实浏览器↔真实①的页面联调；⑥⑤① 之间历史补处理的联调（⑤调度未实现）；⑥ 外部动作执行/确认/风险重试（HTTP 501，缺④协议）；⑦ 真实模型调用与 Octopus 生产 wire 验证（只有合成回放）；③④⑤和插件接入网关；⑦ 正文保留期；生产部署。
 
 未完成项不得因文档检查通过而标为完成；进度更新必须对应实际提交和测试结果。

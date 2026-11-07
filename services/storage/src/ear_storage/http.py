@@ -21,6 +21,7 @@ from ear_storage_client.consumer_wire import (
     ReplayCommand,
 )
 from ear_storage_client.engine import canonical_json
+from ear_storage_client.preflight import LLMCallPreflight
 from ear_storage_client.remote_errors import DeliveryExpired
 from ear_storage_client.wire import (
     SnapshotRequest,
@@ -176,6 +177,39 @@ def create_app(
         value = client.registry
         return json_response(
             {"codec": 1, "registry": value.to_json(), "core_types": sorted(value.core_types)}
+        )
+
+    @app.post("/v1/llm/call-id-check")
+    def llm_call_id_check(request: Request):
+        _token, client, module = authenticated(request)
+        if module != "llm_gateway":
+            raise PermissionDenied("access denied")
+        body = load_json(request.scope["ear.body"])
+        if not isinstance(body, dict) or set(body) != {"call_id"} or not is_id(body["call_id"]):
+            raise InvalidRequest("invalid call id check")
+        return json_response({"occupied": client.call_id_occupied(body["call_id"])})
+
+    @app.post("/v1/llm/preflight")
+    def llm_preflight(request: Request):
+        _token, client, _module = authenticated(request)
+        call = LLMCallPreflight.model_validate(load_json(request.scope["ear.body"]))
+        return json_response(client.preflight_llm_call(call).model_dump(mode="json"))
+
+    @app.get("/v1/management/plugins")
+    def plugin_directory(request: Request):
+        _token, client, _module = authenticated(request)
+        pairs = list(request.query_params.multi_items())
+        values = dict(pairs)
+        if len(pairs) != len(values) or not set(values) <= {"limit", "after"}:
+            raise InvalidRequest("invalid directory pagination")
+        raw_limit = values.get("limit", "50")
+        if re.fullmatch(r"[0-9]{1,3}", raw_limit) is None:
+            raise InvalidRequest("invalid directory pagination")
+        return json_response(
+            {
+                "codec": 1,
+                **client.list_plugin_directory(limit=int(raw_limit), after=values.get("after", "")),
+            }
         )
 
     @app.post("/v1/management/requests")
