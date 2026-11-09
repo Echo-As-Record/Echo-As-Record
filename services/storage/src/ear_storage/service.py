@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import replace
@@ -45,6 +46,7 @@ from ear_storage_client import (
     WriteOp,
     WriteResult,
 )
+from ear_storage_client.preflight import LLMCallPreflight, validate_preflight
 from ear_storage_client.queries import DependencySet, Page, StaleDependency
 from ear_storage_client.results import Conflict
 
@@ -357,6 +359,134 @@ class AuthenticatedClient(AuthorizedReaderMethods):
                 if principal.module in modules
             }
             return Registry(types, publishers, registry.core_types & frozenset(types))
+
+    def list_plugin_directory(self, *, limit: int = 50, after: str = "") -> dict[str, Any]:
+        """Read-only control plane, independent of business registry/read grants.
+
+        Authenticate and recheck the current API admin under the same admission
+        gate as every SELECT. Never submit status feedback or prepare resources.
+        """
+        from ear_storage.management import _status, require_admin
+
+        with self._session() as (conn, principal, _reader):
+            require_admin(principal)
+            if (
+                type(limit) is not int
+                or not 1 <= limit <= 100
+                or not isinstance(after, str)
+                or (after and re.fullmatch(r"[a-z][a-z0-9_]{0,54}", after) is None)
+            ):
+                raise InvalidRequest("invalid directory pagination")
+            rows = conn.execute(
+                'SELECT module FROM storage.module_lifecycle WHERE module COLLATE "C" > %s '
+                'ORDER BY module COLLATE "C" LIMIT %s',
+                (after, limit + 1),
+            ).fetchall()
+            items = []
+            for (module,) in rows[:limit]:
+                # Project only registration metadata, never arbitrary spec extensions.
+                types = conn.execute(
+                    "SELECT name,spec_text::jsonb->>'kind',"
+                    "COALESCE((spec_text::jsonb->>'supports_reevaluation')::boolean,false),"
+                    "COALESCE((spec_text::jsonb->>'requires_dependencies')::boolean,false) "
+                    "FROM storage.registry WHERE NOT is_core "
+                    "AND spec_text::jsonb->>'writer'=%s ORDER BY name LIMIT 129",
+                    (module,),
+                ).fetchall()
+                if len(types) > 128:
+                    raise ProjectionLimit("plugin directory type limit")
+                state = _status(conn, module)
+                if max(len(state["read_types"]), len(state["subscribe_types"])) > 512:
+                    raise ProjectionLimit("plugin directory permission limit")
+                items.append(
+                    {
+                        "module": module,
+                        "types": [
+                            dict(
+                                zip(
+                                    (
+                                        "name",
+                                        "kind",
+                                        "supports_reevaluation",
+                                        "requires_dependencies",
+                                    ),
+                                    row,
+                                    strict=True,
+                                )
+                            )
+                            for row in types
+                        ],
+                        **{
+                            key: state[key]
+                            for key in (
+                                "enabled",
+                                "resources_ready",
+                                "ever_enabled",
+                                "revision",
+                                "need_recovery_decision",
+                                "online",
+                                "read_types",
+                                "subscribe_types",
+                            )
+                        },
+                        "status_source": "storage_management",
+                    }
+                )
+            result = {
+                "items": items,
+                "next_after": rows[limit - 1][0] if len(rows) > limit else None,
+            }
+            if len(json.dumps(result).encode()) > 2 * 1024 * 1024:
+                raise ProjectionLimit("plugin directory response limit; request a smaller page")
+            return result
+
+    def call_id_occupied(self, call_id: str) -> bool:
+        """Only the audit writer may check global IDs, without reading object payloads.
+
+        Live authentication/lifecycle and the identity lookup share the admission gate.
+        This is point-in-time only; it does not reserve an ID across provider execution.
+        """
+        if not is_id(call_id):
+            raise InvalidRequest("invalid call id")
+        with self._session() as (conn, principal, _reader):
+            if principal.module != "llm_gateway":
+                raise PermissionDenied("access denied")
+            return (
+                conn.execute("SELECT 1 FROM storage.identity WHERE id=%s", (call_id,)).fetchone()
+                is not None
+            )
+
+    def preflight_llm_call(self, call: LLMCallPreflight) -> LLMCallPreflight:
+        call = LLMCallPreflight.model_validate(call.model_dump())
+        # Unlike _read, this path NEVER reconciles management state or creates a lease.
+        # Authentication, enabled lifecycle, grants and committed request share the gate.
+        with self._session() as (conn, principal, reader):
+            if call.caller_module != principal.module:
+                raise PermissionDenied("access denied")
+            registry = registry_from_db(conn)
+            row = conn.execute(
+                "SELECT event_text FROM storage.outbox WHERE event_id=%s",
+                (call.request_event_id,),
+            ).fetchone()
+            event = EVENT_ADAPTER.validate_json(row[0]) if row else None
+            request = event if isinstance(event, ReevaluationRequested) else None
+
+            def authorized_record(id: str, version: int | None = None) -> Record | None:
+                # Check actual types too, not merely caller-declared cause types.
+                principal.require_read(reader.record_types([id]).values())
+                record = reader.get(id) if version is None else reader.get_version(id, version)
+                principal.require_read(record_input_types(record, registry))
+                return record
+
+            return validate_preflight(
+                call,
+                module=principal.module,
+                registry=registry,
+                request=request,
+                get=authorized_record,
+                get_version=authorized_record,
+                require_read=principal.require_read,
+            )
 
     def _read(self, method: str, *args: Any, **kwargs: Any) -> Any:
         with self._session() as (conn, principal, reader):

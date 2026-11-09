@@ -26,7 +26,6 @@ from ear_contracts import (
     Registry,
     SemanticRecord,
     SystemRecord,
-    TracedCause,
     UnknownDataTypeError,
     VersionRef,
     new_id,
@@ -50,6 +49,7 @@ from ear_storage_client.ops import (
     Update,
     WriteOp,
 )
+from ear_storage_client.preflight import canonical_call_causes, validate_cause
 from ear_storage_client.queries import DependencySet
 from ear_storage_client.results import Conflict, ConflictReason, OpResult
 
@@ -772,29 +772,15 @@ class Transaction:
                 self.invalid("call request differs from write context")
             if any(t not in call.additional_causes for t in self.context.additional_causes):
                 self.invalid("call must retain write origins")
-            traces = list(call.additional_causes)
-            if call.request_event_id is not None:
-                request = self.initial_requests.get(call.request_event_id)
-                if request is None:
-                    self.invalid("call requires a committed reevaluation request")
-                if (call.root_feedback_id, call.depth) != (
-                    request.root_feedback_id,
-                    request.depth,
-                ) or any(t not in traces for t in request.additional_causes):
-                    self.invalid("call must retain request root/depth and all origins")
-                if call.started_at < request.occurred_at:
-                    self.invalid("call predates request")
-                # Persist primary cause too: ordinary reads need no outbox join and
-                # cannot leak its source ID after that source's grant is revoked.
-                primary = TracedCause(
-                    cause=request.cause,
-                    root_feedback_id=request.root_feedback_id,
-                    depth=request.depth,
-                )
-                if primary not in traces:
-                    traces.append(primary)
-            for trace in traces:
-                self.validate_cause(trace.cause)
+            traces = canonical_call_causes(
+                request_event_id=call.request_event_id,
+                root_feedback_id=call.root_feedback_id,
+                depth=call.depth,
+                started_at=call.started_at,
+                additional_causes=call.additional_causes,
+                request=self.initial_requests.get(call.request_event_id or ""),
+                get_version=self.s.version,
+            )
             call = _build(LLMCallRecord, **{**call.model_dump(), "additional_causes": traces})
             payload = call.model_dump(mode="json")
             # Absent/null bodies do not change legacy metadata canonicalization.
@@ -885,14 +871,7 @@ class Transaction:
         self.result("written", op.data_type, op.id, current.revision + 1, current.revision)
 
     def validate_cause(self, cause: Cause) -> None:
-        if cause.model_extra:
-            self.invalid("unknown causal write fields")
-        for version in (cause.old_version, cause.new_version):
-            if version is None:
-                continue
-            record = self.s.version(cause.data_id, version)
-            if record is None or record.data_type != cause.data_type:
-                self.invalid("cause must reference an actual typed version")
+        validate_cause(cause, self.s.version)
 
     def publish(self, op: PublishReevaluation) -> None:
         if self.module not in self.registry.publishers_of("reevaluation_requested"):

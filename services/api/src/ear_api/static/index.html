@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex">
+  <title>Ear 插件管理</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="page-head">
+    <h1>Ear 插件管理</h1>
+    <p class="lead">管理员对插件的登记、授权、启停、凭据与历史补处理。本页只提交请求并如实显示①的结果，不安装、不启动、不监控插件程序。</p>
+  </header>
+
+  <main>
+    <section class="panel" aria-labelledby="connect-title">
+      <h2 id="connect-title">连接</h2>
+      <form id="connect-form" autocomplete="off">
+        <label for="token-input">API 令牌（Bearer，43 位）</label>
+        <div class="row">
+          <input id="token-input" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="64" placeholder="粘贴后点“连接”">
+          <button id="connect-btn" type="submit" class="primary">连接</button>
+          <button id="disconnect-btn" type="button" hidden>断开并清除</button>
+        </div>
+      </form>
+      <p id="session-info" class="meta" role="status">未连接。</p>
+      <p class="meta">令牌只保存在本页内存里：不写入浏览器存储、地址栏或日志，刷新或关闭页面即丢失。页面显示的角色来自网关部署配置，最终授权由①逐次复核。</p>
+    </section>
+
+    <div id="banner" class="banner" hidden></div>
+    <p id="live-status" class="live" role="status" aria-live="polite"></p>
+
+    <section id="user-panel" class="panel" hidden>
+      <h2>没有管理权限</h2>
+      <p>这个令牌是普通用户令牌，不能管理插件。本页不会向管理接口发送任何请求；请换用管理员令牌重新连接。</p>
+    </section>
+
+    <section id="claim-panel" class="panel claim" hidden aria-labelledby="claim-title">
+      <h2 id="claim-title">新凭据（只显示这一次）</h2>
+      <p class="warn-text">请现在就保存到安全的地方。关闭后无法找回，只能重新“更换凭据”。令牌不会被写入存储或日志，约 5 分钟后本页也会自动清除。</p>
+      <dl class="facts">
+        <dt>身份 ID</dt><dd><code id="claim-principal"></code></dd>
+        <dt>令牌</dt><dd><code id="claim-token" tabindex="0"></code></dd>
+      </dl>
+      <div class="row">
+        <button id="claim-copy" type="button">复制令牌</button>
+        <button id="claim-dismiss" type="button" class="primary">我已保存，清除显示</button>
+      </div>
+      <p id="claim-copy-note" class="meta" role="status"></p>
+    </section>
+
+    <div id="admin-area" hidden>
+      <section class="panel" aria-labelledby="plugins-title">
+        <div class="section-head">
+          <h2 id="plugins-title">已登记的插件</h2>
+          <button id="plugins-refresh" type="button">刷新列表</button>
+        </div>
+        <p class="meta">列表只含①登记表里的类型。“配置状态”来自你本页看到的最近一次管理结果快照；“进程在线”没有可信来源，始终显示未知。</p>
+        <p id="plugins-empty" class="meta" hidden>没有读到已登记的插件。</p>
+        <div id="plugins-list" class="cards"></div>
+        <button id="plugins-more" type="button" hidden>加载更多</button>
+      </section>
+
+      <section class="panel" aria-labelledby="action-title">
+        <h2 id="action-title">提交管理请求</h2>
+        <form id="action-form" autocomplete="off" novalidate>
+          <div class="grid">
+            <div>
+              <label for="action-select">操作</label>
+              <select id="action-select"></select>
+            </div>
+            <div>
+              <label for="module-input">模块名</label>
+              <input id="module-input" type="text" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="55" placeholder="例如 demo">
+            </div>
+          </div>
+          <p id="action-help" class="meta"></p>
+
+          <fieldset id="fs-register" hidden>
+            <legend>类型声明（登记后由①持久保存）</legend>
+            <p class="meta">每个类型名必须以“模块名_”开头。“需要依赖/支持重判”只适用于 semantic 或 rule。</p>
+            <div id="types-rows"></div>
+            <button id="add-type" type="button">添加类型</button>
+          </fieldset>
+
+          <fieldset id="fs-permissions" hidden>
+            <legend>批准的权限（整体替换，不是追加）</legend>
+            <label for="read-types">读取类型（空白、逗号或分号分隔）</label>
+            <textarea id="read-types" rows="2" spellcheck="false"></textarea>
+            <label for="subscribe-types">订阅类型（必须是读取类型的子集）</label>
+            <textarea id="subscribe-types" rows="2" spellcheck="false"></textarea>
+          </fieldset>
+
+          <fieldset id="fs-resume" hidden>
+            <legend>恢复选择（可选；停用期间有错过的变化时使用）</legend>
+            <label class="inline"><input id="resume-include" type="checkbox"> 附带恢复选择</label>
+            <div class="row">
+              <label class="inline"><input id="resume-catch-up" type="radio" name="resume-choice"> 补处理（catch_up）</label>
+              <label class="inline"><input id="resume-skip" type="radio" name="resume-choice"> 跳过（skip）</label>
+            </div>
+            <label for="resume-revision">依据的模块修订号（expected_revision）</label>
+            <input id="resume-revision" type="text" inputmode="numeric" autocomplete="off" maxlength="10">
+            <p id="resume-hint" class="meta"></p>
+          </fieldset>
+
+          <fieldset id="fs-history" hidden>
+            <legend>历史补处理范围（必须明确填写，没有默认值）</legend>
+            <label for="range-zone">按哪个时区理解下面的时间</label>
+            <select id="range-zone">
+              <option value="utc">UTC</option>
+              <option value="local">本机时区</option>
+            </select>
+            <div class="grid">
+              <div>
+                <label for="range-start">开始（含）</label>
+                <input id="range-start" type="datetime-local" step="1">
+              </div>
+              <div>
+                <label for="range-end">结束（不含）</label>
+                <input id="range-end" type="datetime-local" step="1">
+              </div>
+            </div>
+            <p id="range-preview" class="meta" role="status"></p>
+            <label for="input-types">输入类型（必须在该插件已批准的读取范围内）</label>
+            <textarea id="input-types" rows="2" spellcheck="false"></textarea>
+            <button id="fill-input-types" type="button">填入最近已知的读取权限</button>
+          </fieldset>
+
+          <fieldset id="fs-retry" hidden>
+            <legend>重试任务</legend>
+            <label for="retry-target">原任务的反馈 ID</label>
+            <input id="retry-target" type="text" autocomplete="off" spellcheck="false" maxlength="36">
+            <p class="meta">也可以在下面的任务卡片里，对“需要恢复”的失败任务直接点“重试任务”。</p>
+          </fieldset>
+
+          <ul id="form-errors" class="messages error-list" hidden></ul>
+          <ul id="form-warnings" class="messages warn-list" hidden></ul>
+
+          <div class="row">
+            <button id="submit-btn" type="submit" class="primary">检查并提交</button>
+          </div>
+          <p id="submit-note" class="meta" role="status"></p>
+        </form>
+      </section>
+
+      <section class="panel" aria-labelledby="tasks-title">
+        <div class="section-head">
+          <h2 id="tasks-title">管理任务与结果</h2>
+          <button id="tasks-refresh" type="button">刷新任务</button>
+        </div>
+        <p class="meta">“已受理”只表示请求排队，不是“已生效”。进行中的任务会自动刷新，次数有上限，到限后请手动刷新。</p>
+        <label for="tasks-module">只看某个模块（可空）</label>
+        <input id="tasks-module" type="text" autocomplete="off" spellcheck="false" maxlength="55">
+        <p id="tasks-empty" class="meta" hidden>没有读到管理任务。</p>
+        <div id="tasks-list" class="cards"></div>
+        <button id="tasks-more" type="button" hidden>加载更多</button>
+      </section>
+    </div>
+  </main>
+
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title">
+    <h2 id="confirm-title"></h2>
+    <dl id="confirm-summary" class="facts"></dl>
+    <ul id="confirm-notes" class="notes"></ul>
+    <div id="confirm-ack-row" hidden>
+      <label class="inline"><input id="confirm-ack" type="checkbox"> <span id="confirm-ack-text"></span></label>
+    </div>
+    <div id="confirm-type-row" hidden>
+      <label id="confirm-type-label" for="confirm-type"></label>
+      <input id="confirm-type" type="text" autocomplete="off" spellcheck="false" maxlength="64">
+    </div>
+    <div class="row">
+      <button id="confirm-cancel" type="button">取消</button>
+      <button id="confirm-ok" type="button" class="primary" disabled>确认提交</button>
+    </div>
+  </dialog>
+
+  <script src="core.js" defer></script>
+  <script src="app.js" defer></script>
+</body>
+</html>

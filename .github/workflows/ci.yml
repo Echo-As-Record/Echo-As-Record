@@ -19,6 +19,14 @@ jobs:
 
       - uses: astral-sh/setup-uv@v10.3.3
 
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Plugin management UI tests
+        run: node --test services/api/tests/ui/core.test.js services/api/tests/ui/page.test.js
+
       - name: Install
         run: uv sync --locked
 
@@ -45,11 +53,20 @@ jobs:
           docker pull python:3.12-alpine
           docker build -f deploy/Dockerfile -t "$EAR_TEST_BACKUP_IMAGE" .
 
-      - name: Tests (including real PostgreSQL, NATS and backup roundtrip)
+      - name: Prepare isolated API and gateway images
+        run: |
+          docker build -f deploy/Dockerfile.api -t "ear-api:ci-${{ github.sha }}" .
+          docker build -f deploy/Dockerfile.gateway -t "ear-gateway:ci-${{ github.sha }}" .
+
+      - name: Tests (including real PostgreSQL, NATS, backup and API-gateway containers)
         env:
           EAR_RUN_POSTGRES_TESTS: "1"
           EAR_RUN_NATS_TESTS: "1"
           EAR_RUN_BACKUP_TESTS: "1"
+          EAR_RUN_API_GATEWAY_DEPLOY_TESTS: "1"
+          EAR_STORAGE_TEST_IMAGE: ear-storage:ci-${{ github.sha }}
+          EAR_API_TEST_IMAGE: ear-api:ci-${{ github.sha }}
+          EAR_GATEWAY_TEST_IMAGE: ear-gateway:ci-${{ github.sha }}
           EAR_TEST_BACKUP_IMAGE: ear-storage:ci-${{ github.sha }}
         run: uv run pytest -q
 

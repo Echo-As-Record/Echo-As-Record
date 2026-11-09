@@ -1,0 +1,79 @@
+# Opt-in overlay only: docker compose -f deploy/compose.yaml -f deploy/compose.api-gateway.yaml --profile api-gateway ...
+# No automatic migrate/bootstrap/grants. Provision identities/grants separately via reviewed operator actions.
+# API secret JSON: storage_url, bindings, public_origin; set execution_journal=/state/execution.sqlite3 if needed.
+# Bundled /plugins/ is served by default. public_origin must match the actual browser origin.
+# Gateway JSON: storage_url, aliases, octopus={origin, models, service}.
+# Default factory is ear_llm_gateway.octopus:create_provider (built into the image).
+# Built-in adapter: also pass -f deploy/compose.gateway-octopus.yaml and EAR_OCTOPUS_TOKEN_FILE.
+# Custom factory: set provider_factory; optionally add compose.gateway-provider.yaml.
+# Never put an Octopus token in JSON or Compose environment; use the protected secret file.
+# Fresh named volumes copy UID 10001/mode 0700 from /state; existing volumes are NOT repaired.
+# All credential files must already be UID 10001, mode 0600; local Compose preserves host file permissions.
+# Do not print resolved secret files, environment, or use down -v for recovery.
+services:
+  api:
+    profiles: [api-gateway]
+    image: ${EAR_API_IMAGE:-ear-api:local}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    user: "10001:10001"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ['/tmp:size=16m,noexec,nosuid']
+    mem_limit: 256m
+    cpus: 1.0
+    pids_limit: 128
+    stop_grace_period: 40s
+    networks: [frontend]
+    ports: ['127.0.0.1:${EAR_API_PORT:-8086}:8086']
+    secrets:
+      - source: api_config
+        target: api-config.json
+    volumes: [api_execution:/state]
+    depends_on:
+      storage:
+        condition: service_healthy
+  gateway:
+    profiles: [api-gateway]
+    image: ${EAR_GATEWAY_IMAGE:-ear-gateway:local}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.gateway
+    user: "10001:10001"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ['/tmp:size=16m,noexec,nosuid']
+    mem_limit: 256m
+    cpus: 1.0
+    pids_limit: 128
+    stop_grace_period: 40s
+    networks: [frontend]
+    # Internal service only; never publish a model gateway by default.
+    secrets:
+      - source: gateway_config
+        target: gateway-config.json
+      - source: gateway_storage_token
+        target: gateway-storage-token
+    volumes:
+      - gateway_journal:/state
+    depends_on:
+      storage:
+        condition: service_healthy
+    # Journal flock enforces one owner, not multi-replica failover.
+    deploy:
+      replicas: 1
+secrets:
+  api_config:
+    file: ${EAR_API_CONFIG_FILE:?Explicit protected API config required}
+  gateway_config:
+    file: ${EAR_GATEWAY_CONFIG_FILE:?Explicit protected gateway config required}
+  gateway_storage_token:
+    file: ${EAR_GATEWAY_STORAGE_TOKEN_FILE:?Explicit protected gateway writer token required}
+volumes:
+  api_execution:
+  gateway_journal:

@@ -1,0 +1,10 @@
+# Optional trusted custom-provider code, only when explicitly selected in gateway JSON.
+services:
+  gateway:
+    volumes:
+      - type: bind
+        source: ${EAR_GATEWAY_PROVIDER_DIR:?Explicit trusted provider directory required}
+        target: /opt/ear/provider
+        read_only: true
+        bind:
+          create_host_path: false
