@@ -21,6 +21,7 @@ based-on: README.md；docs/README.md；本轮已确认设计v1.2；代码基线o
 | 当前SDK用法 | [工程指南](../services/storage/ai-docs/interface.md) |
 | ①代码差距 | [状态记录](../services/storage/ai-docs/progress.md) |
 | ②实现、导入规则与验收 | [实现说明](../services/adapters/ai-docs/implementation.md)、[payload 字段](../services/adapters/ai-docs/payloads.md) |
+| Codex 基线实验（非产品） | [实现说明](../experiments/codex_baselines/ai-docs/implementation.md) |
 | 全局契约/实施顺序 | [实施计划](plans/mvp-implementation.md) |
 | 原结构提案 | [历史参考](proposals/module-internal-structure.md)，已superseded，不照搬旧API与职责 |
 | 原依赖提案 | [历史来源](../docs/proposals/dependency-refinement.md)，最终以设计及确认索引为准 |

@@ -32,6 +32,7 @@ reviewed-at: 2026-10-30
 | `libs/` | 共享库（SDK 等） |
 | `fixtures/` | 合成的假数据 |
 | `tests/` | 仓库级测试；`tests/e2e/` 为端到端 8 步流程 |
+| `experiments/` | 研究用的对照实验，不是产品模块（如 [Codex 基线](experiments/codex_baselines/README.md)） |
 | `deploy/` | docker compose 与环境变量模板 |
 | `tools/` | 仓库工具（如文档结构与链接检查） |
 

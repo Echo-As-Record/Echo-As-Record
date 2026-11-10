@@ -8,6 +8,7 @@ dependencies = []
 [dependency-groups]
 dev = [
     "ear-adapter",
+    "ear-baselines",
     "ear-extraction",
     "ear-contracts",
     "ear-storage-client",
@@ -24,10 +25,17 @@ package = false
 
 [tool.uv.workspace]
 # 新建模块包时加到这里。
-members = ["libs/ear_contracts", "libs/ear_storage_client", "services/adapters", "services/extraction"]
+members = [
+    "libs/ear_contracts",
+    "libs/ear_storage_client",
+    "services/adapters",
+    "services/extraction",
+    "experiments/codex_baselines",
+]
 
 [tool.uv.sources]
 ear-adapter = { workspace = true }
+ear-baselines = { workspace = true }
 ear-extraction = { workspace = true }
 ear-contracts = { workspace = true }
 ear-storage-client = { workspace = true }
@@ -48,8 +56,14 @@ venv = ".venv"
 extraPaths = ["tools"]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
-include = ["tools", "tests", "libs", "services/adapters", "services/extraction"]
+include = ["tools", "tests", "libs", "services/adapters", "services/extraction", "experiments/codex_baselines"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "libs", "services/adapters/tests", "services/extraction/tests"]
+testpaths = [
+    "tests",
+    "libs",
+    "services/adapters/tests",
+    "services/extraction/tests",
+    "experiments/codex_baselines/tests",
+]
 addopts = ["--import-mode=importlib"]

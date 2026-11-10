@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 [manifest]
 members = [
     "ear-adapter",
+    "ear-baselines",
     "ear-contracts",
     "ear-extraction",
     "ear-storage-client",
@@ -109,6 +110,21 @@ requires-dist = [
 ]
 
 [[package]]
+name = "ear-baselines"
+version = "0.1.0"
+source = { editable = "experiments/codex_baselines" }
+dependencies = [
+    { name = "ear-adapter" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "ear-adapter", editable = "services/adapters" },
+    { name = "pydantic", specifier = ">=2.9" },
+]
+
+[[package]]
 name = "ear-contracts"
 version = "0.1.0"
 source = { editable = "libs/ear_contracts" }
@@ -155,6 +171,7 @@ source = { virtual = "." }
 [package.dev-dependencies]
 dev = [
     { name = "ear-adapter" },
+    { name = "ear-baselines" },
     { name = "ear-contracts" },
     { name = "ear-extraction" },
     { name = "ear-storage-client" },
@@ -170,6 +187,7 @@ dev = [
 [package.metadata.requires-dev]
 dev = [
     { name = "ear-adapter", editable = "services/adapters" },
+    { name = "ear-baselines", editable = "experiments/codex_baselines" },
     { name = "ear-contracts", editable = "libs/ear_contracts" },
     { name = "ear-extraction", editable = "services/extraction" },
     { name = "ear-storage-client", editable = "libs/ear_storage_client" },

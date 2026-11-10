@@ -1,0 +1,16 @@
+[project]
+name = "ear-baselines"
+version = "0.1.0"
+description = "实验：Codex 基线（A1 原始音频、A2 旧 Ear 结构化证据），与总线链路对比用。不是产品模块。"
+requires-python = ">=3.12"
+dependencies = ["ear-adapter", "pydantic>=2.9"]
+
+[project.scripts]
+ear-baselines = "ear_baselines.__main__:main"
+
+[tool.uv.sources]
+ear-adapter = { workspace = true }
+
+[build-system]
+requires = ["uv_build>=0.8,<0.14"]
+build-backend = "uv_build"
