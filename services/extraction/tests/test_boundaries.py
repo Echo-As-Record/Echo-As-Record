@@ -1,17 +1,22 @@
 """Ingress, timer and gateway boundary tests (no remote model calls)."""
 
+import json
 from datetime import timedelta
 from threading import Event
 
 import httpx
 import pytest
+from ear_contracts import is_id, new_id
 from ear_extraction.demo import DemoGateway, fixture, submit
 from ear_extraction.domain import Call, Command, Interval, Rule
-from ear_extraction.model_io import HttpGateway
-from ear_extraction.orchestration import ExtractionService
+from ear_extraction.model_io import SYSTEM, ModelGateway
+from ear_extraction.orchestration import ExtractionService, schedule_id
 from ear_extraction.worker import Schedule, serve, tick
+from ear_llm_gateway.client import GatewayClient
+from ear_llm_gateway.models import CallRequest, GatewayError
 from ear_storage_client import AppendRaw, Context, Query, iter_query
 from ear_storage_client.testing import make_raw, ts
+from pydantic import ValidationError
 
 
 def test_malformed_feedback_is_recorded_not_retried():
@@ -91,55 +96,140 @@ def test_rule_feedback_requires_version():
         Command(kind="rule_update", rule=Rule(scope="x", instruction="y"))
 
 
-def test_gateway_transport_preserves_attribution_and_schema(monkeypatch):
-    seen = []
-
-    def respond(request):
-        import json
-
-        seen.append(json.loads(request.content))
-        assert request.headers["Authorization"] == "Bearer test-only"
-        return httpx.Response(200, json={"output": {"rule_ids": []}})
-
-    real_client = httpx.Client
-    monkeypatch.setattr(
-        httpx,
-        "Client",
-        lambda **kwargs: real_client(**kwargs, transport=httpx.MockTransport(respond)),
-    )
-    call = Call(
+@pytest.fixture
+def gateway_call() -> Call:
+    return Call(
         root_feedback_id="system",
         depth=0,
-        run_id="synthetic-run",
+        run_id=new_id(),
         purpose="selection",
         data={"rules": []},
         output_schema={"type": "object"},
     )
-    result = HttpGateway("https://module-seven.invalid/invoke", "test-only").complete(call)
-    assert result == {"rule_ids": []}
-    assert seen[0]["module"] == "extraction"
-    assert seen[0]["root_feedback_id"] == "system"
-    assert seen[0]["output_schema"] == {"type": "object"}
-    assert "system" in seen[0]
 
 
-def test_gateway_does_not_hide_http_failures(monkeypatch):
-    real_client = httpx.Client
-    monkeypatch.setattr(
-        httpx,
-        "Client",
-        lambda **kwargs: real_client(
-            **kwargs, transport=httpx.MockTransport(lambda request: httpx.Response(403))
-        ),
-    )
-    with pytest.raises(httpx.HTTPStatusError):
-        HttpGateway("https://module-seven.invalid/invoke", "test-only").complete(
-            Call(
-                root_feedback_id="system",
-                depth=0,
-                run_id="test",
-                purpose="selection",
-                data={},
-                output_schema={},
-            )
+@pytest.mark.parametrize("scheduled", [False, True])
+def test_gateway_transport_preserves_attribution_and_schema(gateway_call: Call, scheduled):
+    if scheduled:
+        gateway_call = gateway_call.model_copy(
+            update={
+                "run_id": schedule_id(
+                    Interval(start=ts("2026-11-05T09:00:00Z"), end=ts("2026-11-05T10:00:00Z"))
+                )
+            }
         )
+    else:
+        gateway_call = gateway_call.model_copy(update={"root_feedback_id": new_id()})
+    seen: list[CallRequest] = []
+
+    def respond(request: httpx.Request):
+        assert request.method == "POST"
+        assert str(request.url) == "https://module-seven.invalid/v1/complete"
+        assert request.headers["Authorization"] == "Bearer " + "t" * 43
+        body = json.loads(request.content)
+        seen.append(CallRequest.model_validate(body))
+        for field, value in gateway_call.model_dump(mode="json").items():
+            assert body[field] == value
+        assert body["system"] == SYSTEM
+        assert body["model"] == "default"
+        assert is_id(body["call_id"])
+        return httpx.Response(200, json={"record_saved": True, "output": {"rule_ids": []}})
+
+    with GatewayClient(
+        "https://module-seven.invalid",
+        "t" * 43,
+        system=SYSTEM,
+        transport=httpx.MockTransport(respond),
+    ) as client:
+        gateway: ModelGateway = client  # pyright checks structural compatibility.
+        assert gateway.complete(gateway_call) == {"rule_ids": []}
+        assert gateway.complete(gateway_call) == {"rule_ids": []}
+    assert len(seen) == 2
+    assert seen[0].call_id != seen[1].call_id
+
+
+@pytest.mark.parametrize("status", [403, 307])
+def test_gateway_does_not_hide_http_failures_or_follow_redirects(gateway_call, status):
+    seen = []
+
+    def respond(request):
+        seen.append(request)
+        return httpx.Response(status, json={}, headers={"Location": "https://other.invalid"})
+
+    with (
+        GatewayClient(
+            "https://module-seven.invalid",
+            "t" * 43,
+            system=SYSTEM,
+            transport=httpx.MockTransport(respond),
+        ) as gateway,
+        pytest.raises(GatewayError, match="gateway_request_failed") as error,
+    ):
+        gateway.complete(gateway_call)
+    assert error.value.status == status
+    assert len(seen) == 1
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"output": {}},
+        {"record_saved": False, "output": {}},
+        {"record_saved": True, "output": []},
+        {"record_saved": True, "output": "text"},
+        {"record_saved": True, "output": None},
+        {"record_saved": True},
+    ],
+)
+def test_gateway_rejects_invalid_response(gateway_call, body):
+    with (
+        GatewayClient(
+            "https://module-seven.invalid",
+            "t" * 43,
+            system=SYSTEM,
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, json=body)),
+        ) as gateway,
+        pytest.raises(GatewayError, match="invalid_gateway_response") as error,
+    ):
+        gateway.complete(gateway_call)
+    assert error.value.status == 502
+
+
+def test_gateway_transport_failure_is_unknown_and_not_retried(gateway_call):
+    seen = []
+
+    def respond(request):
+        seen.append(request)
+        raise httpx.ReadTimeout("synthetic timeout", request=request)
+
+    with (
+        GatewayClient(
+            "https://module-seven.invalid",
+            "t" * 43,
+            system=SYSTEM,
+            transport=httpx.MockTransport(respond),
+        ) as gateway,
+        pytest.raises(GatewayError, match="gateway_outcome_unknown"),
+    ):
+        gateway.complete(gateway_call)
+    assert len(seen) == 1
+
+
+def test_gateway_rejects_invalid_run_id_before_transport(gateway_call):
+    seen = []
+
+    def respond(request):
+        seen.append(request)
+        return httpx.Response(200, json={"record_saved": True, "output": {}})
+
+    with (
+        GatewayClient(
+            "https://module-seven.invalid",
+            "t" * 43,
+            system=SYSTEM,
+            transport=httpx.MockTransport(respond),
+        ) as gateway,
+        pytest.raises(ValidationError, match="run_id"),
+    ):
+        gateway.complete(gateway_call.model_copy(update={"run_id": "synthetic-run"}))
+    assert not seen

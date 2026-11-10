@@ -26,7 +26,7 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 | `services/storage/` | 文档入口；P1 服务包 `ear_storage`（PostgreSQL、身份授权、snapshot、HTTP、CLI；d7c9919）；P2 `relay.py`、`consumers.py`（有序 Relay 与服务代理的持久消费者）与 P3 后端 `management.py`、`credentials.py`、`reconfiguration.py`（d0d8875，已随 PR8 合入 dev 376294d） | ⑥管理页与真实①的浏览器联调（页面已在⑥实现，功能分支待合并；真实浏览器 34 项仅对假①，API 层另有对真实①的 26 项集成测试，见第 6 节）、流保留/清理、生产部署（隔离 Compose 切片已实现，见[隔离部署指南](../../services/storage/ai-docs/deployment.md)） |
 | `services/adapters/` | ②：旧 Ear Evidence → 原始数据的转换、导入规则、内存试运行；命令行仍只写内存存储（`MemoryStorage`），未接入①远程服务（[实现说明](../../services/adapters/ai-docs/implementation.md)） | 真实落库、旧 Ear 的列录音接口、GPS 采样密度 |
 | `services/api/` | ⑥（功能分支 `api/gateway-mvp`，待合并；部分交付待审）：只读 API、反馈入口、管理接口与插件目录、轻量页面、受保护配置与命令行、离线外部动作切片；见[模块入口](../../services/api/README.md)与[实现说明](../../services/api/ai-docs/implementation.md) | 外部动作执行/确认/风险重试（HTTP 501，缺④协议）、③⑤反馈的消费（只记录 `pending_contract`）、真实日历适配器、真实浏览器↔真实①+⑤的端到端（API 层对真实①的 26 项集成测试已通过，见第 6 节）、生产运行（全套验收仅在合成/隔离环境通过，见第 6 节） |
-| `services/llm_gateway/` | ⑦（功能分支 `api/gateway-mvp`，待合并；部分交付待审）：网关 HTTP 服务、调用方①令牌认证、重判上下文预检、call_id 占用检查、单 worker 私有 journal、终态 `llm_call` 写入、受限输出 schema、源码固定到 Octopus `b3c7cd5dd950a79e94533b114619082a542eac66` 的适配器、客户端/命令行/容器；见[模块入口](../../services/llm_gateway/README.md)与[实现说明](../../services/llm_gateway/ai-docs/implementation.md) | 真实模型调用与生产 wire 验证、exactly-once、实测用量（Octopus 的 usage 为合成估算，记为未知）、③④⑤和插件接入、正文保留期、生产运行（全套验收仅在合成/隔离环境通过，见第 6 节） |
+| `services/llm_gateway/` | ⑦（功能分支 `api/gateway-mvp`，待合并；部分交付待审）：网关 HTTP 服务、调用方①令牌认证、重判上下文预检、call_id 占用检查、单 worker 私有 journal、终态 `llm_call` 写入、受限输出 schema、源码固定到 Octopus `b3c7cd5dd950a79e94533b114619082a542eac66` 的适配器、客户端/命令行/容器；见[模块入口](../../services/llm_gateway/README.md)与[实现说明](../../services/llm_gateway/ai-docs/implementation.md) | 真实模型调用与生产 wire 验证、exactly-once、实测用量（Octopus 的 usage 为合成估算，记为未知）、③⑤和插件接入、④恢复与重判关联接入、正文保留期、生产运行（全套验收仅在合成/隔离环境通过，见第 6 节） |
 | `deploy/compose.yaml` | ①存储切片的隔离 Compose（postgres、nats、storage、relay、manage-worker；显式 migrate/bootstrap/init-identities）与备份工具 `tools/storage_backup.py` 已随 PR8 合入 dev 376294d（该文件本身不含②③④⑤⑥⑦，非生产运行手册，见[隔离部署指南](../../services/storage/ai-docs/deployment.md)；⑥⑦的 opt-in 覆盖文件 `deploy/compose.api-gateway.yaml` 等见第 6 节，功能分支待合并） | 生产部署与升级迁移、备份文件保留/删除、其他模块部署 |
 | `tests/e2e/` | E2E骨架 | 插件端到端完成 |
 
@@ -153,7 +153,7 @@ uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run 
 |---|---|---|---|
 | ⑥ API 与插件管理页 | 只读 API、反馈、管理接口与插件目录、轻量页面、受保护配置与命令行、容器与可选 Compose 覆盖 | 真实 Chromium 34 项通过，但用的是内存**假①**；另见下行对真实①的 API 层集成测试；合成容器 20 passed；独立复核确认插件目录无泄漏、不放宽业务 ACL | 真实浏览器↔真实①的页面联调、⑤调度、生产运行 |
 | ⑥ 外部动作 | 离线执行/核对切片与私有日志 | 单元/接口测试（见⑥实现说明） | HTTP 上执行/确认/风险重试仍 501（缺④协议）；③⑤反馈只记录 `pending_contract`；无真实日历 |
-| ⑦ 网关 | HTTP 服务、调用方①令牌认证、预检、call_id 占用检查、单 worker 私有 journal 与隔离、终态 `llm_call` 写入、受限输出 schema、客户端/命令行/容器 | 源码核对 + 合成回放；独立复核旧 3 项必须修复关闭；合成容器 20 passed | **无真实模型调用**；不是 exactly-once；usage 为估算、记为未知；③④⑤与插件未接入；正文保留期未做 |
+| ⑦ 网关 | HTTP 服务、调用方①令牌认证、预检、call_id 占用检查、单 worker 私有 journal 与隔离、终态 `llm_call` 写入、受限输出 schema、客户端/命令行/容器 | 源码核对 + 合成回放；独立复核旧 3 项必须修复关闭；合成容器 20 passed | **无真实模型调用**；不是 exactly-once；usage 为估算、记为未知；④已采用 GatewayClient（恢复与重判关联未完成）；③⑤与插件未接入；正文保留期未做 |
 | ⑦ Octopus 适配器 | 固定到 `b3c7cd5dd950a79e94533b114619082a542eac66` 的 Manager 聊天接口适配 | 源码核对 + 合成传输层 | 运行时不核对对端版本；无生产 wire 验证 |
 | ⑥⑦ ↔ 真实①（API/网关 HTTP 层） | `services/storage/tests/test_api_gateway_integration.py`：真实回环①/⑥/⑦、隔离 PostgreSQL（NATS 开关开启）、合成 provider；管理反馈受理≠生效、API 普通拒绝与管理员撤权、插件目录（只读、重新鉴权、分页）、网关调用方鉴权与真实预检 | 26 passed（12:07 快照；与 `test_llm_preflight` 47 passed/6 skipped 合计 73 passed/6 skipped） | 不含真实浏览器↔真实①、⑤调度、真实模型/Octopus、常驻 manage-worker 容器（管理处理步骤由测试显式驱动）、生产 |
 | ①侧新入口 | `GET /v1/management/plugins`、`POST /v1/llm/preflight`、`POST /v1/llm/call-id-check` 及 SDK | 隔离真实 PostgreSQL/NATS 12:07 快照 73 passed/6 skipped；定向 263 passed/6 skipped | 仅在功能分支（待合并），不在 dev 376294d；旧①缺入口时网关 fail-closed |
@@ -169,7 +169,7 @@ uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run 
 ### 仍未完成与待确认
 
 - ④ 的执行/恢复协议（解除⑥外部动作 501）；③⑤ 反馈契约；外部动作标识的存放位置；插件建议如何进入核心审核与执行——跨模块契约，须对应负责人与①负责人、I 审核。
-- ⑦：真实模型调用与生产 wire 验证、对端 Octopus 版本核对、正文保留期与作用域、③④⑤和插件接入网关。
+- ⑦：真实模型调用与生产 wire 验证、对端 Octopus 版本核对、正文保留期与作用域、③⑤和插件接入网关、④恢复与重判关联接入。
 - 生产部署（全套验收已通过，但仅限合成/隔离环境，见上）。
 
 ### 谁来决定什么
