@@ -1,7 +1,7 @@
 ---
 audience: ai
 doc-type: guide
-based-on: docs/design/design-v1.2.md 3.3–3.4；docs/design/work-breakdown-v1.2.md ②；contracts/records/raw-record.schema.json；旧 Ear doc/0929_evidence_read_api.md、doc/audio-ingestion.md；负责人 2026-11-05 确认：音频走旧 Ear Evidence API、补列录音接口、每版本只导入一次、确定性 id；旧 Ear ear/evidence/readiness.py（availability 规则）、ear/runtime/model_lifecycle.py；2026-11-05 旧 Ear 卡住根因排查（日志 + 数据库，只读）；2026-11 文档同步：更正 5.3 中 ① 持久化服务“未实现”的过期描述（① 已随 PR8 合入 dev 376294d；② 命令行仍写内存，已核对 __main__.py）
+based-on: docs/design/design-v1.2.md 3.3–3.4；docs/design/work-breakdown-v1.2.md ②；contracts/records/raw-record.schema.json；旧 Ear doc/0929_evidence_read_api.md、doc/audio-ingestion.md；负责人 2026-11-05 确认：音频走旧 Ear Evidence API、补列录音接口、每版本只导入一次、确定性 id；旧 Ear ear/evidence/readiness.py（availability 规则）、ear/runtime/model_lifecycle.py；2026-11-05 旧 Ear 卡住根因排查（日志 + 数据库，只读）；2026-11-10 用户授权②接入①远程服务、常驻扫描、CommitUnknown 重放及门控联调测试
 ---
 
 # ② 适配器：实现说明
@@ -16,13 +16,14 @@ based-on: docs/design/design-v1.2.md 3.3–3.4；docs/design/work-breakdown-v1.2
                          │  Evidence 只读 API（bearer token + Evidence-read 授权）
                          ▼
    ② Runner.run_once()
+     0. query(七种原始类型, limit=1)         显式验证 read_types
      1. list_captures()                      列出录音
      2. read_capture(id) → readiness()       三个音频阶段都 available/empty 才导入
      3. ① get(audio_ref 的确定性 id)          已存在 → 已导入，跳过
      4. InboxAudioLocator.locate()           按组 id（不限日期目录）+ 大小 + SHA-256 找到原始音频
      5. read_embedding()                     取每条声纹向量
      6. capture_records()（纯函数）           → 一批 NewRawRecord
-     7. ① write([AppendRaw…], Context.system())   一段录音一批，原子写入
+     7. ① write([AppendRaw…], Context.system(), request_id=…)   一段录音一批，原子写入
                          │
                          ▼
                 ①「数据库被修改」──► ③（声纹、GPS 归属）④ ⑤ ⑥
@@ -37,7 +38,7 @@ based-on: docs/design/design-v1.2.md 3.3–3.4；docs/design/work-breakdown-v1.2
 | `ids.py` | 确定性 UUIDv7 | 无 |
 | `source.py` | `HttpEarSource`（urllib）、`InboxAudioLocator` | 网络、文件 |
 | `runtime.py` | `ingest_capture`、`Runner`、`Report`、结构化日志 | 写 ① |
-| `__main__.py` | `ear-adapter --dry-run` | 全部 |
+| `__main__.py` | `ear-adapter dry-run / once / run`（保留 `--dry-run` 别名） | 全部 |
 | `testing.py` | 合成的旧 Ear 响应、`FakeSource`、`FakeLocator` | 无 |
 
 ## 2. 导入规则
@@ -113,6 +114,10 @@ Authorization: Bearer <token>   （需要 Evidence-read 授权）
 | 时间换算成 UTC | `test_times_are_utc` |
 | ③ 收到声纹事件时引用都可读；重复投递无害 | `test_voiceprint_event_arrives_after_its_local_speaker` |
 | 只写 ② 负责的数据 | `test_only_adapter_may_write_raw_records` |
+| 远程结果未知使用原 request_id/ops/context 重放；错误分类 | `test_remote.py`（不需 Docker） |
+| 命令兼容、退出码、掉线恢复、SIGTERM/SIGINT 与间隔边界 | `test_cli.py`、`test_stop_finishes_current_capture` |
+| 真实①条数/Schema、事件引用、重启去重、重放、无读授权拒绝 | `test_storage_integration.py`（双门控；本环境未运行） |
+| 30分钟数量级合成批次容量 | `test_batch_size.py`（实际 wire 序列化） |
 
 ### 5.2 真实数据试运行（人工，数据不进仓库）
 
@@ -123,7 +128,7 @@ Authorization: Bearer <token>   （需要 Evidence-read 授权）
 - 同一个 token 和旧 Ear 地址写进 `deploy/.env`（被 git 忽略）：`EAR_ADAPTER_EAR_URL=http://127.0.0.1:<旧 Ear 端口>/internal`、`EAR_ADAPTER_EAR_TOKEN=…`。端口每次挂载都会变，从 Octopus 日志的 `Spawned subprocess service 'herryying30/octopus-service-ear' on …` 读取。
 
 ```bash
-set -a && . deploy/.env && set +a && uv run ear-adapter --dry-run
+set -a && . deploy/.env && set +a && uv run ear-adapter dry-run
 ```
 
 输出 `first`（首轮）和 `rescan`（模拟重启后重扫）。通过条件：
@@ -152,6 +157,68 @@ set -a && . deploy/.env && set +a && uv run ear-adapter --dry-run
 
 ### 5.3 尚未覆盖
 
-- ② 命令行 `ear-adapter` 仍写 `MemoryStorage`（`__main__.py`），**没有对真实 ① 服务的落库联调**：② → ① 的远程写入、并发与断电恢复都未验证。① 的持久化服务已实现并随 PR8 合入 dev 376294d（隔离部署切片非生产，见[① 存储](../../storage/README.md)），但它自己的测试不能代替 ② 的落库验证。
+- 远程写入、重启重扫、事件引用可读、CommitUnknown 重放和缺读授权已有双门控真实①测试，2026-11-11 本机运行通过（见 7.1）。真实旧 Ear 数据经 `Runner` 写入本机临时①（测试夹具起的 PostgreSQL/NATS + ① HTTP 服务）也已跑通，结果见 7.3。
+- 仍未验证：按[①部署指南](../../storage/ai-docs/deployment.md)起的 Compose 临时部署上用 `ear-adapter once` / `run` 命令行跑真实数据（7.2）、常驻模式下的掉线恢复与 SIGTERM、并发进程、真实断电恢复。不能用单元测试或故障注入宣称已覆盖。
 - 时间抽查只验证了落在录音范围内，还没有听录音核对具体时刻；允许误差和要跑几天仍待团队决定。
 - GPS 密度不足（见 payloads.md），属于手机侧问题。
+
+## 6. 运行方式、权限与远程恢复
+
+```bash
+set -a && . deploy/.env && set +a
+uv run ear-adapter once
+uv run ear-adapter run --interval 60
+```
+
+配置仅来自环境变量（间隔是运行参数）：旧 Ear 的 `EAR_ADAPTER_EAR_URL`、`EAR_ADAPTER_EAR_TOKEN`；音频根目录 `EAR_ADAPTER_DATA_ROOT` 默认 `~/.octopus/local`；①根地址 `EAR_ADAPTER_STORAGE_URL`（不带 `/v1`）和①签发的 `EAR_ADAPTER_STORAGE_TOKEN`。模板见 [deploy/.env.example](../../../deploy/.env.example)。不自动加载 `.env`，不把 token 放进命令参数、异常正文或日志。
+
+- `dry-run`：内存首轮 + 新 Runner 重扫，输出 first/rescan，保留旧 `--dry-run` 别名，退出 0（配置错误 2）。
+- `once`：一轮后打印 JSON 摘要；source_error、storage_error 或 Failed 返回 1，配置/权限/协议错误返回 2，否则 0。Pending 单独出现不表示命令失败。
+- `run`：每轮结束等待，默认 60 秒，可设 1–86400 秒（有限数）。stdout 每轮一行 JSON 摘要，stderr 为逐录音 JSON 日志，均带 module/event_id/root_feedback_id/depth。SIGTERM/SIGINT 设置停止标志，当前录音的读取、转换及有限重放完成后停止，不开始下一段；等待可立即打断。列表读取仍受网络超时约束，不保证瞬间退出。
+- 旧 Ear 掉线：列表失败为 source_error，单段失败为 Pending；① ServiceUnavailable：预检失败为 storage_error，单段读/写失败为 Pending。选择继续扫描、下轮重试，以保留每段结果，不把瞬时故障归为数据错误。启动时① identity 请求不可用也按轮重试。
+- CommitUnknown：一次计算并保存 ops/context，显式生成 request_id；每次使用异常的 request_id 和原对象重放。总计最多三次，间隔 0.25、0.5 秒。仍未知返回 Pending、不加入 done，下轮查确定性 audio_ref；已提交则 AlreadyIngested，否则确定性 id + dedup_key 兜底。基础 StorageClient 协议没有 request_id 参数，内存仍走两参数 write，远程客户端（含其子类）使用扩展签名；没有修改 SDK。
+- ResourceLimit（包括请求体超限）为 Failed，报告操作数与序列化正文 UTF-8 字节数（不计 request_id 包装），绝不拆批。服务端仍负责最终容量判定；拆批会破坏声纹事件到达时局部说话人/audio_ref 已可读的保证。
+- AuthenticationError / PermissionDenied 直接退出非零；ProtocolError 同样停止，避免把接口不兼容当正常数据。每轮先 query 七种类型（limit=1），因为按 id 读无法可靠区分无权限与不存在。授权清单、正式签发缺口见 [模块 README](../README.md)。测试仅用 AuthOperator.issue_principal，不由②业务代码签发身份。
+
+容量样本见 `tests/test_batch_size.py`：565 条（1 audio_ref、20 local_speaker、20 voiceprint、400 transcript_segment、120 ambient_sound、2 GPS、2 phone_info），192 维浮点声纹内联、每条声纹引用20段转写、每段转写120个合成汉字。按 SDK encode_request + canonical_json（含 request_id）实测 **579496 字节，0.553 MiB**，约占 8 MiB 的 6.9%。这个数量级够用，但不是最长录音上界；①还有每批2000操作、当前图投影上限，长录音/密集分段可能先触发其他 ResourceLimit。音频仅存引用，不把音频内容算入批次。
+
+## 7. 本机真实①联调步骤
+
+### 7.1 合成数据门控验收
+
+先安装锁定依赖，Docker 必须可用，并预拉取 `postgres:17-alpine`、`nats:2.11-alpine`。在仓库根运行：
+
+```bash
+EAR_RUN_POSTGRES_TESTS=1 EAR_RUN_NATS_TESTS=1 uv run pytest services/adapters/tests/test_storage_integration.py -v
+uv run pytest services/adapters/tests/test_batch_size.py -s
+```
+
+两个开关缺任何一个都 skip（含只开 NATS 的情况）。2026-11-11 在 macOS 本机 Docker 上运行：门控集成测试与 ① 的门控测试合计 51 passed。测试直接导入 `services/storage/tests/conftest.py` 的 postgres_server/pg_dsn/nats_server 与 `test_http_postgres.py` 的 live_server，最小复用、不复制容器夹具、不修改①代码。每测试独立数据库和流，随机回环端口；session 结束销毁专属容器。禁止外部 DSN。测试验证与内存条数一致、每条 raw Schema、订阅声纹时引用可读、重启无记录/事件新增、真实提交后注入 CommitUnknown 的同请求重放、缺少读授权明确拒绝。它只验证存储边界，不运行③归属业务。
+
+### 7.2 真实旧 Ear → 本机临时 Compose ①（尚未执行的步骤草案）
+
+1. 按 [①隔离部署指南](../../storage/ai-docs/deployment.md) 第2节选择全新的临时 Compose 项目名和独立卷，核对与已有部署无关。仅在该临时项目显式 migrate/bootstrap/init-identities 后启动 storage/relay；真实数据不进仓库，所有输出与凭据仅本机私密保存。不要把本草案指向生产①。
+2. `init-identities` 不会产生 adapter 身份。由①负责人 / I 在该临时项目的部署内 Python 环境，用其受控 DSN 执行 `AuthOperator(dsn).issue_principal("adapter", read_types=list(READ_TYPES))`，READ_TYPES 使用 README 列出的七种类型；不要在部署环境依赖安装②包。明文只返回一次，写到该临时部署的私有 0600 文件，不打印、不通过命令行传递；将所需值安全填入被忽略的 `deploy/.env`，保留已有配置。该步骤是本地操作草案，不是新增正式签发 CLI。
+3. 依照5.2准备旧 Ear evidence_readers + embedding_readers，设置五个 EAR_ADAPTER 环境变量；①地址是临时 storage 的回环端口，数据根目录只读指向真实音频所在目录。确认 `/health/ready` 成功，不打印解析后的 Compose 环境或 token。
+4. 加载环境后执行 `uv run ear-adapter once`，保存摘要到仓库外的私有位置，记录七类型条数、Pending/Failed原因和退出码。再次执行 once（新进程）应为 AlreadyIngested、written为空；期间旧 Ear 新完成的录音需单独核对，不能误判为重复。
+5. 执行 `uv run ear-adapter run --interval 60`，验证掉线后下轮恢复，并在处理中发 SIGTERM 或 Ctrl-C，确认当前录音整批提交或 Pending、没有开始下一段。可选由①负责人签发只读/订阅 voiceprint、local_speaker、audio_ref 的 attribution 测试身份，按门控测试的 handler 核对引用；不要借用 api 管理员充当②。
+6. 回填本机执行日期、环境、计数与失败原因，禁止回填录音、GPS、转写或凭据。停止临时项目；清理按①指南第6节人工核对专属项目及三套卷，真实数据与身份按私密数据管理。以上 Compose 步骤尚未执行；7.3 用的是测试夹具，不是这套步骤。
+
+### 7.3 真实旧 Ear → 测试夹具临时①（2026-11-11 本机结果）
+
+做法：仓库外的一次性 pytest 脚本，复用 7.1 的夹具起临时 PostgreSQL/NATS 和 ① HTTP 服务，用 `AuthOperator.issue_principal` 签发 adapter（读七种原始类型）和 attribution（读并订阅 voiceprint、local_speaker、audio_ref）两个身份；`Runner` 经 `RemoteStorageClient` 从本机旧 Ear 导入，再新建 `Runner` 重扫，最后跑 Relay 投递、attribution 用 `run_until_idle` 消费。没有经过 `ear-adapter` 命令行入口。脚本、数据、凭据都不进仓库，结束后容器已销毁。
+
+| 项目 | 结果 |
+|---|---|
+| 首轮 | 384 段 Ingested；27 段 Pending（感知尚未开始或录音尚未结束）；22 段 Failed（旧 Ear speaker_resolution 失败 16、部分失败 5，audio_event 部分失败 1）；source_error、storage_error 均为空 |
+| 条数 | audio_ref 384、transcript_segment 79112、local_speaker 4457、voiceprint 4008、ambient_sound 29074、gps_point 214、phone_info 346，共 117595 |
+| 重扫（新 Runner） | 384 段 AlreadyIngested，新写入 0，七类条数不变 |
+| 耗时 | 首轮 279.7 s，重扫 29.9 s |
+| 批次 | 384 批（每段录音一批），最大 1479 条操作、1.445 MiB，低于 8 MiB 和每批 2000 操作 |
+| 事件 | Relay 投递 117595 条；attribution 收到 4008 个新增声纹事件，handler 里读声纹引用的 local_speaker 和 audio_ref 全部可读（缺失 0） |
+
+过程中暴露的环境问题（不是 ② 的缺陷，供 ① 和 ③ 参考）：
+
+- ① 测试夹具的容量按合成数据设定：PostgreSQL tmpfs 384 MiB 写满；NATS `max_file_store: 48MB` 小于脚本里流的 `max_bytes`（512 MiB），JetStream 流建不起来，订阅注册一直返回 `ServiceUnavailable`（consumer initialization pending）且没有更具体的原因。本次只在仓库外副本里放大了容量（PostgreSQL 内存 3 GiB / tmpfs 2 GiB，NATS 内存 1.5 GiB / tmpfs 1 GiB / max_file_store 900 MB），没有改 ① 的夹具。
+- ① 的流默认 `max_bytes` 256 MiB、`DiscardPolicy.NEW`；这批真实数据约 11.8 万条事件，正式部署要按真实数据量估算流容量。
+- 远程消费速度约每秒 5 个事件（每个事件一次确认往返，handler 内每个声纹还要再读 3 次）。8849 个订阅事件用了约 25 分钟；③ 从头补消费时这会是瓶颈。

@@ -18,7 +18,7 @@ doc-type: reference
 
 ## 当前状态（PR8 已合入 dev 376294d）
 
-**总览（以本段为准）：** PR8 于 2026-11-07T09:32:19Z 合并为 `dev` 376294d（`gh` 只读核对；用户述已审核并合并）。dev 上 CI run 42360158060 success：pytest 1503 passed, 5 skipped, 1 warning in 583.04s，`EAR_RUN_POSTGRES_TESTS`、`EAR_RUN_NATS_TESTS`、`EAR_RUN_BACKUP_TESTS` 均为 1。这是 CI 隔离环境的结果，不是生产验收：**尚无生产启动**；③④⑤未与①完整业务联调；②命令行仍写内存存储；⑥ [API](../api/README.md)、⑦ [大模型入口](../llm_gateway/README.md)本次获授权开始实现，尚非完成。以下分项保留各提交时的历史记录，其中“未合并”“尚未远程运行”等措辞属历史，不改历史测试数字。
+**总览（以本段为准）：** PR8 于 2026-11-07T09:32:19Z 合并为 `dev` 376294d（`gh` 只读核对；用户述已审核并合并）。dev 上 CI run 42360158060 success：pytest 1503 passed, 5 skipped, 1 warning in 583.04s，`EAR_RUN_POSTGRES_TESTS`、`EAR_RUN_NATS_TESTS`、`EAR_RUN_BACKUP_TESTS` 均为 1。这是 CI 隔离环境的结果，不是生产验收：**尚无生产启动**；③④⑤未与①完整业务联调；②命令行已支持远程单轮/常驻扫描，真实①双门控联调测试与真实旧 Ear 数据写入临时①已于 2026-11-11 本机跑通（非生产验收）；⑥ [API](../api/README.md)、⑦ [大模型入口](../llm_gateway/README.md)本次获授权开始实现，尚非完成。以下分项保留各提交时的历史记录，其中“未合并”“尚未远程运行”等措辞属历史，不改历史测试数字。
 
 - **P0**：内存实现（`libs/ear_storage_client/`）含 P0a 回归修复及 P0b 字段依赖、按能力强制登记、批末新鲜度与无环检查。核心类型的强制登记能力全部关闭（false），需③④提供实际输入、迁移验证后按类型启用。
 - **P1（提交 d7c9919）**：服务包 `ear-storage`：PostgreSQL 后端、可信 token 身份与全部读路径授权、短事务全局写闸、持久 Outbox、请求 ID 幂等重放、有界持久 snapshot、FastAPI `/v1` HTTP 入口和部署 CLI；SDK 侧同步 `RemoteStorageClient`。
