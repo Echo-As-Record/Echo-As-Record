@@ -9,9 +9,10 @@ from pathlib import Path
 import httpx
 import pytest
 from ear_api.app import create_app
+from ear_api.business import BUSINESS_TYPES
 from ear_api.cli import load_settings, main
 from ear_api.config import Settings
-from ear_contracts import new_id
+from ear_contracts import DEFAULT_REGISTRY, new_id
 from ear_storage_client import Context, Create, PutSystemRecord, Query, Supersede, Update
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
@@ -26,6 +27,47 @@ from .conftest import (
     settings,
     tcp_server,
 )
+
+
+def test_business_types_match_original_allowlist():
+    expected = {
+        "activity",
+        "artifact",
+        "person",
+        "place",
+        "rule",
+        "action_suggestion",
+        "attribution",
+        "voiceprint",
+        "gps_point",
+        "transcript_segment",
+        "phone_info",
+        "audio_ref",
+        "ambient_sound",
+        "local_speaker",
+        "feedback",
+    }
+    assert expected == BUSINESS_TYPES
+    assert "plugin_management_feedback" not in BUSINESS_TYPES
+    assert not BUSINESS_TYPES.intersection(
+        name for name, spec in DEFAULT_REGISTRY.data_types.items() if spec.kind == "system_record"
+    )
+
+
+@pytest.mark.parametrize(
+    "data_type",
+    [*sorted(set(DEFAULT_REGISTRY.data_types) - BUSINESS_TYPES), "unknown_type", "demo_result"],
+)
+@pytest.mark.parametrize("suffix", ["", "/{id}", "/{id}?version=1", "/{id}/history"])
+@pytest.mark.parametrize("admin", [False, True])
+def test_non_business_types_are_not_found(data_type, suffix, admin):
+    # Rejected types must be handled locally, before contacting storage.
+    with TestClient(create_app(settings("http://127.0.0.1:1"))) as client:
+        result = client.get(
+            "/v1/records/" + data_type + suffix.format(id=new_id()), headers=headers(admin)
+        )
+    assert result.status_code == 404
+    assert result.json() == {"code": "not_found"}
 
 
 def command(**changes):
