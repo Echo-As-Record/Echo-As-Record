@@ -523,3 +523,13 @@ def test_proxy_env_and_firewall_allow_rule_order(
         if cmd[:2] == ["docker", "run"]:
             assert "HTTPS_PROXY=http://192.168.5.2:7897" in cmd
             assert "NO_PROXY=meter,localhost,127.0.0.1" in cmd
+
+
+def test_missing_sensor_files_are_recorded_not_fatal(tmp_path: Path) -> None:
+    audio = tmp_path / "segment_1_from_07-57-02_to_08-00-27__01__segment_0002.m4a"
+    audio.write_bytes(b"a")
+    imu = tmp_path / "segment_1_from_07-57-02_to_08-00-27__01__imu_0002.jsonl.gz"
+    imu.write_bytes(b"i")
+    files, missing = exam.raw_files(audio)
+    assert files == [audio, imu]
+    assert missing == ["context"]

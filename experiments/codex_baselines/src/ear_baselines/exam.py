@@ -57,11 +57,13 @@ def safe(value: str) -> str:
     return value
 
 
-def raw_files(audio: Path) -> list[Path]:
+def raw_files(audio: Path) -> tuple[list[Path], list[str]]:
+    """返回原始文件和缺失的传感类型。缺传感不报错：两组看到的是同一份材料。"""
     if audio.suffix != ".m4a" or not audio.is_file():
         raise ValueError("inventory audio_path 必须是存在的原始 .m4a")
     prefix = audio.stem.split("__", 1)[0]
     files = [audio]
+    missing: list[str] = []
     for kind in ("context", "imu"):
         pattern = re.compile(rf"^{re.escape(prefix)}__(?:\d+__)?{kind}_.+\.jsonl\.gz$")
         matches = sorted(p for p in audio.parent.iterdir() if pattern.fullmatch(p.name))
@@ -75,9 +77,9 @@ def raw_files(audio: Path) -> list[Path]:
             matches = sorted(p for p in audio.parent.iterdir() if follow.fullmatch(p.name))
         matches = sorted(set(matches))
         if not matches:
-            raise FileNotFoundError(f"缺少同分段 {kind} 原始文件：{audio.name}")
+            missing.append(kind)
         files.extend(matches)
-    return files
+    return files, missing
 
 
 def prepare(
@@ -113,7 +115,7 @@ def prepare(
             audio = Path(row["audio_path"]).expanduser()
             if not audio.is_absolute():
                 audio = root / audio
-            files = raw_files(audio)
+            files, missing = raw_files(audio)
             transcript = root / "inventory/transcripts" / f"{ident}.md"
             if not transcript.is_file():
                 raise FileNotFoundError(transcript)
@@ -133,6 +135,7 @@ def prepare(
                     "started_at": start.astimezone(ZoneInfo("Asia/Shanghai")).isoformat(),
                     "duration_s": row["duration_s"],
                     "files": [p.name for p in files],
+                    "missing_sensors": missing,
                 },
             )
             shutil.copyfile(transcript, material / "ear" / f"{ident}.md")
