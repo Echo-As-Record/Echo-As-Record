@@ -85,7 +85,7 @@ based-on: experiments/codex_baselines/README.md；services/adapters（ear_adapte
 - 页面的定位链接 `#<id>@<秒数>`；搜索命中行用行内第一个 `HH:MM:SS` 换算偏移（跨午夜按 +24 小时）。
 - 测试：`tests/test_player.py`（时间线、退回 Markdown、缓存、搜索与备注、音频白名单），不起 HTTP 服务。人工验证：在真实索引上浏览日期、搜索「上课」、点命中跳转并播放、同步高亮正常。
 
-### exam（本轮任务授权，已实现待实测）
+### exam（2026-11-11 实现，宿主实测通过）
 
 - canonical terms 为 `exam`、`meter`、`isolation`，没有移除或重命名既有概念；`codex_runner.py` 保留不动，仅复用 `_usage` 读取事件流最后一次用量。实验不改变产品模块契约。
 - 输入、命令和预算行为以 [README 第 3 节](../README.md#3-用法) 为准。题库当前使用 `reference_answer`；证据中 `clock` / `offset_s` / `quote` 只保留给评分，工作区仅输出 id/question。题号和录音 id 校验禁止路径跳转；不复制原始文件符号链接，工作区拒绝材料目录内符号链接。
@@ -98,5 +98,5 @@ based-on: experiments/codex_baselines/README.md；services/adapters（ear_adapte
 - 预算锁覆盖完整上游请求及结算，避免多请求同批超支；SSE 数据逐行 flush，提取 Chat usage 或 Responses `response.usage`，Chat 流请求自动补 `stream_options.include_usage=true`。客户端断连后继续读上游结算；代理结束收到 SIGTERM 时停止接单并等待请求线程，宿主最多等待 130 秒后清理。强制终止/日志残缺需要人工核对实际账单。
 - ffprobe 测 multipart `file`、递归 `input_audio.data` base64 的时长，临时文件随即删除。每行日志含模型、路径、时长、纯数值 usage（含 audio token）、估算/累计/超额费用、状态及 uncertain。请求体最高 512 MiB。未知模型取表内分项最高价，转写用官方估算分钟价；金额不是实际账单。Codex 订阅 token 与代理 API 花费分别展示。
 - 官方价格页 Markdown 版在 2026-11-11 核验通过，JSON 记录出处和日期；Astra 用标准长上下文价格保守估计。缓存不打折；不计托管工具等独立费用，因此相关请求拒绝。没有 usage 的成功请求冻结剩余预算，并把未知费用与已知 token 费用区分标记。
-- 测试入口 `tests/test_exam.py`：合成考卷、泄露排除、命令/脱敏、防火墙失败清理、答案验证及报告、合成 wav/base64/multipart、假 HTTP 上游的换令牌/SSE/并发预算。localhost bind 被沙箱拒绝时 HTTP 测试明确 skip，必须由 Claude 在宿主补跑；不调 Docker、不访问外网。
+- 测试入口 `tests/test_exam.py`：合成考卷、泄露排除、命令/脱敏、防火墙失败清理、答案验证及报告、合成 wav/base64/multipart、假 HTTP 上游的换令牌/SSE/并发预算。localhost bind 被沙箱拒绝时 HTTP 测试明确 skip（2026-11-11 已在宿主补跑通过）；不调 Docker、不访问外网。Docker、防火墙、代理的实测见 README 第 4 节试跑。
 - 根 `pyproject.toml` 的 Pyright 和 pytest 递归发现排除 `local-data/`，避免遍历实验下载的模型 Python 环境；仍检查本实验全部源码和测试。此排除只涉及类型检查和测试发现，数据隐私仍依靠 `.gitignore` 和 `.dockerignore`。
