@@ -1,0 +1,54 @@
+{
+  "source": "https://developers.openai.com/api/docs/pricing.md",
+  "queried_at": "2026-11-11",
+  "verified": true,
+  "notes": "USD per million tokens; transcription minute rates are published estimates. GPT-6 Astra uses conservative standard long-context rates for all requests; cached input is charged at uncached price. Unknown models use component-wise maxima within this table. No hosted tools, background jobs, Fast/Ultrafast or Realtime billing support. Missing successful usage freezes remaining budget and is marked uncertain; this is not a billing invoice.",
+  "models": {
+    "gpt-6-astra": {
+      "text_input": 20,
+      "text_output": 75,
+      "verified": true
+    },
+    "gpt-audio": {
+      "text_input": 2.5,
+      "text_output": 10,
+      "audio_input": 32,
+      "audio_output": 64,
+      "verified": true
+    },
+    "gpt-4o-transcribe": {
+      "text_input": 2.5,
+      "text_output": 10,
+      "minute": 0.006,
+      "verified": true
+    },
+    "gpt-4o-mini-transcribe": {
+      "text_input": 1.25,
+      "text_output": 5,
+      "minute": 0.003,
+      "verified": true
+    },
+    "whisper-1": {
+      "minute": 0.006,
+      "verified": true
+    },
+    "gpt-audio-1.5": {
+      "text_input": 2.5,
+      "text_output": 10,
+      "audio_input": 32,
+      "audio_output": 64,
+      "verified": true
+    },
+    "gpt-audio-mini": {
+      "text_input": 0.6,
+      "text_output": 2.4,
+      "audio_input": 10,
+      "audio_output": 20,
+      "verified": true
+    },
+    "gpt-transcribe": {
+      "minute": 0.0045,
+      "verified": true
+    }
+  }
+}

@@ -4,8 +4,8 @@ input_audio），让它写「听写记录」，再把记录交给 Codex。
 下游统一用 Codex，A1a 和 A2 的差别只在「感知」这一步：模型自己听 vs 旧 Ear 的管线。
 长录音按 EAR_BASELINES_CHUNK_SECONDS（默认 600 秒）切片，逐片请求，按顺序拼起来。
 
-凭据：OPENAI_API_KEY（放在 deploy/.env，不进仓库）。录音会上传到 OpenAI，
-真实录音能否外传要先按团队的数据规定确认。
+凭据：EARbaseline_key（放在 shell 配置如 ~/.zshrc，不进仓库）。故意不用 OPENAI_API_KEY：codex CLI
+看到它可能改走 API key 计费。录音会上传到 OpenAI，真实录音能否外传要先按团队的数据规定确认。
 """
 
 from __future__ import annotations
@@ -113,9 +113,9 @@ def listen(
         os.environ.get("EAR_BASELINES_CHUNK_SECONDS", DEFAULT_CHUNK_SECONDS)
     )
     if post is None:
-        key = os.environ.get("OPENAI_API_KEY")
+        key = os.environ.get("EARbaseline_key")  # noqa: SIM112 负责人指定的名字
         if not key:
-            raise RuntimeError("需要环境变量 OPENAI_API_KEY（放在 deploy/.env）")
+            raise RuntimeError("需要环境变量 EARbaseline_key（放在 deploy/.env）")
         post = _http_post(key)
 
     tz = tz or display_tz()

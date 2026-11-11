@@ -12,11 +12,13 @@
 
 路线：
 - a1a：input/listening.md（openai_audio 生成的听写记录）
-- a1b：input/recording.m4a（原始音频，16 kHz 单声道）；Codex 自己决定怎么处理
+- a1b：input/recording.m4a（原始音频，16 kHz 单声道）和 input/recording_info.md（开始时间、
+  时长）；Codex 自己决定怎么处理，沙箱允许联网
+- a1c：与 a1b 相同，但沙箱禁止联网（只能用本机已有的工具和缓存）
 - a2 ：input/evidence.md（旧 Ear Evidence 时间线）
 
 为减少变量，运行时不加载用户的 Codex config 和 rules（--ignore-user-config、--ignore-rules），
-模型和推理强度显式传入；沙箱默认禁止联网。
+模型和推理强度显式传入；只有 a1b 允许联网。
 """
 
 from __future__ import annotations
@@ -32,18 +34,38 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from ear_baselines.cases import A1A_LISTENING, A2_EVIDENCE, AUDIO_NAME, Case, CaseStore, write_json
+from ear_baselines.cases import (
+    A1A_LISTENING,
+    A2_EVIDENCE,
+    AUDIO_NAME,
+    Case,
+    CaseStore,
+    display_tz,
+    write_json,
+)
 
-Route = Literal["a1a", "a1b", "a2"]
-ROUTES: tuple[Route, ...] = ("a1a", "a1b", "a2")
+Route = Literal["a1a", "a1b", "a1c", "a2"]
+ROUTES: tuple[Route, ...] = ("a1a", "a1b", "a1c", "a2")
+RAW_AUDIO_ROUTES: tuple[Route, ...] = ("a1b", "a1c")
+NETWORK_ROUTES: tuple[Route, ...] = ("a1b",)
+"""沙箱允许联网的路线。真实录音可能因此被 Codex 上传到外部服务。"""
 DEFAULT_MODEL = "gpt-6-astra"
 DEFAULT_EFFORT = "medium"
 
 PROMPT = {
     "a1a": "阅读 TASK.md 并完成。材料是 input/listening.md：另一个模型直接听录音写下的听写记录。",
     "a1b": (
-        "阅读 TASK.md 并完成。材料是 input/recording.m4a 这段原始录音，没有任何现成的文字稿；"
+        "阅读 TASK.md 并完成。材料是 input/recording.m4a 这段原始录音（开始时间见 "
+        "input/recording_info.md），没有任何现成的文字稿；"
+        "怎么从录音里得到需要的信息由你决定（本机可以使用已安装的命令行工具；"
+        "可以联网下载、安装需要的工具和模型）。"
+        "中间产物（音频片段、转写稿、脚本等）请放在工作目录的 work/ 下，结束时不要删除。"
+    ),
+    "a1c": (
+        "阅读 TASK.md 并完成。材料是 input/recording.m4a 这段原始录音（开始时间见 "
+        "input/recording_info.md），没有任何现成的文字稿；"
         "怎么从录音里得到需要的信息由你决定（本机可以使用已安装的命令行工具）。"
+        "中间产物（音频片段、转写稿、脚本等）请放在工作目录的 work/ 下，结束时不要删除。"
     ),
     "a2": (
         "阅读 TASK.md 并完成。材料是 input/evidence.md："
@@ -56,8 +78,6 @@ PROMPT = {
 class RunOptions:
     model: str = DEFAULT_MODEL
     effort: str = DEFAULT_EFFORT
-    network: bool = False
-    """允许 Codex 在沙箱里联网（A1b 想自己装 ASR 工具时需要）。真实录音可能因此被上传到外部。"""
     timeout_s: float = 3600.0
     task: Path | None = None
 
@@ -72,6 +92,7 @@ def _input_files(store: CaseStore, case: Case, route: Route) -> dict[str, Path]:
     source = {
         "a1a": ("listening.md", d / A1A_LISTENING),
         "a1b": ("recording.m4a", d / AUDIO_NAME),
+        "a1c": ("recording.m4a", d / AUDIO_NAME),
         "a2": ("evidence.md", d / A2_EVIDENCE),
     }[route]
     name, path = source
@@ -79,6 +100,7 @@ def _input_files(store: CaseStore, case: Case, route: Route) -> dict[str, Path]:
         hint = {
             "a1a": "先运行 ear-baselines listen",
             "a1b": "先导入录音",
+            "a1c": "先导入录音",
             "a2": "只有 Octopus 录音有，先运行 ear-baselines octopus",
         }[route]
         raise FileNotFoundError(f"{case.case_id} 缺少 {path.name}（{hint}）")
@@ -104,7 +126,7 @@ def codex_command(workspace: Path, route: Route, options: RunOptions, last: Path
         "-o",
         str(last),
     ]
-    if options.network:
+    if route in NETWORK_ROUTES:
         cmd += ["-c", "sandbox_workspace_write.network_access=true"]
     cmd.append(PROMPT[route])
     return cmd
@@ -120,7 +142,25 @@ def prepare(store: CaseStore, case: Case, route: Route, options: RunOptions) -> 
     (workspace / "TASK.md").write_text(task, encoding="utf-8")
     for name, path in _input_files(store, case, route).items():
         shutil.copy2(path, workspace / "input" / name)
+    if route in RAW_AUDIO_ROUTES:
+        (workspace / "input" / "recording_info.md").write_text(recording_info(case), "utf-8")
     return run_dir
+
+
+def recording_info(case: Case) -> str:
+    """A1b/A1c 只有音频、没有录制时间；补上开始时间和时长（与 A2 证据头部相同，不含内容）。"""
+    if case.started_at is not None:
+        start = case.started_at.astimezone(display_tz())
+        offset = start.strftime("%z")
+        when = f"{start:%Y-%m-%d %H:%M:%S}（UTC{offset[:3]}:{offset[3:]}）"
+    else:
+        when = "未知"
+    return (
+        "# 录音信息\n\n"
+        f"- 文件：recording.m4a（16 kHz 单声道）\n"
+        f"- 开始时间：{when}\n"
+        f"- 时长：{case.duration_s / 60:.1f} 分钟\n"
+    )
 
 
 def run(store: CaseStore, case: Case, route: Route, options: RunOptions) -> Path:
@@ -157,7 +197,7 @@ def run(store: CaseStore, case: Case, route: Route, options: RunOptions) -> Path
             "route": route,
             "model": options.model,
             "effort": options.effort,
-            "network": options.network,
+            "network": route in NETWORK_ROUTES,
             "task": str(options.task) if options.task else "task_default.txt",
             "command": [*cmd[:-1], "<prompt>"],
             "prompt": PROMPT[route],

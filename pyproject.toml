@@ -51,6 +51,8 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.pyright]
+# Private experiment data can contain downloaded Python environments; never type-check it.
+exclude = ["**/node_modules", "**/__pycache__", "**/.*", "experiments/codex_baselines/local-data"]
 venvPath = "."
 venv = ".venv"
 extraPaths = ["tools"]
@@ -59,6 +61,8 @@ typeCheckingMode = "standard"
 include = ["tools", "tests", "libs", "services/adapters", "services/extraction", "experiments/codex_baselines"]
 
 [tool.pytest.ini_options]
+# Also applies when pytest is started inside the experiment directory.
+norecursedirs = ["*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules", "venv", "{arch}", "local-data"]
 testpaths = [
     "tests",
     "libs",

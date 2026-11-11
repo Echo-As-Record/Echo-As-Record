@@ -1,0 +1,8 @@
+**
+!docker/
+!docker/Dockerfile
+!src/
+!src/ear_baselines/
+!src/ear_baselines/meter.py
+!src/ear_baselines/isolation.py
+!src/ear_baselines/openai_prices.json

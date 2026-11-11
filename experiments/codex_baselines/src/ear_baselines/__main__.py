@@ -3,10 +3,12 @@
     ear-baselines import ~/Downloads/语音备忘录/          任意格式录音 → case（A1 用）
     ear-baselines octopus --limit 5                       旧 Ear 的 Octopus 录音 → case（A1、A2 用）
     ear-baselines listen <case_id>…                       A1a：gpt-audio 听写
-    ear-baselines run a2 <case_id>…                       用 Codex 跑一条路线（a1a / a1b / a2）
+    ear-baselines run a2 <case_id>…                       用 Codex 跑路线 a1a/a1b/a1c/a2
     ear-baselines list                                    列出 case 和已有的输入、运行次数
+    ear-baselines player                                  本机录音浏览器 http://127.0.0.1:8790/
+    ear-baselines inventory                               只读盘点旧 Ear 全部录音（索引、转写）
 
-实验目录默认 ~/.ear-baselines，可用 EAR_BASELINES_ROOT 改；给模型看的时刻按
+实验目录默认 experiments/codex_baselines/local-data，可用 EAR_BASELINES_ROOT 改；给模型看的时刻按
 EAR_BASELINES_TZ（如 Asia/Shanghai，默认本机时区）显示。
 """
 
@@ -14,10 +16,11 @@ from __future__ import annotations
 
 import argparse
 import os
+import sqlite3
 import sys
 from pathlib import Path
 
-from ear_baselines import codex_runner
+from ear_baselines import codex_runner, exam
 from ear_baselines.cases import (
     A1A_LISTENING,
     A2_EVIDENCE,
@@ -81,6 +84,51 @@ def cmd_octopus(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_inventory(args: argparse.Namespace) -> int:
+    from ear_adapter.source import HttpEarSource, SourceUnavailable
+
+    from ear_baselines.inventory import DEFAULT_DB, build_inventory
+
+    url = os.environ.get("EAR_ADAPTER_EAR_URL")
+    token = os.environ.get("EAR_ADAPTER_EAR_TOKEN")
+    if not url or not token:
+        print("需要 EAR_ADAPTER_EAR_URL 和 EAR_ADAPTER_EAR_TOKEN", file=sys.stderr)
+        return 2
+    root = Path(args.root).expanduser() if args.root else default_root()
+    out = Path(args.out).expanduser() if args.out else root / "inventory"
+    try:
+        result = build_inventory(
+            HttpEarSource(url, token),
+            Path(os.environ.get("EAR_ADAPTER_DATA_ROOT", "~/.octopus/local")),
+            Path(os.environ.get("EAR_BASELINES_EAR_DB", str(DEFAULT_DB))),
+            out,
+            display_tz(),
+        )
+    except (SourceUnavailable, OSError, ValueError, sqlite3.Error) as exc:
+        print(f"盘点未完成：{exc}", file=sys.stderr)
+        return 1
+    print(result["totals"])
+    print(f"索引：{out.resolve() / 'index.md'}")
+    return 0
+
+
+def cmd_player(args: argparse.Namespace) -> int:
+    from ear_adapter.source import HttpEarSource
+
+    from ear_baselines.player import PlayerApp, serve
+
+    root = Path(args.root).expanduser() if args.root else default_root()
+    inventory = Path(args.inventory).expanduser() if args.inventory else root / "inventory"
+    if not (inventory / "index.json").exists():
+        print(f"{inventory} 没有 index.json，先运行 ear-baselines inventory", file=sys.stderr)
+        return 2
+    url = os.environ.get("EAR_ADAPTER_EAR_URL")
+    token = os.environ.get("EAR_ADAPTER_EAR_TOKEN")
+    reader = HttpEarSource(url, token).read_capture if url and token else None
+    serve(PlayerApp(inventory, display_tz(), reader), args.port)
+    return 0
+
+
 def cmd_listen(args: argparse.Namespace) -> int:
     from ear_baselines.openai_audio import listen
 
@@ -96,7 +144,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     options = codex_runner.RunOptions(
         model=args.model,
         effort=args.effort,
-        network=args.network,
         timeout_s=args.timeout,
         task=Path(args.task).expanduser() if args.task else None,
     )
@@ -124,6 +171,7 @@ def cmd_list(args: argparse.Namespace) -> int:
             for name, ok in (
                 ("a1a", (d / A1A_LISTENING).exists()),
                 ("a1b", True),
+                ("a1c", True),
                 ("a2", (d / A2_EVIDENCE).exists()),
             )
             if ok
@@ -142,7 +190,7 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ear-baselines")
-    parser.add_argument("--root", help="实验目录（默认 EAR_BASELINES_ROOT 或 ~/.ear-baselines）")
+    parser.add_argument("--root", help="实验目录（默认 EAR_BASELINES_ROOT 或本目录 local-data/）")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("import", help="导入任意格式的录音文件或目录")
@@ -153,6 +201,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--capture", action="append", help="只导入这个 capture_id（可重复）")
     p.add_argument("--limit", type=int, help="最多导入几段")
     p.set_defaults(func=cmd_octopus)
+
+    p = sub.add_parser("inventory", help="只读盘点全部旧 Ear 录音与未入库音频")
+    p.add_argument("--out", help="输出目录（默认 <EAR_BASELINES_ROOT>/inventory）")
+    p.set_defaults(func=cmd_inventory)
 
     p = sub.add_parser("listen", help="A1a：用能听音频的模型生成听写记录")
     p.add_argument("case_ids", nargs="*")
@@ -170,13 +222,19 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("EAR_BASELINES_CODEX_MODEL", codex_runner.DEFAULT_MODEL),
     )
     p.add_argument("--effort", default=codex_runner.DEFAULT_EFFORT)
-    p.add_argument("--network", action="store_true", help="允许 Codex 联网（录音可能被外传）")
     p.add_argument("--timeout", type=float, default=3600.0, help="单次运行的秒数上限")
     p.add_argument("--task", help="换一个 TASK.md（默认 task_default.txt）")
     p.set_defaults(func=cmd_run)
 
+    p = sub.add_parser("player", help="本机录音浏览器：按日期播放 inventory 里的录音、看转写")
+    p.add_argument("--port", type=int, default=8790)
+    p.add_argument("--inventory", help="inventory 目录（默认 <EAR_BASELINES_ROOT>/inventory）")
+    p.set_defaults(func=cmd_player)
+
     p = sub.add_parser("list", help="列出 case")
     p.set_defaults(func=cmd_list)
+
+    exam.add_parser(sub)
 
     args = parser.parse_args(argv)
     return args.func(args)

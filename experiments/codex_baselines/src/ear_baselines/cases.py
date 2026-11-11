@@ -1,4 +1,4 @@
-"""实验样本（case）：一段录音及其各路线的输入、输出，都放在仓库外的实验目录里。
+"""实验样本（case）：一段录音及其各路线的输入、输出，都放在实验目录 local-data/（git 忽略）。
 
     <root>/cases/<case_id>/
         case.json            来源、哈希、时长、录制时间
@@ -26,7 +26,8 @@ from pydantic import BaseModel, ConfigDict
 
 from ear_baselines import media
 
-DEFAULT_ROOT = Path("~/.ear-baselines")
+# 实验目录：本目录下的 local-data/（已被 .gitignore 排除；仓库是公开的，真实数据不能进去）
+DEFAULT_ROOT = Path(__file__).resolve().parents[2] / "local-data"
 AUDIO_NAME = "audio.m4a"
 A2_EVIDENCE = "a2_evidence.md"
 A2_EVIDENCE_JSON = "a2_evidence.json"

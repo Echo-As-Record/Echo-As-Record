@@ -191,7 +191,10 @@ def test_codex_workspace_contains_only_route_input(tmp_path: Path) -> None:
     options = codex_runner.RunOptions(model="m", effort="low")
     run_dir = codex_runner.prepare(store, case, "a1b", options)
     ws = run_dir / "workspace"
-    assert sorted(p.name for p in (ws / "input").iterdir()) == ["recording.m4a"]
+    assert sorted(p.name for p in (ws / "input").iterdir()) == [
+        "recording.m4a",
+        "recording_info.md",
+    ]
     assert "活动时间线" in (ws / "TASK.md").read_text()
     with pytest.raises(FileNotFoundError, match="a2_evidence"):
         codex_runner.prepare(store, case, "a2", options)
@@ -201,8 +204,12 @@ def test_codex_workspace_contains_only_route_input(tmp_path: Path) -> None:
         "-m",
         "m",
     ]
-    assert not any("network_access" in c for c in cmd)
-    net = codex_runner.codex_command(
-        ws, "a1b", codex_runner.RunOptions(network=True), run_dir / "last.md"
-    )
-    assert "sandbox_workspace_write.network_access=true" in net
+    # a1b 联网，a1c 不联网；两者输入相同。
+    assert "sandbox_workspace_write.network_access=true" in cmd
+    offline = codex_runner.codex_command(ws, "a1c", options, run_dir / "last.md")
+    assert not any("network_access" in c for c in offline)
+    offline_dir = codex_runner.prepare(store, case, "a1c", options)
+    assert sorted(p.name for p in (offline_dir / "workspace" / "input").iterdir()) == [
+        "recording.m4a",
+        "recording_info.md",
+    ]

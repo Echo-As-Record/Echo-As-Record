@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>录音浏览器</title>
+<style>
+:root {
+  --bg: #f6f5f2; --panel: #ffffff; --line: #e4e1da; --text: #1f1d1a; --muted: #77726a;
+  --accent: #2f6f5e; --accent-soft: #e3efe9; --warn: #a3561c; --warn-soft: #f7e9dc;
+  --bad: #a3322b; --bad-soft: #f6e1df; --hl: #fff4c7; --chip: #efede8;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #171716; --panel: #201f1d; --line: #34322e; --text: #ece9e3; --muted: #9b968c;
+    --accent: #7cc4ad; --accent-soft: #23362f; --warn: #e0a06b; --warn-soft: #3a2a1d;
+    --bad: #e58a83; --bad-soft: #3b2220; --hl: #3d3720; --chip: #2b2a27; color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, "PingFang SC", "Helvetica Neue", sans-serif; }
+button { font: inherit; color: inherit; cursor: pointer; }
+.app { display: grid; grid-template-columns: 250px 330px 1fr; height: 100vh; }
+.col { overflow-y: auto; border-right: 1px solid var(--line); }
+.days { background: var(--bg); padding: 16px 12px; }
+.list { background: var(--panel); }
+.main { background: var(--panel); border-right: 0; display: flex; flex-direction: column; overflow: hidden; }
+h1 { font-size: 18px; margin: 0 4px 2px; }
+.sub { color: var(--muted); font-size: 12px; margin: 0 4px 12px; }
+.search { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); font: inherit; }
+.filters { display: flex; gap: 4px; margin: 8px 0 14px; flex-wrap: wrap; }
+.filters button { border: 1px solid var(--line); background: transparent; border-radius: 999px; padding: 2px 10px; font-size: 12px; }
+.filters button.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+.month { color: var(--muted); font-size: 12px; margin: 14px 4px 4px; }
+.day { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: 0; background: transparent; padding: 6px 8px; border-radius: 8px; }
+.day:hover { background: var(--chip); }
+.day.on { background: var(--accent-soft); }
+.day .d { width: 96px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.day .bar { flex: 1; height: 6px; border-radius: 3px; background: var(--chip); overflow: hidden; }
+.day .bar i { display: block; height: 100%; background: var(--accent); }
+.day .n { color: var(--muted); font-size: 12px; width: 52px; text-align: right; font-variant-numeric: tabular-nums; }
+.listhead { position: sticky; top: 0; background: var(--panel); padding: 16px 16px 10px; border-bottom: 1px solid var(--line); z-index: 1; }
+.listhead b { font-size: 16px; }
+.listhead span { color: var(--muted); font-size: 12px; margin-left: 6px; }
+.rec { display: block; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--line); background: transparent; padding: 10px 16px; }
+.rec:hover { background: var(--bg); }
+.rec.on { background: var(--accent-soft); }
+.rec .top { display: flex; align-items: baseline; gap: 8px; }
+.rec .time { font-weight: 600; font-variant-numeric: tabular-nums; }
+.rec .dur { color: var(--muted); font-size: 12px; }
+.rec .prev { color: var(--muted); font-size: 12px; margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.rec .note { font-size: 12px; margin-top: 3px; color: var(--accent); }
+.hit { font-size: 12px; margin-top: 3px; color: var(--text); }
+.hitdate { font-size: 11px; color: var(--muted); margin-top: 4px; }
+.hit mark { background: var(--hl); color: inherit; }
+.chip { font-size: 11px; padding: 0 7px; border-radius: 999px; background: var(--chip); color: var(--muted); margin-left: auto; white-space: nowrap; }
+.chip.ready { background: var(--accent-soft); color: var(--accent); }
+.chip.failed, .chip.audio_missing { background: var(--bad-soft); color: var(--bad); }
+.chip.processing, .chip.incomplete, .chip.not_ingested { background: var(--warn-soft); color: var(--warn); }
+.empty { color: var(--muted); padding: 40px 24px; text-align: center; }
+.player { padding: 18px 24px 14px; border-bottom: 1px solid var(--line); }
+.player h2 { font-size: 20px; margin: 0; font-variant-numeric: tabular-nums; }
+.player .meta { color: var(--muted); font-size: 12px; margin: 2px 0 12px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.player .meta code { font-size: 11px; }
+.copy { border: 1px solid var(--line); background: transparent; border-radius: 6px; font-size: 11px; padding: 0 6px; }
+.controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.play { width: 44px; height: 44px; border-radius: 50%; border: 0; background: var(--accent); color: var(--panel); font-size: 18px; }
+.skip { border: 1px solid var(--line); background: transparent; border-radius: 8px; padding: 4px 8px; font-size: 12px; }
+.clock { font-variant-numeric: tabular-nums; min-width: 150px; }
+.clock b { font-size: 16px; }
+.clock span { color: var(--muted); font-size: 12px; margin-left: 4px; }
+.speed { display: flex; gap: 2px; margin-left: auto; }
+.speed button { border: 1px solid var(--line); background: transparent; font-size: 12px; padding: 2px 7px; border-radius: 6px; }
+.speed button.on { background: var(--text); color: var(--bg); }
+.scrub { position: relative; height: 34px; margin-top: 12px; cursor: pointer; }
+.scrub .track { position: absolute; left: 0; right: 0; top: 14px; height: 6px; border-radius: 3px; background: var(--chip); }
+.scrub .done { position: absolute; left: 0; top: 14px; height: 6px; border-radius: 3px; background: var(--accent); }
+.scrub .tick { position: absolute; top: 4px; width: 2px; height: 8px; background: var(--muted); opacity: .45; }
+.scrub .knob { position: absolute; top: 9px; width: 16px; height: 16px; margin-left: -8px; border-radius: 50%; background: var(--panel); border: 2px solid var(--accent); }
+.scrub .labels { position: absolute; top: 22px; left: 0; right: 0; display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.problem { margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: var(--warn-soft); color: var(--text); font-size: 13px; }
+.notes { margin-top: 12px; }
+.notes textarea { width: 100%; min-height: 40px; resize: vertical; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; background: var(--bg); color: var(--text); font: inherit; }
+.notes small { color: var(--muted); }
+.tbar { display: flex; gap: 6px; align-items: center; padding: 8px 24px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+.tbar label { display: flex; gap: 4px; align-items: center; cursor: pointer; }
+.tbar .grow { flex: 1; }
+.transcript { overflow-y: auto; flex: 1; padding: 6px 12px 60px; }
+.row { display: grid; grid-template-columns: 64px 1fr; gap: 10px; padding: 5px 12px; border-radius: 6px; cursor: pointer; }
+.row:hover { background: var(--bg); }
+.row.now { background: var(--hl); }
+.row .c { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; padding-top: 2px; }
+.row .spk { font-size: 11px; font-weight: 600; margin-right: 6px; padding: 0 5px; border-radius: 4px; }
+.row.sound .x, .row.gps .x, .row.phone .x { color: var(--muted); font-size: 12px; }
+.row.sound .x::before { content: "♪ "; }
+.row.gps .x::before { content: "⌖ "; }
+.row.phone .x::before { content: "▣ "; }
+.row a { color: var(--accent); }
+pre.md { white-space: pre-wrap; padding: 12px; font-size: 12px; }
+.help { color: var(--muted); font-size: 11px; margin: 18px 4px 0; line-height: 1.8; }
+kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; font-size: 10px; }
+@media (max-width: 900px) {
+  .app { grid-template-columns: 1fr; height: auto; }
+  .col { border-right: 0; border-bottom: 1px solid var(--line); max-height: none; }
+  .days { max-height: 40vh; }
+  .list { max-height: 50vh; }
+  .main { min-height: 90vh; }
+  .player, .tbar { padding-left: 16px; padding-right: 16px; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="col days">
+    <h1>录音</h1>
+    <div class="sub" id="totals">加载中…</div>
+    <input class="search" id="q" placeholder="搜索转写、备注…（回车）" autocomplete="off">
+    <div class="filters" id="filters"></div>
+    <div id="daylist"></div>
+    <div class="help">
+      <kbd>空格</kbd> 播放/暂停　<kbd>←</kbd><kbd>→</kbd> 5 秒<br>
+      <kbd>J</kbd><kbd>K</kbd> 上/下一段　<kbd>/</kbd> 搜索<br>
+      链接 <code>#录音id@秒数</code> 可直接定位
+    </div>
+  </aside>
+  <section class="col list" id="list"></section>
+  <main class="col main" id="main"><div class="empty">选一段录音</div></main>
+</div>
+<audio id="audio" preload="metadata"></audio>
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+const audio = $("#audio");
+const STATUS = {ready: "可用", processing: "处理中", failed: "失败", incomplete: "不完整", audio_missing: "缺音频", not_ingested: "未导入"};
+const FILTERS = [["ready", "可用"], ["all", "全部"], ["problem", "有问题"]];
+const WEEK = "日一二三四五六";
+const state = {index: null, recs: [], notes: {}, filter: "ready", day: null, current: null, detail: null,
+  hits: null, query: "", show: {sound: true, gps: true, phone: false}, follow: true, pendingSeek: null};
+
+const fmtDur = s => { s = Math.round(s || 0); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+  return h ? `${h} 小时 ${m} 分` : m ? `${m} 分 ${s % 60} 秒` : `${s} 秒`; };
+const fmtT = s => { s = Math.max(0, Math.floor(s)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
+  return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(x).padStart(2, "0"); };
+const hm = iso => iso ? iso.slice(11, 16) : "--:--";
+const hms = iso => iso ? iso.slice(11, 19) : "--:--:--";
+const dateLabel = d => { const t = new Date(d + "T12:00:00"); return `${t.getMonth() + 1}月${t.getDate()}日 周${WEEK[t.getDay()]}`; };
+const clockAt = (rec, sec) => { if (!rec.started_at) return "";
+  const base = rec.started_at.slice(11, 19).split(":").map(Number); let t = base[0] * 3600 + base[1] * 60 + base[2] + Math.floor(sec);
+  t %= 86400; return [Math.floor(t / 3600), Math.floor(t % 3600 / 60), t % 60].map(v => String(v).padStart(2, "0")).join(":"); };
+const endIso = rec => { if (!rec.started_at) return null; return clockAt(rec, rec.duration_s || 0); };
+
+function visible() {
+  const f = state.filter;
+  return state.recs.filter(r => f === "all" || (f === "ready" ? r.status === "ready" : r.status !== "ready"));
+}
+
+async function load() {
+  const [index, notes] = await Promise.all([fetch("/api/index").then(r => r.json()), fetch("/api/notes").then(r => r.json())]);
+  state.index = index; state.notes = notes;
+  state.recs = (index.recordings || []).map(r => ({...r, local_date: r.local_date || (r.started_at || "").slice(0, 10) || "未知日期"}));
+  const t = index.totals || {};
+  const probs = (t.processing || 0) + (t.failed || 0) + (t.incomplete || 0) + (t.audio_missing || 0) + (t.not_ingested || 0);
+  $("#totals").textContent = `可用 ${t.ready ?? "?"} 段 · ${(t.ready_hours ?? 0).toFixed(1)} 小时　其他 ${probs} 段`;
+  renderFilters(); renderDays();
+  const hash = decodeURIComponent(location.hash.slice(1));
+  if (hash) openFromHash(hash); else { const days = dayGroups(); if (days.length) selectDay(days[days.length - 1][0]); }
+}
+
+function dayGroups() {
+  const m = new Map();
+  for (const r of visible()) { if (!m.has(r.local_date)) m.set(r.local_date, []); m.get(r.local_date).push(r); }
+  return [...m.entries()].sort((a, b) => a[0] < b[0] ? -1 : 1);
+}
+
+function renderFilters() {
+  $("#filters").innerHTML = FILTERS.map(([k, l]) => `<button data-f="${k}" class="${state.filter === k ? "on" : ""}">${l}</button>`).join("");
+}
+
+function renderDays() {
+  const groups = dayGroups();
+  const max = Math.max(1, ...groups.map(([, rs]) => rs.reduce((a, r) => a + (r.duration_s || 0), 0)));
+  let html = "", month = "";
+  for (const [d, rs] of [...groups].reverse()) {
+    const mo = d.slice(0, 7);
+    if (mo !== month) { month = mo; html += `<div class="month">${mo.replace("-", " 年 ")} 月</div>`; }
+    const secs = rs.reduce((a, r) => a + (r.duration_s || 0), 0);
+    html += `<button class="day ${state.day === d && !state.hits ? "on" : ""}" data-day="${d}">
+      <span class="d">${d === "未知日期" ? d : dateLabel(d).replace(/^\d+月/, m => m)}</span>
+      <span class="bar"><i style="width:${Math.max(4, secs / max * 100)}%"></i></span>
+      <span class="n">${rs.length} 段</span></button>`;
+  }
+  $("#daylist").innerHTML = html || `<div class="empty">没有录音</div>`;
+}
+
+function recButton(r, extra = "") {
+  const note = state.notes[r.id]?.text;
+  return `<button class="rec ${state.current?.id === r.id ? "on" : ""}" data-id="${esc(r.id)}">
+    <div class="top"><span class="time">${hm(r.started_at)}–${endIso(r)?.slice(0, 5) ?? ""}</span>
+      <span class="dur">${fmtDur(r.duration_s)}</span>
+      <span class="chip ${r.status}">${STATUS[r.status] || r.status}</span></div>
+    ${r.preview ? `<div class="prev">${esc(r.preview)}</div>` : ""}
+    ${note ? `<div class="note">✎ ${esc(note)}</div>` : ""}${extra}</button>`;
+}
+
+function renderList() {
+  const el = $("#list");
+  if (state.hits) {
+    const byId = new Map();
+    for (const h of state.hits) { if (!byId.has(h.id)) byId.set(h.id, []); byId.get(h.id).push(h.line); }
+    const recs = [...byId.keys()].map(id => state.recs.find(r => r.id === id)).filter(Boolean)
+      .sort((a, b) => (a.started_at || "") < (b.started_at || "") ? -1 : 1);
+    const re = new RegExp(state.query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+    el.innerHTML = `<div class="listhead"><b>「${esc(state.query)}」</b><span>${recs.length} 段录音，${state.hits.length} 处</span></div>` +
+      (recs.map(r => recButton(r, `<div class="hitdate">${dateLabel(r.local_date)}</div>` + byId.get(r.id).slice(0, 4).map(l =>
+        `<div class="hit" data-line="${esc(l)}">${esc(l).replace(re, m => `<mark>${m}</mark>`)}</div>`).join(""))).join("") || `<div class="empty">没有找到</div>`);
+    return;
+  }
+  const rs = visible().filter(r => r.local_date === state.day);
+  const secs = rs.reduce((a, r) => a + (r.duration_s || 0), 0);
+  el.innerHTML = `<div class="listhead"><b>${state.day ? (state.day === "未知日期" ? state.day : dateLabel(state.day)) : ""}</b><span>${rs.length} 段 · ${fmtDur(secs)}</span></div>` +
+    (rs.map(r => recButton(r)).join("") || `<div class="empty">这一天没有录音</div>`);
+}
+
+function selectDay(d) { state.day = d; state.hits = null; renderDays(); renderList(); }
+
+async function openRec(id, seek = null) {
+  const rec = state.recs.find(r => r.id === id);
+  if (!rec) return;
+  if (state.current?.id !== id) {
+    state.current = rec; state.detail = null;
+    if (!state.hits && rec.local_date !== state.day) { state.day = rec.local_date; renderDays(); }
+    renderList(); renderMain();
+    audio.src = rec.audio_path ? `/audio/${encodeURIComponent(id)}` : "";
+    history.replaceState(null, "", "#" + encodeURIComponent(id));
+    state.pendingSeek = seek;
+    const detail = await fetch(`/api/recordings/${encodeURIComponent(id)}`).then(r => r.json()).catch(e => ({error: String(e), rows: []}));
+    if (state.current?.id !== id) return;
+    state.detail = detail; renderTranscript();
+  } else if (seek != null) seekTo(seek, true);
+  if (seek != null && audio.readyState >= 1) { seekTo(seek, true); state.pendingSeek = null; }
+}
+
+function seekTo(t, play = false) {
+  audio.currentTime = Math.max(0, Math.min(t, (audio.duration || state.current?.duration_s || 0) - 0.1));
+  if (play) audio.play();
+}
+
+function renderMain() {
+  const r = state.current, el = $("#main");
+  const ticks = (r.chunk_starts || []).map(t => `<span class="tick" style="left:${t / r.duration_s * 100}%"></span>`).join("");
+  const f = r.failure;
+  el.innerHTML = `<div class="player">
+    <h2>${r.local_date === "未知日期" ? "未知日期" : dateLabel(r.local_date)}　${hms(r.started_at)} – ${endIso(r) ?? ""}</h2>
+    <div class="meta"><span class="chip ${r.status}" style="margin:0">${STATUS[r.status] || r.status}</span>
+      <span>${fmtDur(r.duration_s)}</span>
+      ${r.counts ? `<span>${r.counts.speech_segments ?? 0} 句 · ${r.counts.transcript_chars ?? 0} 字 · ${r.counts.audio_events ?? 0} 个环境声</span>` : ""}
+      <code>${esc(r.id)}</code><button class="copy" data-copy="${esc(r.id)}">复制 id</button>
+      ${r.audio_path ? `<button class="copy" data-copy="${esc(r.audio_path)}">复制音频路径</button>` : ""}</div>
+    ${r.audio_path ? `<div class="controls">
+      <button class="skip" data-skip="-15">−15 秒</button>
+      <button class="play" id="playbtn">▶</button>
+      <button class="skip" data-skip="15">+15 秒</button>
+      <div class="clock"><b id="nowclock">${hms(r.started_at)}</b><span id="nowrel">0:00 / ${fmtT(r.duration_s)}</span></div>
+      <div class="speed">${[1, 1.5, 2, 3].map(s => `<button data-speed="${s}" class="${audio.playbackRate === s ? "on" : ""}">${s}×</button>`).join("")}</div>
+    </div>
+    <div class="scrub" id="scrub"><div class="track"></div>${ticks}<div class="done" id="done"></div><div class="knob" id="knob"></div>
+      <div class="labels"><span>${hm(r.started_at)}</span><span>${endIso(r)?.slice(0, 5) ?? ""}</span></div></div>`
+    : `<div class="problem">找不到音频文件。</div>`}
+    ${f ? `<div class="problem"><b>${esc(f.stage || "")} 失败：</b>${esc(f.reason || "")}<br>
+      能否重跑：${{yes: "可以", no: "不行", unknown: "不确定"}[f.rerunnable] || esc(f.rerunnable)}${f.rerun_how ? `　${esc(f.rerun_how)}` : ""}</div>` : ""}
+    ${r.missing?.length ? `<div class="problem">缺少：${r.missing.map(esc).join("、")}</div>` : ""}
+    <div class="notes"><textarea id="note" placeholder="备注：这段录音是在干什么（只存在本机）">${esc(state.notes[r.id]?.text || "")}</textarea>
+      <small id="notestate"></small></div>
+  </div>
+  <div class="tbar"><span>显示</span>
+    <label><input type="checkbox" data-show="sound" ${state.show.sound ? "checked" : ""}>环境声</label>
+    <label><input type="checkbox" data-show="gps" ${state.show.gps ? "checked" : ""}>位置</label>
+    <label><input type="checkbox" data-show="phone" ${state.show.phone ? "checked" : ""}>手机状态</label>
+    <span class="grow"></span>
+    <label><input type="checkbox" id="follow" ${state.follow ? "checked" : ""}>跟随播放</label></div>
+  <div class="transcript" id="transcript"><div class="empty">读取转写…</div></div>`;
+  updateClock();
+}
+
+const SPK_COLORS = ["#2f6f5e", "#8a4fb0", "#b0601c", "#2d5fa3", "#a3324e", "#5f7d1c", "#1c7f8f", "#7a5a3a"];
+function spkStyle(label) { let h = 0; for (const c of label) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  const c = SPK_COLORS[h % SPK_COLORS.length]; return `color:${c};background:${c}1f`; }
+
+function renderTranscript() {
+  const el = $("#transcript"), d = state.detail;
+  if (!el || !d) return;
+  if (d.source === "markdown") { el.innerHTML = `<div class="problem" style="margin:12px">旧 Ear 暂时读不到，显示的是盘点时保存的转写。${esc(d.error || "")}</div><pre class="md">${esc(d.markdown)}</pre>`; return; }
+  const rows = (d.rows || []).filter(x => x.kind === "speech" || state.show[x.kind]);
+  if (!rows.length) { el.innerHTML = `<div class="empty">${esc(d.error || "这段录音没有转写")}</div>`; return; }
+  el.innerHTML = rows.map((x, i) => {
+    let body = esc(x.text);
+    if (x.kind === "speech") body = `<span class="spk" style="${spkStyle(x.speaker || "")}">${esc(x.speaker || "")}</span>${body}`;
+    if (x.kind === "gps") body = `${body}　<a href="https://www.openstreetmap.org/?mlat=${x.lat}&mlon=${x.lon}#map=17/${x.lat}/${x.lon}" target="_blank" rel="noopener">地图</a>`;
+    return `<div class="row ${x.kind}" data-t="${x.t}" data-end="${x.end ?? x.t}"><span class="c">${x.clock}</span><span class="x">${body}</span></div>`;
+  }).join("");
+  if (state.pendingSeek != null && audio.readyState >= 1) { seekTo(state.pendingSeek, true); state.pendingSeek = null; }
+}
+
+let lastNow = null;
+function updateClock() {
+  const r = state.current; if (!r) return;
+  const t = audio.currentTime || 0, total = audio.duration || r.duration_s || 1;
+  const nc = $("#nowclock"), nr = $("#nowrel"), done = $("#done"), knob = $("#knob");
+  if (nc) nc.textContent = clockAt(r, t) || fmtT(t);
+  if (nr) nr.textContent = `${fmtT(t)} / ${fmtT(total)}`;
+  if (done) done.style.width = (t / total * 100) + "%";
+  if (knob) knob.style.left = (t / total * 100) + "%";
+  const pb = $("#playbtn"); if (pb) pb.textContent = audio.paused ? "▶" : "❚❚";
+  const rows = document.querySelectorAll(".row.speech");
+  let now = null;
+  for (const row of rows) { if (+row.dataset.t <= t + 0.3) now = row; else break; }
+  if (now !== lastNow) {
+    lastNow?.classList.remove("now"); now?.classList.add("now"); lastNow = now;
+    if (now && state.follow && !audio.paused) now.scrollIntoView({block: "center", behavior: "smooth"});
+  }
+}
+
+let noteTimer = null;
+function saveNote(text) {
+  const id = state.current.id;
+  clearTimeout(noteTimer); $("#notestate").textContent = "…";
+  noteTimer = setTimeout(async () => {
+    await fetch(`/api/notes/${encodeURIComponent(id)}`, {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({text})});
+    if (text.trim()) state.notes[id] = {text}; else delete state.notes[id];
+    const s = $("#notestate"); if (s && state.current?.id === id) s.textContent = "已保存";
+    renderList();
+  }, 600);
+}
+
+async function runSearch(q) {
+  state.query = q.trim();
+  if (!state.query) { state.hits = null; renderDays(); renderList(); return; }
+  state.hits = await fetch(`/api/search?q=${encodeURIComponent(state.query)}`).then(r => r.json());
+  renderDays(); renderList();
+}
+
+function openFromHash(h) { const m = h.match(/^(.+?)(?:@(\d+(?:\.\d+)?))?$/); if (m) openRec(m[1], m[2] != null ? +m[2] : null); }
+
+function offsetOfLine(rec, line) {
+  const m = line.match(/(\d{2}):(\d{2}):(\d{2})/); if (!m || !rec.started_at) return null;
+  const b = rec.started_at.slice(11, 19).split(":").map(Number);
+  let d = (+m[1] * 3600 + +m[2] * 60 + +m[3]) - (b[0] * 3600 + b[1] * 60 + b[2]); if (d < -3600) d += 86400;
+  return Math.max(0, d - 1);
+}
+
+document.addEventListener("click", e => {
+  const t = e.target;
+  const f = t.closest("[data-f]"); if (f) { state.filter = f.dataset.f; renderFilters(); const g = dayGroups();
+    if (!g.some(([d]) => d === state.day)) state.day = g.length ? g[g.length - 1][0] : null; renderDays(); renderList(); return; }
+  const day = t.closest("[data-day]"); if (day) { $("#q").value = ""; state.query = ""; selectDay(day.dataset.day); return; }
+  const hit = t.closest("[data-line]"), rec = t.closest(".rec");
+  if (rec) { const r = state.recs.find(x => x.id === rec.dataset.id);
+    openRec(rec.dataset.id, hit && r ? offsetOfLine(r, hit.dataset.line) : null); return; }
+  const row = t.closest(".row"); if (row && !t.closest("a")) { seekTo(+row.dataset.t, true); return; }
+  if (t.id === "playbtn") { audio.paused ? audio.play() : audio.pause(); return; }
+  const sk = t.closest("[data-skip]"); if (sk) { seekTo(audio.currentTime + +sk.dataset.skip); return; }
+  const sp = t.closest("[data-speed]"); if (sp) { audio.playbackRate = +sp.dataset.speed;
+    document.querySelectorAll("[data-speed]").forEach(b => b.classList.toggle("on", b === sp)); return; }
+  const cp = t.closest("[data-copy]"); if (cp) { navigator.clipboard?.writeText(cp.dataset.copy); cp.textContent = "已复制"; return; }
+  const sc = t.closest("#scrub"); if (sc) { const box = sc.getBoundingClientRect();
+    seekTo((e.clientX - box.left) / box.width * (audio.duration || state.current.duration_s)); }
+});
+document.addEventListener("change", e => {
+  const s = e.target.dataset.show; if (s) { state.show[s] = e.target.checked; renderTranscript(); lastNow = null; updateClock(); }
+  if (e.target.id === "follow") state.follow = e.target.checked;
+});
+document.addEventListener("input", e => { if (e.target.id === "note") saveNote(e.target.value); });
+$("#q").addEventListener("keydown", e => { if (e.key === "Enter") runSearch(e.target.value); if (e.key === "Escape") { e.target.value = ""; runSearch(""); e.target.blur(); } });
+document.addEventListener("keydown", e => {
+  if (e.target.matches("input, textarea")) return;
+  if (e.key === " ") { e.preventDefault(); if (audio.src) audio.paused ? audio.play() : audio.pause(); }
+  else if (e.key === "ArrowLeft") seekTo(audio.currentTime - 5);
+  else if (e.key === "ArrowRight") seekTo(audio.currentTime + 5);
+  else if (e.key === "/") { e.preventDefault(); $("#q").focus(); }
+  else if (e.key === "j" || e.key === "k") {
+    const ids = [...document.querySelectorAll(".rec")].map(b => b.dataset.id);
+    const i = ids.indexOf(state.current?.id), n = i + (e.key === "j" ? 1 : -1);
+    if (ids[n]) openRec(ids[n]);
+  }
+});
+window.addEventListener("hashchange", () => { const h = decodeURIComponent(location.hash.slice(1)); const m = h.match(/^(.+?)@/);
+  if (h && (m ? m[1] : h) !== state.current?.id || h.includes("@")) openFromHash(h); });
+audio.addEventListener("timeupdate", updateClock);
+audio.addEventListener("play", updateClock);
+audio.addEventListener("pause", updateClock);
+audio.addEventListener("loadedmetadata", () => { if (state.pendingSeek != null) { seekTo(state.pendingSeek, true); state.pendingSeek = null; } updateClock(); });
+load().catch(err => { $("#totals").textContent = "读不到 index.json：" + err; });
+</script>
+</body>
+</html>
