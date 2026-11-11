@@ -3,7 +3,7 @@ audience: ai
 doc-type: reference
 generated-by: Codex (AI)
 generated-at: 2026-11-05
-based-on: services/extraction/ai-docs/mvp-design.md, docs/design/design-v1.1.md, docs/design/signals-supplement.md, dev 48d3c51
+based-on: services/extraction/ai-docs/mvp-design.md, docs/design/design-v1.1.md, docs/design/signals-supplement.md, dev 48d3c51；本轮负责人授权④直接依赖⑦ GatewayClient，依据当前 client.py/models.py/orchestration.py
 ---
 
 # ④ MVP 使用与接入
@@ -38,18 +38,29 @@ uv run pytest services/extraction/tests -q
 
 ```python
 from ear_extraction import ExtractionService
+from ear_extraction.model_io import SYSTEM
 from ear_extraction.worker import Schedule, serve
+from ear_llm_gateway.client import GatewayClient
 
-service = ExtractionService(storage.client("extraction"), gateway)
-# 宿主注入时区为 UTC 的起始时间和停止信号；一个部署只运行一个 worker。
-serve(service, stop_event, schedule=Schedule(start=start_utc))
+with GatewayClient(gateway_url, extraction_token, system=SYSTEM) as gateway:
+    service = ExtractionService(storage.client("extraction"), gateway)
+    # 宿主注入时区为 UTC 的起始时间和停止信号；一个部署只运行一个 worker。
+    serve(service, stop_event, schedule=Schedule(start=start_utc))
 ```
 
 - `storage` 由①提供。`service.subscribe()` 只订阅一次；①负责真实事件投递。内存演示需显式 `storage.run_until_idle()`。
 - `gateway.complete(Call)` 是⑦接入端口。Call 包含 module、root_feedback_id、depth、run_id、purpose、data、output_schema。
-- `HttpGateway(endpoint, token)` 提供候选 HTTP 适配：向配置地址 POST Call 和 system，期望 `{ "output": {...} }`。⑦尚未实现，该 HTTP 格式需要⑦负责人对齐，不是仓库已有部署接口。
+- ④直接依赖 workspace 包 `ear-llm-gateway`，HTTP 实现统一使用 `GatewayClient`；保留 `ModelGateway` Protocol 供注入与测试替身。客户端仍在⑦，不移入 libs。`gateway_url` 是不带路径的网关根地址；`extraction_token` 是④自己的①令牌（43 位），由宿主安全注入。必须传 `system=SYSTEM`，否则客户端默认空提示词。客户端 POST `/v1/complete`，只返回已保存调用记录后的对象 `output`；不跟随重定向、不自动重试，宿主负责关闭连接。
 - 不提供厂商直连。⑦接入 Octopus 时应通过 Manager 的 `/api/v1/llm/...`；④不绕过⑦。
 - `service.runs()` 查询状态，`service.retry(run_id)` 显式重试终止任务；⑥可封装为受授权操作。本包不新建一套用户 HTTP API。
+
+## ⑦ 契约核对与恢复限制
+
+- ④ `Call` 的七个字段均被⑦ `CallRequest` 接受，客户端补 `call_id`、`model`、`system`。两者校验强度不相同：⑦要求 run_id 为小写 UUIDv7、root 为 UUIDv7 或 `system`、depth 为 0–10000 的整数、purpose 为不超过 128 字符的 snake_case。④正常任务 run_id 来自事件 UUIDv7 或 `schedule_id` 生成的稳定 UUIDv7，现有 purpose 均合法，无需改 ID 生成或提示词。任意手造的④ Call 不保证通过⑦校验。
+- ④目前不传 `request_event_id` / `additional_causes`。请求结构可以通过 `CallRequest`，但⑦服务要求无请求关联时 depth=0；因此 depth>0 的重判会被服务拒绝 `request_context_required`（客户端呈现 `gateway_request_failed`），depth=0 也不代表已完成重判请求关联。该跨模块差距本轮只报告，不重置 depth、不放宽⑦校验。
+- 每次 `complete(Call)` 都生成新的 call_id，即使 run_id 和参数相同。传输错误 `gateway_outcome_unknown` 可能表示模型已经执行，**不能自动换新 id 重试**。可恢复流程需要在发送前持久化 call_id，构造带该 ID 的⑦ `CallRequest`，随后用 `reconcile(call_id)` 核对/补写记录；reconcile 不重发模型，也不恢复输出正文。当前④没有这套持久化与对账流程，不能把换客户端视为安全恢复已经完成。
+- 现有自动重算位置均在 `orchestration.py`：`process` 的通用异常分支（包括 GatewayError）进入 retry_wait；业务提交存储冲突同样进入 retry_wait；`drain` / `process` 在重试期限或 running 租约到期后重新计算，`worker.tick` / `serve` 持续驱动。`_finish` 只限制尝试次数，不能防止重复模型调用。`retry(run_id)` 是显式重新排队，也不做对账。调用成功但后续提交失败或进程崩溃同样可能重发。按本轮授权边界保留上述业务流程；接真实⑦前仍需解决该风险。
+- 依赖方向为⑥ → ④ → ⑦ → 共享契约/存储 SDK；⑦运行包没有反向依赖④或⑥。⑦现有跨模块测试导入④属于根 workspace 测试，不是运行包依赖。
 
 ## 反馈格式（模块局部草案）
 

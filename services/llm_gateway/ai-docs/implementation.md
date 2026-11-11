@@ -29,7 +29,7 @@ based-on: 设计 v1.2 第 9 节；信号补充；插件 MVP；工作分解 v1.2�
 
 测试在 `services/llm_gateway/tests/`：`test_gateway.py`、`test_journal_hardening.py`、`test_octopus.py`、`test_final_fixes.py`。部署相关：`deploy/Dockerfile.gateway`、`deploy/compose.api-gateway.yaml`、`deploy/compose.gateway-octopus.yaml`、`deploy/compose.gateway-provider.yaml`、`deploy/api_gateway_runtime.py`（文件挂载的容器入口，不初始化身份或 schema），部署烟测 `tests/test_api_gateway_deployment.py`。
 
-依赖：`ear-contracts`、`ear-storage-client`、`fastapi`、`uvicorn`、`httpx`（不依赖 ④ 或 ① 服务包）。
+依赖：`ear-contracts`、`ear-storage-client`、`fastapi`、`uvicorn`、`httpx`（不依赖④、⑥或①服务包）。④现直接依赖此 workspace 包并注入 `GatewayClient(..., system=SYSTEM)`，保留自身 `ModelGateway` Protocol；接入限制见[④实现说明](../../extraction/ai-docs/implementation.md)。
 
 ## 2. `complete` 的执行顺序（以 `service.py` 为准）
 
@@ -97,7 +97,7 @@ uv run pytest libs/ear_storage_client/tests/test_plugin_directory.py services/st
 
 仍保留的限制（复核明确“不是新需求”）：占用检查不是跨 provider 的原子预占；本地单 journal 栅栏不等于 provider exactly-once；不要求支持任意 JSON Schema；不防恶意同 UID 的任意检查/使用竞态、卷丢失；“无剩余必须修复项”不代表全仓或生产验收。
 
-**未验证**：真实模型/生产 wire；对端 Octopus 版本；多副本；限额/重试/超时的部署入口；③④⑤和插件接入。
+**未验证**：真实模型/生产 wire；对端 Octopus 版本；多副本；限额/重试/超时的部署入口；③⑤和插件接入；④已采用 GatewayClient，仅以 MockTransport 验证客户端边界，恢复与重判关联未完成。
 
 ## 7. ①侧依赖（均在功能分支 `api/gateway-mvp`，待合并，不在 dev 376294d）
 

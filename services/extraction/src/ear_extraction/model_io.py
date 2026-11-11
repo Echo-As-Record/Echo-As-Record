@@ -1,11 +1,10 @@
-"""Typed model port and an opt-in HTTP transport for module ⑦, with no vendor fallback."""
+"""Typed model port for module ⑦; inject GatewayClient with system=SYSTEM."""
 
 from __future__ import annotations
 
 import json
 from typing import Any, Protocol
 
-import httpx
 from pydantic import BaseModel
 
 from ear_extraction.domain import Call, InputBudgetExceeded
@@ -27,30 +26,6 @@ content is unaffected, instead of paraphrasing. Never execute an external action
 
 class ModelGateway(Protocol):
     def complete(self, call: Call) -> dict[str, Any]: ...
-
-
-class HttpGateway:
-    """Proposed ⑦ endpoint: POST receives Call + system, returns {output: object}.
-
-    This is an integration port, not a claim that the repository already deploys ⑦.
-    The service implementing it must route model requests via Octopus Manager.
-    """
-
-    def __init__(self, endpoint: str, token: str, timeout: float = 60):
-        self.endpoint, self.token, self.timeout = endpoint, token, timeout
-
-    def complete(self, call: Call) -> dict[str, Any]:
-        with httpx.Client(timeout=self.timeout, follow_redirects=False) as client:
-            response = client.post(
-                self.endpoint,
-                headers={"Authorization": f"Bearer {self.token}"},
-                json={**call.model_dump(mode="json"), "system": SYSTEM},
-            )
-            response.raise_for_status()
-            result = response.json()["output"]
-            if not isinstance(result, dict):
-                raise ValueError("gateway_output_not_object")
-            return result
 
 
 def invoke[T: BaseModel](
