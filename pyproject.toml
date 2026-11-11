@@ -54,7 +54,7 @@ venv = ".venv"
 extraPaths = ["tools"]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
-include = ["tools", "tests", "libs", "services/storage", "services/adapters", "services/extraction", "services/api", "services/llm_gateway"]
+include = ["tools", "tests", "libs", "services/storage", "services/adapters", "services/extraction", "services/api", "services/llm_gateway", "services/dependency"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "libs", "services/storage/tests", "services/adapters/tests", "services/extraction/tests", "services/api/tests", "services/llm_gateway/tests"]

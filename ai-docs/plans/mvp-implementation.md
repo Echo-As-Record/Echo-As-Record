@@ -27,6 +27,7 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 | `services/adapters/` | ②：旧 Ear Evidence → 原始数据的转换、导入规则、内存试运行；命令行仍只写内存存储（`MemoryStorage`），未接入①远程服务（[实现说明](../../services/adapters/ai-docs/implementation.md)） | 真实落库、旧 Ear 的列录音接口、GPS 采样密度 |
 | `services/api/` | ⑥（功能分支 `api/gateway-mvp`，待合并；部分交付待审）：只读 API、反馈入口、管理接口与插件目录、轻量页面、受保护配置与命令行、离线外部动作切片；见[模块入口](../../services/api/README.md)与[实现说明](../../services/api/ai-docs/implementation.md) | 外部动作执行/确认/风险重试（HTTP 501，缺④协议）、③⑤反馈的消费（只记录 `pending_contract`）、真实日历适配器、真实浏览器↔真实①+⑤的端到端（API 层对真实①的 26 项集成测试已通过，见第 6 节）、生产运行（全套验收仅在合成/隔离环境通过，见第 6 节） |
 | `services/llm_gateway/` | ⑦（功能分支 `api/gateway-mvp`，待合并；部分交付待审）：网关 HTTP 服务、调用方①令牌认证、重判上下文预检、call_id 占用检查、单 worker 私有 journal、终态 `llm_call` 写入、受限输出 schema、源码固定到 Octopus `b3c7cd5dd950a79e94533b114619082a542eac66` 的适配器、客户端/命令行/容器；见[模块入口](../../services/llm_gateway/README.md)与[实现说明](../../services/llm_gateway/ai-docs/implementation.md) | 真实模型调用与生产 wire 验证、exactly-once、实测用量（Octopus 的 usage 为合成估算，记为未知）、③④⑤和插件接入、正文保留期、生产运行（全套验收仅在合成/隔离环境通过，见第 6 节） |
+| `services/dependency/` | ⑤：尚无代码；[模块入口](../../services/dependency/README.md)、[实现设计草案](../../services/dependency/ai-docs/design.md)与[接口提案](../../docs/proposals/dependency-scheduler-interfaces.md)（proposed，传播记录、按钮反馈格式与①权限 A1–A4） | 调度实现、传播记录、按钮反馈消费、历史补处理接入、多层测试插件 |
 | `deploy/compose.yaml` | ①存储切片的隔离 Compose（postgres、nats、storage、relay、manage-worker；显式 migrate/bootstrap/init-identities）与备份工具 `tools/storage_backup.py` 已随 PR8 合入 dev 376294d（该文件本身不含②③④⑤⑥⑦，非生产运行手册，见[隔离部署指南](../../services/storage/ai-docs/deployment.md)；⑥⑦的 opt-in 覆盖文件 `deploy/compose.api-gateway.yaml` 等见第 6 节，功能分支待合并） | 生产部署与升级迁移、备份文件保留/删除、其他模块部署 |
 | `tests/e2e/` | E2E骨架 | 插件端到端完成 |
 
@@ -94,6 +95,7 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 - ③仅参考匹配时登记references，不因名字字段变化重归属；保留用户确认保护。
 - ④活动仅原始数据；纯Markdown；选择结果按当前规则集合更新，自动/手动来源分离；最新规则或规则失效处理。
 - ③④及插件提交完成记录，⑤查询无变化/失败/不适用，等待已知相关上游、合并原因并保留追溯；不再写死md终点。
+  ⑤的调度算法、持久化与任务拆分见[⑤实现设计草案](../../services/dependency/ai-docs/design.md)；需要①补的身份与权限（A1–A4）见[⑤接口提案](../../docs/proposals/dependency-scheduler-interfaces.md)第 4 节。
 - ⑦经①保存统计追踪，按请求ID关联；正文开启/保留参数不凭文档示例变成永久留存。
 - ⑥外部执行区分未执行与未知，稳定标识、安全恢复、用户核对；审核与执行反馈遵守单写者。
 

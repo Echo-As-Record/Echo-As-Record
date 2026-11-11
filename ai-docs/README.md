@@ -24,6 +24,7 @@ based-on: README.md；docs/README.md；本轮已确认设计v1.2；代码基线o
 | ②实现、导入规则与验收 | [实现说明](../services/adapters/ai-docs/implementation.md)、[payload 字段](../services/adapters/ai-docs/payloads.md) |
 | ⑥ API 入口与实施计划 | [模块入口](../services/api/README.md)、[实施计划](../services/api/ai-docs/implementation.md) |
 | ⑦ 大模型入口与实施计划 | [模块入口](../services/llm_gateway/README.md)、[实施计划](../services/llm_gateway/ai-docs/implementation.md) |
+| ⑤ 依赖分析入口与实现设计 | [模块入口](../services/dependency/README.md)、[实现设计草案](../services/dependency/ai-docs/design.md)、[接口提案](../docs/proposals/dependency-scheduler-interfaces.md) |
 | 全局契约/实施顺序 | [实施计划](plans/mvp-implementation.md) |
 | 原结构提案 | [历史参考](proposals/module-internal-structure.md)，已superseded，不照搬旧API与职责 |
 | 原依赖提案 | [历史来源](../docs/proposals/dependency-refinement.md)，最终以设计及确认索引为准 |
