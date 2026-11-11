@@ -8,7 +8,7 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 
 ## 0. 这不是实现完成报告
 
-负责人已明确采纳目标并授权设计同步，那一轮不改contracts、业务代码、依赖或部署；此后①按授权在功能分支 `storage/implementation-preparation` 分批提交（P0a a6a1c5a、P0b cf337d1、P1 d7c9919、P2/P3 后端 d0d8875、合并 b7307e9、P4 f747e89/106cd2e/daa767f/e9391dd、P5 9705b61 及隔离部署切片，各提交详情见[①进度](../../services/storage/ai-docs/progress.md)）。**当前基线：PR8 已于 2026-11-07T09:32:19Z 合并为 `dev` 376294d（`gh` 只读核对，合并人 aytony；用户述已审核并合并）；dev 上 push 触发的 GitHub Actions CI run 42360158060（workflow CI，headSha 376294d）结论 success，日志显示 `EAR_RUN_POSTGRES_TESTS`、`EAR_RUN_NATS_TESTS`、`EAR_RUN_BACKUP_TESTS` 均为 1，pytest 为 1503 passed, 5 skipped, 1 warning in 583.04s。** 这说明①存储切片在 CI 的隔离环境（真实 PostgreSQL、NATS、备份往返）通过，**不是**生产验收：没有生产启动，生产部署与升级迁移、流保留/清理、备份文件保留/删除仍未做；③④⑤尚未与①完成完整业务联调（④是 v1.1 演示基线，⑤调度未实现）；②适配器命令行仍写内存存储（`MemoryStorage`），未接入①远程服务；⑥⑦在功能分支 `api/gateway-mvp`（待合并）里已部分实现，**部分交付、待审，不是完整 MVP**；修复后的最终全套验收已在合成/隔离环境通过（2067 passed、11 skipped，见第 6 节），不是生产验收。下文各阶段中“未合并”“尚未远程运行”等措辞是各自提交时的历史说明，以本段为准；历史测试数字不改。现有内存行为与新目标不同是显式待实现差距，不因测试绿就认定完成。目标定义见[设计](../../docs/design/design-v1.2.md)、[插件](../../docs/design/plugins-mvp.md)及[决策来源](../../docs/decisions/mvp-confirmed-decisions.md)。
+负责人已明确采纳目标并授权设计同步，那一轮不改contracts、业务代码、依赖或部署；此后①按授权在功能分支 `storage/implementation-preparation` 分批提交（P0a a6a1c5a、P0b cf337d1、P1 d7c9919、P2/P3 后端 d0d8875、合并 b7307e9、P4 f747e89/106cd2e/daa767f/e9391dd、P5 9705b61 及隔离部署切片，各提交详情见[①进度](../../services/storage/ai-docs/progress.md)）。**当前基线：PR8 已于 2026-11-07T09:32:19Z 合并为 `dev` 376294d（`gh` 只读核对，合并人 aytony；用户述已审核并合并）；dev 上 push 触发的 GitHub Actions CI run 42360158060（workflow CI，headSha 376294d）结论 success，日志显示 `EAR_RUN_POSTGRES_TESTS`、`EAR_RUN_NATS_TESTS`、`EAR_RUN_BACKUP_TESTS` 均为 1，pytest 为 1503 passed, 5 skipped, 1 warning in 583.04s。** 这说明①存储切片在 CI 的隔离环境（真实 PostgreSQL、NATS、备份往返）通过，**不是**生产验收：没有生产启动，生产部署与升级迁移、流保留/清理、备份文件保留/删除仍未做；③④⑤尚未与①完成完整业务联调（④是 v1.1 演示基线，⑤调度未实现）；②适配器已实现远程单轮/常驻扫描和重放，真实①双门控联调测试与真实旧 Ear 数据写入临时①已于 2026-11-11 本机跑通（非生产验收）；⑥⑦在功能分支 `api/gateway-mvp`（待合并）里已部分实现，**部分交付、待审，不是完整 MVP**；修复后的最终全套验收已在合成/隔离环境通过（2067 passed、11 skipped，见第 6 节），不是生产验收。下文各阶段中“未合并”“尚未远程运行”等措辞是各自提交时的历史说明，以本段为准；历史测试数字不改。现有内存行为与新目标不同是显式待实现差距，不因测试绿就认定完成。目标定义见[设计](../../docs/design/design-v1.2.md)、[插件](../../docs/design/plugins-mvp.md)及[决策来源](../../docs/decisions/mvp-confirmed-decisions.md)。
 
 ①的首批PR拆分、6cea0b7代码证据与阶段出入口见[①实施准备](../../services/storage/ai-docs/implementation-plan.md)。本页是工程执行顺序和风险清单，新增字段/类型名除已讨论术语外只是待设计项；不替代公共契约审核。协议、索引、超时等细节可由实施者提出，不反复问产品负责人；会改变已确认行为时再请求决策。
 
@@ -24,9 +24,10 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 | 同包 `ops.py`、`memory.py` | 批次、版本、依赖整体覆盖、内存总线；P0b 分支：`DependencyInput` 字段依赖、按能力强制登记、批末新鲜度、当前图无环（内存全局锁） | 持久化并发正确性、可信身份/动态权限、生产可靠投递 |
 | 同包 `queries.py`、`results.py` | 查询分页与冲突；P0b 分支 `DependencySet`、`dependency_cycle` | 远程游标一致性、所有读路径访问控制 |
 | `services/storage/` | 文档入口；P1 服务包 `ear_storage`（PostgreSQL、身份授权、snapshot、HTTP、CLI；d7c9919）；P2 `relay.py`、`consumers.py`（有序 Relay 与服务代理的持久消费者）与 P3 后端 `management.py`、`credentials.py`、`reconfiguration.py`（d0d8875，已随 PR8 合入 dev 376294d） | ⑥管理页与真实①的浏览器联调（页面已在⑥实现，功能分支待合并；真实浏览器 34 项仅对假①，API 层另有对真实①的 26 项集成测试，见第 6 节）、流保留/清理、生产部署（隔离 Compose 切片已实现，见[隔离部署指南](../../services/storage/ai-docs/deployment.md)） |
-| `services/adapters/` | ②：旧 Ear Evidence → 原始数据的转换、导入规则、内存试运行；命令行仍只写内存存储（`MemoryStorage`），未接入①远程服务（[实现说明](../../services/adapters/ai-docs/implementation.md)） | 真实落库、旧 Ear 的列录音接口、GPS 采样密度 |
+| `services/adapters/` | ②：旧 Ear Evidence → 原始数据的转换、导入规则、内存试运行；命令行已支持远程单轮/常驻扫描和重放，真实①双门控联调测试与真实旧 Ear 数据写入临时①已于 2026-11-11 本机跑通（非生产验收）（[实现说明](../../services/adapters/ai-docs/implementation.md)） | 正式部署的 adapter 身份签发、Compose 部署上的命令行真实运行、旧 Ear 的列录音接口、GPS 采样密度 |
 | `services/api/` | ⑥（功能分支 `api/gateway-mvp`，待合并；部分交付待审）：只读 API、反馈入口、管理接口与插件目录、轻量页面、受保护配置与命令行、离线外部动作切片；见[模块入口](../../services/api/README.md)与[实现说明](../../services/api/ai-docs/implementation.md) | 外部动作执行/确认/风险重试（HTTP 501，缺④协议）、③⑤反馈的消费（只记录 `pending_contract`）、真实日历适配器、真实浏览器↔真实①+⑤的端到端（API 层对真实①的 26 项集成测试已通过，见第 6 节）、生产运行（全套验收仅在合成/隔离环境通过，见第 6 节） |
 | `services/llm_gateway/` | ⑦（功能分支 `api/gateway-mvp`，待合并；部分交付待审）：网关 HTTP 服务、调用方①令牌认证、重判上下文预检、call_id 占用检查、单 worker 私有 journal、终态 `llm_call` 写入、受限输出 schema、源码固定到 Octopus `b3c7cd5dd950a79e94533b114619082a542eac66` 的适配器、客户端/命令行/容器；见[模块入口](../../services/llm_gateway/README.md)与[实现说明](../../services/llm_gateway/ai-docs/implementation.md) | 真实模型调用与生产 wire 验证、exactly-once、实测用量（Octopus 的 usage 为合成估算，记为未知）、③⑤和插件接入、④恢复与重判关联接入、正文保留期、生产运行（全套验收仅在合成/隔离环境通过，见第 6 节） |
+| `services/dependency/` | ⑤：尚无代码；[模块入口](../../services/dependency/README.md)、[实现设计草案](../../services/dependency/ai-docs/design.md)与[接口提案](../../docs/proposals/dependency-scheduler-interfaces.md)（proposed，传播记录、按钮反馈格式与①权限 A1–A4） | 调度实现、传播记录、按钮反馈消费、历史补处理接入、多层测试插件 |
 | `deploy/compose.yaml` | ①存储切片的隔离 Compose（postgres、nats、storage、relay、manage-worker；显式 migrate/bootstrap/init-identities）与备份工具 `tools/storage_backup.py` 已随 PR8 合入 dev 376294d（该文件本身不含②③④⑤⑥⑦，非生产运行手册，见[隔离部署指南](../../services/storage/ai-docs/deployment.md)；⑥⑦的 opt-in 覆盖文件 `deploy/compose.api-gateway.yaml` 等见第 6 节，功能分支待合并） | 生产部署与升级迁移、备份文件保留/删除、其他模块部署 |
 | `tests/e2e/` | E2E骨架 | 插件端到端完成 |
 
@@ -94,6 +95,7 @@ based-on: docs/design/design-v1.2.md；docs/design/plugins-mvp.md；docs/decisio
 - ③仅参考匹配时登记references，不因名字字段变化重归属；保留用户确认保护。
 - ④活动仅原始数据；纯Markdown；选择结果按当前规则集合更新，自动/手动来源分离；最新规则或规则失效处理。
 - ③④及插件提交完成记录，⑤查询无变化/失败/不适用，等待已知相关上游、合并原因并保留追溯；不再写死md终点。
+  ⑤的调度算法、持久化与任务拆分见[⑤实现设计草案](../../services/dependency/ai-docs/design.md)；需要①补的身份与权限（A1–A4）见[⑤接口提案](../../docs/proposals/dependency-scheduler-interfaces.md)第 4 节。
 - ⑦经①保存统计追踪，按请求ID关联；正文开启/保留参数不凭文档示例变成永久留存。
 - ⑥外部执行区分未执行与未知，稳定标识、安全恢复、用户核对；审核与执行反馈遵守单写者。
 

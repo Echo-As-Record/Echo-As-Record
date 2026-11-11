@@ -7,7 +7,14 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from ear_contracts import NewRawRecord, RawRecord, SemanticRecord, Source, SystemRecord
+from ear_contracts import (
+    DEFAULT_REGISTRY,
+    NewRawRecord,
+    RawRecord,
+    SemanticRecord,
+    Source,
+    SystemRecord,
+)
 from ear_extraction.domain import Interval
 from ear_storage_client import AppendRaw, Context, Query, TimeRange
 from ear_storage_client.protocol import Reader
@@ -17,24 +24,18 @@ from ear_api.config import Binding
 from ear_api.models import FeedbackInput
 from ear_api.upstream import GatewayError
 
+# The registry has no management flag; plugin feedback belongs to management APIs.
+MANAGEMENT_TYPES = frozenset({"plugin_management_feedback"})
+
+# Use only the shipped core registry, as MemoryStorage does by default.
+# Fetching /v1/registry or admitting dynamic plugin types is a future option
+# requiring a product decision, not part of business browsing today.
 BUSINESS_TYPES = frozenset(
-    {
-        "activity",
-        "artifact",
-        "person",
-        "place",
-        "rule",
-        "action_suggestion",
-        "attribution",
-        "voiceprint",
-        "gps_point",
-        "transcript_segment",
-        "phone_info",
-        "audio_ref",
-        "ambient_sound",
-        "local_speaker",
-        "feedback",
-    }
+    name
+    for name, spec in DEFAULT_REGISTRY.data_types.items()
+    if name in DEFAULT_REGISTRY.core_types
+    and spec.kind in {"raw_record", "semantic", "rule"}
+    and name not in MANAGEMENT_TYPES
 )
 
 

@@ -87,7 +87,7 @@ JSON 文件，必须是当前用户拥有的普通文件、权限不含 group/ot
 |---|---|---|
 | `GET /health/live`、`GET /health/ready` | 无需认证 | 存活；就绪（范围仅为 ⑥ 到 ① 的连通） |
 | `GET /v1/me` | 任一绑定 | 当前主体与角色（会先向①复核身份） |
-| `GET /v1/records/{type}` | 任一绑定 | 分页列出（`limit`、`cursor`、`start`、`end`、`include_superseded`）；类型限 activity、artifact、person、place、rule、action_suggestion、attribution、voiceprint、gps_point、transcript_segment、phone_info、audio_ref、ambient_sound、local_speaker、feedback，其他 404 |
+| `GET /v1/records/{type}` | 任一绑定 | 分页列出（`limit`、`cursor`、`start`、`end`、`include_superseded`）；类型按下述核心登记表规则推导，集合外返回 404 `not_found` |
 | `GET /v1/timeline` | 任一绑定 | 等同 activity 列表 |
 | `GET /v1/records/{type}/{id}`（可加 `?version=`） | 任一绑定 | 单条 |
 | `GET /v1/records/{type}/{id}/history` | 任一绑定 | 版本历史（`after_version`、`limit`） |
@@ -100,6 +100,10 @@ JSON 文件，必须是当前用户拥有的普通文件、权限不含 group/ot
 | `POST /v1/management/credentials/{feedback_id}/claim` | 仅 admin | 一次性领取凭据，空请求体；第二次被拒 |
 | `GET /v1/management/results`、`/results/{id}`、`/history/jobs/{id}` | 仅 admin | 管理结果与历史补处理任务状态 |
 | `/plugins/` | 页面本身无需认证 | 插件管理页；必须带结尾斜杠，`/plugins` 返回 404 |
+
+可浏览业务类型从 `ear_contracts.DEFAULT_REGISTRY`（随代码发布的核心登记表，也是 `MemoryStorage` 的默认登记表）推导：仅纳入 `kind` 为 `raw_record`、`semantic`、`rule` 的核心类型，并排除 `plugin_management_feedback`。登记表暂无管理类型标志，⑥ 用 `MANAGEMENT_TYPES` 显式排除该类型，因为插件管理反馈走管理接口；所有 `system_record` 都不纳入。当前结果与原有 15 类完全相同，列表、单条及历史接口共用此集合，权限仍由①检查。
+
+此处不在运行时请求①的 `/v1/registry`，也不自动纳入动态插件类型；这两项仅为未来可选方向，须另行作出产品决策。
 
 **提交反馈**（202）：`request_id` 为调用方生成的 UUIDv7；同一请求重试必须复用同一 `request_id` 且内容相同，反馈 id 由主体与 `request_id` 确定性推出，重放不会产生第二条。
 
