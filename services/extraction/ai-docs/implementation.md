@@ -3,14 +3,16 @@ audience: ai
 doc-type: reference
 generated-by: Codex (AI)
 generated-at: 2026-11-05
-based-on: services/extraction/ai-docs/mvp-design.md, docs/design/design-v1.1.md, docs/design/signals-supplement.md, dev 48d3c51；本轮负责人授权④直接依赖⑦ GatewayClient，依据当前 client.py/models.py/orchestration.py；2026-11-11 增补：工作区未提交的④首片（call_safety.py、orchestration.py、domain.py、model_io.py、planning.py、worker.py、demo.py 与相应测试，作者读 git diff 与源码核对）；任务状态文件 /tmp/ear-mvp-extraction-followup.json 与 /tmp/ear-mvp-extraction-state.json（非仓库文件，其中的测试作者未复跑，只用 pytest --collect-only 核对项数）；未填写或改动任何 reviewed 字段
+based-on: services/extraction/ai-docs/mvp-design.md, docs/design/design-v1.1.md, docs/design/signals-supplement.md, dev 48d3c51；④ 直接依赖 ⑦ GatewayClient 的改动由 #13（c5c31f8）合入 dev（原写“本轮负责人授权”在仓库里没有可核对的出处，本文不当作用户授权记录），依据当前 client.py/models.py/orchestration.py；2026-11-11 增补：工作区未提交的④首片（call_safety.py、orchestration.py、domain.py、model_io.py、planning.py、worker.py、demo.py 与相应测试，作者读 git diff 与源码核对）；任务状态文件 /tmp/ear-mvp-extraction-followup.json 与 /tmp/ear-mvp-extraction-state.json（非仓库文件，其中的测试作者未复跑，只用 pytest --collect-only 核对项数）；2026-11-12 第二批增补依据：selection.py、reevaluation.py、artifacts.py、orchestration.py、segmentation.py、suggestions.py、domain.py 源码（作者读源码与 grep 核对，不运行测试），仓库外摘要 /tmp/ear-mvp-{action-http,eight-steps,action-evidence-fix}.json（作者读取并核对各自的退出码文件与 junit 用例名，测试结果未复跑）；本文不新增用户授权记录，也不增加用户决定；未填写或改动任何 reviewed 字段
 ---
 
 # ④ MVP 使用与接入
 
 > 本文记录已恢复的初版 MVP（`f3c28db`），用于演示，不代表已完成当前 v1.2 设计。
 >
-> 2026-11-11 增补：c5c31f8 之上有一个**未提交、未提 PR**的“调用安全与重判完成”首片，见“工作区首片”一节。凡写“c5c31f8 基线”“基线上”的是首片之前的行为；首片也不是完整 v1.2。
+> 2026-11-11 增补：c5c31f8 之上有一个“调用安全与重判完成”首片，见“首片”一节。凡写“c5c31f8 基线”“基线上”的是首片之前的行为；首片也不是完整 v1.2。
+>
+> 2026-11-12 更新：该首片已在 79e8dc3（PR 16 为 OPEN，其 CI 成功只属于 79e8dc3）；v1.2 对齐与 action-v2 的 ④ 侧是**第二批**，只在工作区，未提交、未提 PR、未部署，见新增的“第二批”一节。旧节里与它冲突的说法（纯 Markdown、规则历史阻塞、引用标记与粗粒度依赖、“没做”清单）以新节和 [④ README](../README.md) 为准；旧句子保留作各自时点的记录。
 
 
 网页模拟入口与 VS Code 端口转发步骤见[网页演示指南](web-demo.md)。
@@ -66,7 +68,7 @@ with GatewayClient(gateway_url, extraction_token, system=SYSTEM) as gateway:
 - 现有自动重算位置均在 `orchestration.py`：`process` 的通用异常分支（包括 GatewayError）进入 retry_wait；业务提交存储冲突同样进入 retry_wait；`drain` / `process` 在重试期限或 running 租约到期后重新计算，`worker.tick` / `serve` 持续驱动。`_finish` 只限制尝试次数，不能防止重复模型调用。`retry(run_id)` 是显式重新排队，也不做对账。调用成功但后续提交失败或进程崩溃同样可能重发。按本轮授权边界保留上述业务流程；接真实⑦前仍需解决该风险。
 - 依赖方向为⑥ → ④ → ⑦ → 共享契约/存储 SDK；⑦运行包没有反向依赖④或⑥。⑦现有跨模块测试导入④属于根 workspace 测试，不是运行包依赖。
 
-## 工作区首片：调用安全与重判完成（未提交）
+## 首片：调用安全与重判完成（79e8dc3；2026-11-11 晚写作时尚在工作区）
 
 目的：对应[跑通计划](../../../ai-docs/plans/mvp-runnable.md) T1——模型调用结果未知时不重发、重判请求的上下文完整传递、重判完成能写入 ①。范围有界，**不是完整 v1.2**。路径相对 `src/ear_extraction/`。
 
@@ -135,9 +137,26 @@ env EAR_RUN_POSTGRES_TESTS=1 EAR_RUN_NATS_TESTS=1 EAR_RUN_BACKUP_TESTS=0 EAR_RUN
 
 任务记录里用过的 `-k` 选择：`live_finish`；`unknown_provider`；`legacy_completion or concurrent_input`；`real_http_commit and claim`；`real_http_commit and sending`；`real_http_commit and returned`；`real_http_commit and finish`；`late_cas or concurrent_http or worker_tick`。
 
-### 首片没有做的
+### 首片没有做的（2026-11-11 晚的清单；其中纯 Markdown、`rule_selection` 的登记与版本化、按当前规则重判、字段依赖、`failed`/`not_applicable` 的 Finish、统一 worker 作为远程运行入口已在第二批实现，见下一节）
 
 完整 v1.2 对齐（纯 Markdown、`rule_selection` 的登记与版本化、按当前规则重判、字段依赖）；网关输出恢复与业务计划重放；风险确认后的新调用；终态 `failed`、`not_applicable` 的 Finish；旧记录迁移；远程运行入口、部署与真实模型联调；对网关、数据库、总线做操作系统级强杀的验证（只做了新子进程重启与故障注入）。核心登记表、`contracts/`、根配置、锁文件和 ① 实现都没有改。一个部署只运行一个 worker；进程恢复需要持久化的 ①，`MemoryStorage` 不跨进程保存数据。
+
+## 第二批：v1.2 对齐与 action-v2 的 ④ 侧（工作区，未提交；2026-11-12）
+
+人读的行为与限制见 [④ README](../README.md)，产品语义以[设计 v1.2 第 7 节](../../../docs/design/design-v1.2.md)为准，这里只补代码导航与不变量，不复述。路径相对 `src/ear_extraction/`。
+
+| 位置 | 内容 |
+|---|---|
+| `selection.py` | 每个活动一份版本化的 `Selection`（核心类型 `rule_selection`，含空候选与空选择）；产物**不依赖**选择结果；候选集合以 `AssertTypeRevision` 在同一批里守护；按当前规则全集重选：新选中的生成自动产物与建议，退出的替代自动产物与仅 pending 的建议（`suggestions.pending_replacements`），手动来源的受保护 |
+| `reevaluation.py` | `ReevaluationPlan(ops, detail, before, after, outcome, reason_code, disposition)`：`outcome` 为 `changed`/`unchanged`/`not_applicable`，`disposition` 为 `terminated`/`unavailable`/`kept_protected`；`unavailable`、`terminate` 构造规则被删除或替代时的终止计划；规则历史里发现的额外起因连同贡献它们的 root 与 depth 一起带回，不凭空造 root |
+| `artifacts.py` | `create_artifact`、`input_dependencies`、`validate_generated`：新输出含 `[[person:…]]`、`[[place:…]]` 引用标记即拒绝（`legacy_entity_marker_in_new_output`），旧文本不改写、不反向解析成依赖 |
+| `segmentation.py`、`planning.py` | 活动划分与合并只读原始数据；归属就绪检查与实体解析分开，分段之后才组装人物与地点；实体输入只投影 `payload.name`（保留缺失与 null 的区别），登记名字字段依赖，每个区间归属仍是粗粒度依赖 |
+| `orchestration.py` | 未登记 `rule_selection` 时在调用模型**之前** `Blocked("rule_selection_registration_required")`；发现的额外起因写入 `execution_additional_causes`，在发送模型之前持久化，并传给 ⑦、业务写入与 Finish；changed、unchanged、not_applicable、failed 四种结果都提交真实的 `FinishReevaluation`，完成标记与 run 更新原子提交；已知非法输出和模型前的重试耗尽可 Finish 为 `failed`，failed 的请求不可变，再试需要新请求。`Command.target_type` 为 `artifact`（默认，旧命令序列化形状不变）或 `rule_selection` |
+| `suggestions.py`、`domain.py` | action-v2 的 ④ 侧：`Command.outcome` 增加 `executing`、`unknown`，`Command.execution`（`ActionExecution`，含 `action_key`、`action_hash`、`approved_version`、`attempt`、`acknowledge_duplicate_risk`、`acknowledge_executed`，`operation` 取 `start`/`result`/`confirm_executed`/`retry`）；`execution_key`、`execution_payload` 在业务提交里校验 `approved → executing → executed|failed|unknown`，`unknown`/`failed` 经带风险确认的重试回到 `executing`（同一 `action_key`、attempt 加一）；动作哈希或批准版本不符就阻塞，不变基；没有 v2 交接的建议仍接受旧的终态回执，`executing`/`unknown` 没有 `execution` 时拒绝（`execution_protocol_required`），带 `execution` 必须带严格整数的 `expected_version` |
+
+- **测试**：新增 `tests/test_v12.py`、`tests/test_execution_protocol.py`，并修改 `test_extraction.py`、`test_completion_integration.py`、`test_web_demo.py`；真实运行在 `services/storage/tests/test_extraction_v12_runtime.py`、`test_action_protocol_runtime.py`（真实 PostgreSQL，NATS 视用例而定，回环 ① HTTP、合成网关）和仓库根 `tests/test_mvp_eight_steps_runtime.py`（真实 CLI worker、`GatewayClient` 与网关 HTTP、合成 provider）。
+- **证据（合成；作者未复跑，只核对退出码文件、日志末行与 junit 用例名）**：04:42Z 的 action-http 摘要里 API 与 ④ 全部测试 589 passed，真实的 `test_action_protocol_runtime.py` 加 `test_extraction_v12_runtime.py` 9 passed（PG+NATS，187.66 s）；06:19Z 的两个八步用例里，④ 在独立 CLI 进程里按真实定时（一个完整的 1800 s 周期）提取，纠正后 changed 产物一份、unchanged 产物字节相同、`rule_selection` 不变、pending 建议被替换，经审核与外部动作推进到 `executed`，每用例 7 次权威 `llm_call`（合成 provider），耗时与范围见[交接第 6 节](../../../ai-docs/plans/mvp-runtime-handoff.md)；06:37Z 的证据修复后，API 与 `services/extraction/tests/test_execution_protocol.py` 共 649 passed（无 PG/NATS）。八步用例在 06:24Z 的 ⑥ 证据修复之前运行，没有在修复之后重跑；新的四开关全量验收由主 agent 委派，运行中，结果未出，不预填，补入交接第 7 节。
+- **仍没做**：网关输出恢复与业务计划重放；用户确认重复风险后的新逻辑调用；旧活动不回填，旧记录不迁移；真实模型联调；对网关、数据库、总线的 OS 强杀恢复验证；外部动作的真实适配器与执行 worker（在 ⑥，命令行不注入适配器）。
 
 ## 反馈格式（模块局部草案）
 
@@ -177,13 +196,13 @@ Command 的确切字段和校验见 `domain.py`；反馈根源采用该反馈自
 - c5c31f8 基线：只保证业务提交去重，模型调用在失败恢复时可能重复。工作区首片对可能已执行的调用改为停止、不重发（见上一节），但不保证任意外部 exactly-once。一个部署使用一个 worker；⑥的真实外部动作幂等不属于本包。
 - ①内存实现不会跨进程保存数据。本版验证的是在①保留记录时重建④执行器的恢复行为；正式进程重启保证需要持久化①。
 - 模型输入有显式字符预算。长输入按不截断话语的边界分窗划分活动，再判断相邻活动是否合并；长产物分段生成后合并并校验原始证据引用。单条证据、合并请求或重判输入仍超预算时明确失败并保留旧结果，不静默截断。合成全天数据测试不代表已经通过真实全天音频验收。
-- 重判遇到原规则已有新版本时，返回 blocked / historical_rule_dependency_unsupported，保留原产物。①“依赖必须是当前版本”与设计“使用原规则”的冲突仍待①④⑤决定，没有静默改用新规则。
+- （2026-11-12 更新）第二批里重判读同一规则 id 的**当前**版本，规则出新版本时不再阻塞，`historical_rule_dependency_unsupported` 已不在源码中；规则被删除或替代时终止产物并以 `not_applicable` 完成。本条原写“返回 blocked / historical_rule_dependency_unsupported，保留原产物”是首片与 v1.1 基线的行为，与已采纳设计 v1.2（历史重判用当前规则）冲突，已被第二批取代，细节见 [④ README](../README.md)。
 - 半区间重新提取遇到跨界旧活动返回明确错误，要求选择完整活动；不自动扩大删除范围。
 - 原始依据和模型输入/输出写入运行记录用于追溯，普通日志仅含 ID、状态和错误类型。输入引用的结构校验不能代替对模型语义准确性的评测。
-- 新的依赖细化提案尚未审定；本版仍使用人物/地点引用标记和粗粒度依赖，不修改原契约。
+- （2026-11-12 更新）新产物已是纯 Markdown：新输出里的 `[[person:…]]`、`[[place:…]]` 引用标记被拒绝，字段级依赖按已采纳设计 v1.2 实现，旧文本不改写（第二批，见上面“第二批”一节）。本条原写“本版仍使用人物/地点引用标记和粗粒度依赖”是 v1.1 演示基线的行为；仍不修改 `contracts/`。
 
 ## 验证范围
 
 测试覆盖真实共享存储接口上的事件重复投递、原子回滚、归属版本冲突、重判不变/改变、审核回执、旧规则阻塞、任务重试/恢复、定时区间、模型输出校验与 HTTP 适配边界。模型回复为合成测试数据。
 
-真实⑦模型调用、真实②③数据和手机执行尚未验证；本版可作为这些模块的接入基线。工作区首片另用测试夹具起的真实 PostgreSQL/NATS 与回环 ⑦ 网关做过分组验证（来源与限制见“工作区首片”一节），那不是持久化 ① 的部署验收。
+真实⑦模型调用、真实②③数据和手机执行尚未验证；本版可作为这些模块的接入基线。首片另用测试夹具起的真实 PostgreSQL/NATS 与回环 ⑦ 网关做过分组验证（来源与限制见“首片”一节），第二批的合成验证见“第二批”一节（含真实 CLI worker、`GatewayClient` 与合成 provider 的八步用例，不是 Compose 部署，也没有真实模型），都不是持久化 ① 的部署验收。

@@ -634,3 +634,58 @@ def test_unchanged_finish_refreshes_without_business_version_or_event():
     assert len(w.storage.events) == event_count
     assert not w.client.stale_dependencies([w.ids["x"]])
     assert w.triggers()[0].status == "closed"
+
+
+def test_gated_idle_tick_reads_records_once_without_expansion(monkeypatch):
+    import ear_dependency.service as service_module
+
+    w = World()
+    w.seed("x")
+    w.change("x", skip=True)
+    original = service_module.load
+    reads = []
+
+    def counted(*args):
+        reads.append(True)
+        return original(*args)
+
+    monkeypatch.setattr(service_module, "load", counted)
+    w.service.tick()
+    assert len(reads) == 1  # no repeated full remote snapshot scans for ignored input
+    assert not w.requests()
+
+
+def test_tick_does_not_revisit_terminal_history_but_admits_new_generation(monkeypatch):
+    w = World()
+    w.seed("x")
+    w.node("a", ["x"])
+    w.change("x")
+    w.ticks()
+    w.finish("a", "unchanged")
+    w.ticks()
+    assert w.steps("a")[0].state == "done"
+    original = w.service._advance
+    advanced = []
+
+    def counted(step_id):
+        advanced.append(step_id)
+        original(step_id)
+
+    monkeypatch.setattr(w.service, "_advance", counted)
+    w.ticks()
+    assert advanced == []
+    w.change("x")
+    w.ticks()
+    assert len(w.requests("a")) == 2 and advanced
+
+
+def test_tick_recovers_unsummarized_empty_expansion():
+    w = World()
+    w.seed("x")
+    w.change("x")
+    w.service._expand(w.triggers()[0].id)  # crash after expansion, before summary
+    assert w.triggers()[0].status == "expanded"
+    w.rebuild()
+    w.service.tick()
+    assert w.triggers()[0].status == "closed"
+    assert not w.steps() and not w.requests()

@@ -3,7 +3,7 @@ audience: ai
 doc-type: reference
 generated-by: Claude (AI)
 generated-at: 2026-11-11
-based-on: 设计 v1.2 第 6 节与信号补充 §3.2、§4（accepted，仅表示目标已采纳）；工作分解 v1.2 ③节；integration/mvp-runnable 工作区 services/attribution 的实际源码与测试（基线 c5c31f8，未提交，本文作者读代码核对）；任务记录 /tmp/ear-mvp-attribution-state.json（非仓库文件，写于 2026-11-11T19:10Z）；2026-11-12 增补依据：transactions.py、service.py 源码，services/storage/tests/test_attribution_runtime.py 与 tests/e2e/test_core_memory_loop.py 源码（均读源码核对），仓库外日志 /tmp/ear-mvp-acceptance.{sh,log,exit}、/tmp/ear-mvp-attribution-{recovery-red,real-final}.log，以及本次对相关文件的定向复跑；2026-11-12 journal 硬化增补依据：secure_files.py、transactions.py、tests/test_journal_safety.py 源码，仓库外记录 /tmp/ear-mvp-precommit-review.json、/tmp/ear-mvp-journal-fix.json、/tmp/ear-mvp-journal-*.{log,exit} 与 /tmp/ear-mvp-final-local.log（非仓库文件，作者读取并核对哈希与时间），以及作者的 pytest 复跑（见跑通计划第 2.3 节）；来源分支 origin/attribution/initial-implementation 617fbc5（git show 只读）；用户在本任务中的授权仅为开始 MVP 实施、可用 vm-octopus 音频、在常驻分支实现提交并提 PR 由用户审核；未填写或改动任何 reviewed 字段
+based-on: 设计 v1.2 第 6 节与信号补充 §3.2、§4（accepted，仅表示目标已采纳）；工作分解 v1.2 ③节；integration/mvp-runnable 工作区 services/attribution 的实际源码与测试（基线 c5c31f8，未提交，本文作者读代码核对）；任务记录 /tmp/ear-mvp-attribution-state.json（非仓库文件，写于 2026-11-11T19:10Z）；2026-11-12 增补依据：transactions.py、service.py 源码，services/storage/tests/test_attribution_runtime.py 与 tests/e2e/test_core_memory_loop.py 源码（均读源码核对），仓库外日志 /tmp/ear-mvp-acceptance.{sh,log,exit}、/tmp/ear-mvp-attribution-{recovery-red,real-final}.log，以及本次对相关文件的定向复跑；2026-11-12 journal 硬化增补依据：secure_files.py、transactions.py、tests/test_journal_safety.py 源码，仓库外记录 /tmp/ear-mvp-precommit-review.json、/tmp/ear-mvp-journal-fix.json、/tmp/ear-mvp-journal-*.{log,exit} 与 /tmp/ear-mvp-final-local.log（非仓库文件，作者读取并核对哈希与时间），以及作者的 pytest 复跑（见跑通计划第 2.3 节）；来源分支 origin/attribution/initial-implementation 617fbc5（git show 只读）；2026-11-12 第二批增补依据：create_place.py、feedback.py 与 ⑥ 的 attribution_results.py 源码（只读核对），仓库外摘要 /tmp/ear-mvp-api-place.json（此前读取）与 /tmp/ear-mvp-eight-steps.json（作者读取并核对退出码文件与 junit 用例名），测试结果均未复跑；用户在本任务中的授权仅为开始 MVP 实施、可用 vm-octopus 音频、在常驻分支实现提交并提 PR 由用户审核，本文不新增授权记录，也不增加用户决定；未填写或改动任何 reviewed 字段
 ---
 
 # ③ 归属：实现说明（首批切片）
@@ -12,8 +12,8 @@ based-on: 设计 v1.2 第 6 节与信号补充 §3.2、§4（accepted，仅表�
 
 ## 1. 范围与状态
 
-- 首批切片：匹配、未命名人物与未知地点、五种反馈、重判完成协议、用户确认保护、依赖登记、远程写入的持久重放。代码在工作区，**未提交、未提 PR、未合入 dev**。
-- 不是完整的 ③：`create_place`、`reattribute_range` 等未做（第 12 节）；**在当前核心登记表上不能运行**（第 9 节）；没有部署入口、没有真实数据运行。
+- 首批切片：匹配、未命名人物与未知地点、五种反馈、重判完成协议、用户确认保护、依赖登记、远程写入的持久重放。代码已在 79e8dc3（PR 16 为 OPEN，其 CI 成功只属于 79e8dc3）。**第二批（工作区，未提交、未提 PR、未部署）**：`create_place`（第 6 节），以及 ⑥ 对 `attribution_feedback_result` 的只读投影（[⑥入口](../../api/README.md)）。下面带“未提交”“工作区”的旧句子是各自时点的记录，现状以带“第二批”的条目为准。
+- 不是完整的 ③：`reattribute_range` 等未做（第 12 节）；**在 `DEFAULT_REGISTRY` 上不能运行**（第 9 节；第二批里 ① 的 `core_mvp_registry()` 与 `bootstrap-core` 只对显式迁移过的空库提供这些类型和能力，旧库不自动迁移）；统一 worker 宿主 `tools/mvp_worker.py` 在工作区（需显式阈值，见[交接第 4 节](../../../ai-docs/plans/mvp-runtime-handoff.md)），没有 Compose 部署、没有真实数据运行。
 - 代码与任务记录的一致性：本文作者把记录里列出的 15 个文件（`pyproject.toml`、`src/ear_attribution/*.py` 9 个、`tests/*.py` 5 个）的 sha256 与工作区当前文件逐一比对，全部一致，说明代码自 2026-11-11T19:10Z 的任务记录后没有再变。这只说明代码没变，**不代表测试在当前环境里重新通过**。（2026-11-11 晚的核对；此后 `service.py`、`transactions.py` 又有改动，见下一条。）
 - 2026-11-12 更新：重启恢复**不再仅靠总线重投**（`subscribe()` 先 `recover_pending()`，第 3、14 节）；真实 PostgreSQL/NATS/① HTTP 的临时容器运行已有 5 项（第 11 节），但登记表仍是夹具里显式构造的、身份仍由 `AuthOperator` 签发，`DEFAULT_REGISTRY` 上仍不能运行 ③；仍未提交、未提 PR、未部署。
 - 2026-11-12 更新（journal 安全硬化，第 15 节）：journal 目录经可写祖先被替换会让 SQLite 打开新路径的问题已修复（仅 Linux；0700/0600 与祖先身份要求；已有 WAL 拒绝，不转换、不删除；验证失败不发送）。新增 `secure_files.py`、`tests/test_journal_safety.py`，修改 `transactions.py`，模块单元现为 143 项。新增的两个文件**未跟踪**，`transactions.py` 的修改未暂存；提交时须一并纳入。四开关整体验收的 2485 passed 是此修复之前的基线，不覆盖这三个文件。
@@ -89,7 +89,8 @@ based-on: 设计 v1.2 第 6 节与信号补充 §3.2、§4（accepted，仅表�
 | `confirm_attribution` | `subject_id`、`target_id`，可选 `expected_version` | 加入当前对象参考，设保护；目标须等于当前归属；重复确认不产生新版本 |
 | `add_reference` / `remove_reference` | `subject_id`、`target_id`，可选 `rejudge_history`（布尔，默认 false）、`expected_version` | 只改对象参考；不重算归属、不刷新旧匹配依赖；`rejudge_history` 为 false 时参考修改带 `skip_history` |
 | `rename` | `target_id`、`name`（非空、≤256 字符），可选 `expected_version` | 只改名字，走正常传播；未知地点不可改名 |
-| `create_place`、`reattribute_range` | — | **未实现**：写一条 `rejected`、`error_code=unsupported_command` 的回执，不冒充成功，不排后台任务 |
+| `create_place`（第二批，工作区） | `name`（非空、≤256 字符）、`gps_ids`（1–100 个、无重复、UUIDv7，须为 `gps_point` 原始数据且坐标有效）；`expected_version` 须为空（非空返回 `invalid_expected_version`） | 在**一个受围栏的批次**里：对涉及的旧地点逐个 `Update` 移除这些参考（先移除、再建新参考所有者，存储强制互斥），新建一个 `place`（`references` 为所选 GPS，`is_unknown=false`），逐个把所选 GPS 的归属改指向它（沿用已有归属对象的 ID，没有则新建）并登记依赖——只依赖新地点的 `references`、`is_unknown`，**不继承旧候选或 `name` 依赖**。所选数据的当前归属受保护返回 `protected_attribution_conflict`、保护字段缺失返回 `legacy_protection_unknown`；同一个所选 GPS 同时出现在多个地点的参考里返回 `reference_owner_conflict`，地点数据畸形返回 `invalid_candidate`、`invalid_unknown_place`；`name`、`gps_ids` 畸形分别是 `invalid_name`、`invalid_gps_ids`、`duplicate_gps_ids`、`subject_type_mismatch`。成功回执的元数据为 `new_target_id`、`subject_ids`、`attribution_ids`（顺序与 `gps_ids` 一致）。围栏被推进，已规划的自动候选匹配随之失效。代码在 `create_place.py`，由 `feedback.py` 分发 |
+| `reattribute_range` | — | **未实现**：写一条 `rejected`、`error_code=unsupported_command` 的回执，不冒充成功，不排后台任务 |
 
 - 纠正与确认伴随的参考修改带 `skip_history=true`（不触发对历史的自动扫描），归属本身的变化仍可传播给下游。
 - 保护：纠正或确认写 `user_protected=true`，并保留**首次**的 `protection_feedback_id`；保护**不因后来移除参考而消失**，见第 13 节。
@@ -170,11 +171,11 @@ based-on: 设计 v1.2 第 6 节与信号补充 §3.2、§4（accepted，仅表�
 
 ## 12. 未实现
 
-- `create_place`（手动建地点）与按时间范围重新归属（含进度持久化的批量处理）。
+- 按时间范围重新归属 `reattribute_range`（含进度持久化的批量处理）。`create_place` 已在第二批（工作区，未提交）实现，见第 6 节。
 - 空的未命名人物整体替代、"#N 还有 M 段声音，可能也是 X"提示数据。
 - 命令行或 worker 的轮询启动配置、经授权的初始缺失归属补扫、运行健康与死信处理流程、日志待重放项的枚举与清理（2026-11-11 晚写“目前只靠总线重投”；现在 `subscribe()` 启动时会先重放未决回执，但仍没有枚举、超出 1000 条时的显式恢复与清理入口）。
 - 核心登记、Schema、迁移，以及可信 worker 身份和读取/订阅/consumer 授权（第 9 节）。
-- API 反馈状态投影（⑥ 对非提取模块的状态可能仍是 pending）。
+- API 反馈状态投影：第二批里 ⑥ 经 `attribution_feedback_result` 只读投影 ③ 的回执（没有回执仍是 `pending`；回执畸形或有歧义时 ⑥ 返回 503，见[⑥入口第 3.4 节](../../api/README.md)）；`dependency` 命令仍无消费方。
 - ③→⑤→④ 完整传播、持久化 PostgreSQL/NATS 与真实 HTTP 的权限/撤权测试；部署；真实音频；D2。
 - 2026-11-12：journal 的 WAL 受控恢复或迁移工具、既有 journal 的权限修复或迁移工具；journal 硬化只有 Linux 实现；没有跨 UID 攻击进程、worker 强杀、断电与 NFS 持久性的测试（第 15 节）。
 

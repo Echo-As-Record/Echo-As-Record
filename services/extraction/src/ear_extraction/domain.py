@@ -74,6 +74,18 @@ class Generated(Model):
     unchanged: bool = False
 
 
+class ActionExecution(Model):
+    """Internal ④/⑥ handoff, never a public user command or adapter receipt."""
+
+    operation: Literal["start", "result", "confirm_executed", "retry"]
+    action_key: str = Field(pattern=r"^ear_action_[0-9a-f]{64}$")
+    action_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    approved_version: int = Field(strict=True, ge=1)
+    attempt: int = Field(strict=True, ge=1)
+    acknowledge_duplicate_risk: bool = Field(default=False, strict=True)
+    acknowledge_executed: bool = Field(default=False, strict=True)
+
+
 class Command(Model):
     kind: Literal[
         "extract",
@@ -93,11 +105,37 @@ class Command(Model):
     expected_version: int | None = Field(default=None, ge=1)
     rule: Rule | None = None
     decision: Literal["approved", "rejected"] | None = None
-    outcome: Literal["executed", "failed"] | None = None
+    outcome: Literal["executed", "failed", "executing", "unknown"] | None = None
+    execution: ActionExecution | None = None
     receipt: str | None = None
     # Returned by preview_reextract. Exact version set is required, even when empty.
     preview: dict[str, int] | None = None
     description: str = ""
+    # Absent in old commands: their reevaluation target remains artifact.
+    target_type: Literal["artifact", "rule_selection"] = "artifact"
+
+    @model_serializer(mode="wrap")
+    def omit_legacy_target_default(self, handler):
+        # API feedback fingerprints depend on the normalized Command shape.
+        # Old artifact commands must serialize exactly as before this addition.
+        data = handler(self)
+        if self.target_type == "artifact":
+            data.pop("target_type", None)
+        if self.execution is None:
+            data.pop("execution", None)
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def execution_version_is_strict(cls, value: Any) -> Any:
+        # New internal protocol is strict without changing legacy Command coercion.
+        if (
+            isinstance(value, dict)
+            and value.get("execution") is not None
+            and type(value.get("expected_version")) is not int
+        ):
+            raise ValueError("execution_expected_version_required")
+        return value
 
     @model_validator(mode="after")
     def required_fields(self) -> Self:
@@ -120,6 +158,26 @@ class Command(Model):
             raise ValueError("decision_required")
         if self.kind == "action_result" and (not self.outcome or not self.receipt):
             raise ValueError("execution_receipt_required")
+        if self.execution is not None:
+            if self.kind != "action_result":
+                raise ValueError("execution_requires_internal_action_result")
+            e = self.execution
+            if e.operation in {"start", "retry"} and self.outcome != "executing":
+                raise ValueError("execution_start_requires_executing")
+            if e.operation == "result" and self.outcome not in {"unknown", "executed", "failed"}:
+                raise ValueError("invalid_execution_result")
+            if e.operation == "confirm_executed" and (
+                self.outcome != "executed" or not e.acknowledge_executed
+            ):
+                raise ValueError("execution_confirmation_required")
+            if e.operation == "retry" and not e.acknowledge_duplicate_risk:
+                raise ValueError("duplicate_risk_confirmation_required")
+            if (e.acknowledge_executed and e.operation != "confirm_executed") or (
+                e.acknowledge_duplicate_risk and e.operation != "retry"
+            ):
+                raise ValueError("unexpected_execution_acknowledgement")
+        elif self.outcome in {"executing", "unknown"}:
+            raise ValueError("execution_protocol_required")
         return self
 
 

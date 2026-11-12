@@ -1,7 +1,7 @@
 ---
 audience: human
 doc-type: reference
-based-on: 设计 v1.2 §8；信号补充 §3.4；工作分解 v1.2 ⑤节；origin/dev c5c31f8（该基线 services/dependency 没有代码，只有文档与脚本）；工作区未提交的 services/dependency 源码与测试（作者读代码并用 pytest --collect-only 核对项数，未运行测试）；任务状态文件 /tmp/ear-mvp-dependency-state.json（非仓库文件，写于 2026-11-11T19:52Z）；2026-11-12 增补依据：根 pyproject.toml 的已暂存改动、仓库外整体验收日志 /tmp/ear-mvp-acceptance.{sh,log,exit}（作者读日志）、tests/e2e/test_core_memory_loop.py 与 services/dependency 源码（只读核对，另见跑通计划第 2.2 节）；用户在本任务中的授权仅为开始 MVP 实施、可用 vm-octopus 音频、在常驻分支实现提交并提 PR 由用户审核；未填写或改动任何 reviewed 字段
+based-on: 设计 v1.2 §8；信号补充 §3.4；工作分解 v1.2 ⑤节；origin/dev c5c31f8（该基线 services/dependency 没有代码，只有文档与脚本）；79e8dc3 中的内存路径与 e2e 记录（作者读代码，见跑通计划第 2.1、2.2 节）；任务状态文件 /tmp/ear-mvp-dependency-state.json（非仓库文件，写于 2026-11-11T19:52Z）；第二批（工作区未提交）：services/dependency 源码（remote.py、authority.py、journal.py、secure_files.py、causal_fields.py、service.py，作者读源码，不运行测试）、services/storage 的 scheduler_access.py 与 core_deployment.py（只读核对）；验证来源为仓库外文件，作者读取、测试结果未复跑：最终验收 /tmp/ear-mvp-second-final.{log,exit,xml} 与 ear-mvp-second-final-frozen-source.json（作者重新对照源码哈希）、/tmp/ear-mvp-coverage-fix/verification.json，早期摘要 /tmp/ear-mvp-dependency-second.json、/tmp/ear-mvp-scheduler-compat.json、/tmp/ear-mvp-storage-second.json；代码基线 integration/mvp-runnable = 79e8dc3；用户在本任务中的授权仅为开始 MVP 实施、可用 vm-octopus 音频、在常驻分支实现提交并提 PR 由用户审核，本文不新增授权记录；未填写或改动任何 reviewed 字段
 ---
 
 # ⑤ 依赖分析模块
@@ -13,22 +13,37 @@ based-on: 设计 v1.2 §8；信号补充 §3.4；工作分解 v1.2 ⑤节；orig
 - 对外接口提案（传播记录、按钮反馈、①权限，**proposed**）：[⑤接口提案](../../docs/proposals/dependency-scheduler-interfaces.md)
 - 实现设计与任务拆分（**草案**）：[实现设计](ai-docs/design.md)
 - 用到的①接口：[① SDK 指南](../storage/ai-docs/interface.md)
+- 第二批的整体交接与验证来源：[MVP 运行时交接](../../ai-docs/plans/mvp-runtime-handoff.md)
 
 ## 状态
 
-**首片已在工作区，未提交、未提 PR。它不再是纯文档草案，但仍只是首片：不是完整的 ⑤，不支持远程①，也不是 MVP 完成。** 状态词按[跑通计划第 8 节](../../ai-docs/plans/mvp-runnable.md)分开写：这里只能说“已实现（工作区）、内存替身上验证通过（任务记录）”，不是“已提 PR”“已合并”或生产验收。设计与接口文档的状态没有变：[实现设计](ai-docs/design.md)仍是草案，[接口提案](../../docs/proposals/dependency-scheduler-interfaces.md)仍是 proposed。
+**⑤ 的内存路径在 79e8dc3（首批）；远程路径是第二批，只在工作区：未提交、未提 PR、未部署。两者都只是切片，不是完整的 ⑤，也不是 MVP 完成。第二批的最终四开关验收已完成（合成数据，见下面的“验证”），但仍未提交，且没有 CI 结果。** 状态词按[跑通计划第 8 节](../../ai-docs/plans/mvp-runnable.md)分开写。设计与接口文档的状态没有变：[实现设计](ai-docs/design.md)仍是草案，[接口提案](../../docs/proposals/dependency-scheduler-interfaces.md)仍是 proposed。
 
-- **代码在哪**：`services/dependency/` 有模块 `pyproject.toml`、5 个源码模块（`src/ear_dependency/`）和 2 个测试模块（`tests/`）；入口是 `DependencyService` 的 `handle`、`tick`、`records`。只通过现有存储 SDK 读写，**不写任何业务数据**。调度状态存成 `dependency` 拥有的 `propagation_record`，用**私有的版本化格式**（带 `schema_tag`），不是已批准的 Schema，也没有提升接口提案。
-- **能做什么**：数据修改或整体替代的事件先查当前状态再按历史门控筛选（新原始数据、规则编辑、`skip_history` 不触发）；触发记录与 `MarkProcessed` 原子提交；有界地展开当前前向依赖图（刚变新的边也作为栅栏，跨 root 的在途上游不造成全局停止）；按所属方和是否支持重判决定能否发请求，发布请求前先持久化意图；用权威的 `get_reevaluation_result`（不是队列标记或事件沉默）判断完成，区分 changed/unchanged/failed/not_applicable，受保护或不可用会阻塞下游，已终止则交下游所属方决定；保留完整起因并合并多起因，新起因在途时下游等待间接上游；worker 可由存活的存储记录重建，请求超时后只轮询迟到的 Finish，不重发；发布前后的 `CommitUnknown` 故障注入下只对账或冻结，不盲目新发；超出限额失败关闭，不截断；带合成多层与分叉汇合插件夹具。
-- **当前不支持远程①**：构造时要求显式 `full_visibility=True` 且只接受内存客户端 `MemoryClient`，`RemoteStorageClient` 等一律拒绝（`remote execution refused`）。原因是没有传输层 `request_id`（`intent_id` 只是本地标识，不是服务端回执，不伪造），也没有调度权威与完整图投影。`MemoryStorage` 本身不持久，所以它证明的是“存储记录还在时 worker 可以重建”，不是数据库或进程重启后的持久性。
-- **单 worker**：没有租约或围栏，单 worker 是使用前提，部署不会强制；乐观版本检查只保护单次写入，不是分布式租约。
-- **只实现了第一个入口**：数据被修改或整体替代时找下游过时结果并请求重判。第二个入口（“重新判断其他相关记录”反馈，按钮或 MCP）**没做**，收到属于 `dependency` 的反馈时显式记为 `blocked`（`feedback_not_implemented`），不冒充处理；形式 A/B、纠正生效证明、历史列表等都没接。
-- **没做的其他部分**：`RemoteStorageClient` 支持；①侧调度权威与完整图投影；身份签发与动态授权、生命周期（`owner_disabled`、`owner_unauthorized`、撤权与恢复，目前只有通用的 `publish_denied`）；真实 PostgreSQL/NATS 与进程或存储丢失后的恢复、远程回执重放；未知意图的对账与重放操作入口（只写了意图、尚无已请求状态时冻结为 `commit_unknown`）；与真实 ③④、⑥、⑦ 的集成，以及对核心登记表重判能力的修改；多 worker 租约与分布式单飞；依赖图并发改线的读集守护（测试覆盖的是已知当前 DAG 加后续事件扩展，不是全局可串行化的调度事务）；命令行或后台轮询、部署、`llm_call` 导出、可观测性与保留策略、生产规模；失败、受保护、不可用或溢出阻塞后的自动重试（旧结果保留，不伪造成功）。
-- **根工作区**：2026-11-11 晚本文写下时，pyright 的 `include` 原本就含 `services/dependency`，但 uv workspace 成员、dev 依赖和 pytest `testpaths` 尚未包含它，⑤ 的根接入由协调者进行中。**2026-11-12 更新**：根 `pyproject.toml` 的已暂存改动已含 `services/dependency` 的 workspace 成员、dev 依赖、`tool.uv.sources` 与 `testpaths`，`uv.lock` 同步；本文作者没有改这些文件。
-- **验证**：任务记录（2026-11-11T19:52Z）称模块本地 34 项内存测试通过，ruff、format、pyright（`--project services/dependency`）通过；本文作者只用 `--collect-only` 核对到 34 项，**未执行也未复跑**，并核对了记录里 8 个文件的 sha256 与当前工作区一致。演练维度：输入合成｜模型不适用｜外部不适用｜平台替身（内存）。没有真实服务，也没有跑全仓检查（记录里写明不在其范围内）。全仓统一检查由协调者在根接入完成后执行，结果出来前本文不记录“全绿”。
-- **2026-11-12 更新（验证与边界）**：仓库外的整体验收脚本 `/tmp/ear-mvp-acceptance.sh`（退出码 0，2026-11-11T23:50:55Z 启动、2026-11-12T00:12:56Z 结束）静态检查通过（ruff、format、pyright 0 errors、`uv lock --check --offline`），四个门控开关全开的 pytest 为 2485 passed、11 skipped、无失败；本模块 34 项（作者收集到 34 项）在其收集范围内，且 `services/dependency` 在该次运行期间没有被修改（按文件修改时间核对）。另有 `tests/e2e/test_core_memory_loop.py`（2 项；该文件在整体验收启动后又被修改，当前内容由 2026-11-12 的定向复跑 2 项通过）把真实的 `DependencyService` 与 ②③④ 在 `MemoryStorage` 上联调一次纠正闭环：产生 2 个重判请求、结果 changed 与 unchanged 各一、重建 scheduler 与否都收敛、重复投递不再次调用模型；模型是确定性的合成替身，不经 ⑦ 与 HTTP，⑥ 只用到其反馈输入模型，**不是完整八步**。**没有变化的限制**：构造仍只接受内存客户端，`RemoteStorageClient` 被拒绝；`DEFAULT_REGISTRY` 仍没有 `attribution_state`、`attribution_feedback_result` 等核心新类型，`attribution`、`artifact` 的重判与强制依赖能力仍为 false，e2e 与测试夹具各自显式启用；核心登记表与 `contracts/` 没有改。以上仍是工作区未提交、未提 PR、未部署；这些验证没有使用真实数据，没有真实模型调用，也没有真实日历写入。汇总见[跑通计划第 2.2 节](../../ai-docs/plans/mvp-runnable.md)。
+- **代码在哪**：`services/dependency/src/ear_dependency/`。`DependencyService`（`service.py`）是内存路径；`RemoteDependencyService`（`remote.py`，工作区）是远程路径，配套 `authority.py`（校验服务端调度状态）、`journal.py` 与 `secure_files.py`（私有传输 journal）、`causal_fields.py`（字段级因果门控）。只通过存储 SDK 读写，**不写任何业务数据**。调度状态存成 `dependency` 拥有的 `propagation_record`，用**私有的版本化格式**（带 `schema_tag`），不是已批准的 Schema，也没有提升接口提案。
+- **两条路径的边界**：`DependencyService` 仍只接受内存客户端 `MemoryClient`，且要求显式 `full_visibility=True`；远程客户端会被拒绝（`scheduler_authority_unavailable: remote execution refused`）。它用于合成测试，不是授权或生命周期权威。远程要用 `RemoteDependencyService`：没有 `full_visibility` 选项，也不会回落到内存。
+- **两条路径共有的能力**：数据修改或整体替代的事件先查当前状态，再按历史门控筛选（新原始数据、规则编辑、`skip_history` 不触发），触发记录与 `MarkProcessed` 原子提交；有界地展开当前前向依赖图；按所属方和是否支持重判决定能否发请求，发请求前先持久化意图；用权威的 `get_reevaluation_result`（不是队列标记或事件沉默）判断完成，区分 changed/unchanged/failed/not_applicable，受保护或不可用会阻塞下游；保留完整起因并合并多起因，新起因在途时下游等待间接上游；worker 可由存活的存储记录重建，请求超时后只轮询迟到的 Finish，不重发；超出限额失败关闭，不截断。
+- **字段级因果门控（工作区）**：只有被证明改变了边所登记字段（或整体替代）的转移才使依赖边生效；缺少历史版本或读权限不被当作“有变化”，也不被当作“无变化”，而是阻塞（`causal_versions_unavailable`、`read_denied`）。
+- **远程路径（工作区）**：`RemoteDependencyService(client, journal=CommitJournal(路径, namespace=…))`。先 `subscribe()`（先恢复未决写入，再订阅 `data_changed`），再交替调用客户端的 `poll_once()` 与 `tick()`；循环与生命周期由调用方负责，[统一 worker](../../ai-docs/plans/mvp-runtime-handoff.md) 第 4 节提供了宿主。
+  - **服务端权威，覆盖不全即失败关闭**：每个动作、每一步、发布前与回放前都读 `GET /v1/scheduler/state`，严格校验形状（`codec`、`coverage_complete`、覆盖修订、各所属方的 `enabled`/`can_receive`/`revision`，`online` 必须为 null）。覆盖不完整、被撤销、一轮中变化，或所属方停用、没有可接收凭据（`owner_disabled`、`owner_unauthorized`），都会阻塞并保留证据，**不会被当成空图或成功**。这取代了首片“只支持内存，因为过滤读取证明不了完整”的限制：远程已支持，但前提是 ① 处于 strict 轮廓（见[①部署指南第 9 节](../storage/ai-docs/deployment.md)）；旧库上 `scheduler_state()` 被拒绝，⑤ 只会阻塞，不会降级成过滤图。公开的 `records()` 同样在有界读取前后要求当前 strict 覆盖：覆盖被撤销或旧库抛 `PermissionDenied`，其他阻塞（如 `scheduler_state_changed`）抛 `SchedulerBlocked`，不返回空表或部分表。这是失败关闭的工程选择，不是已采纳设计的新语义。
+  - **持久与重放**：调度状态是 `propagation_record` 系统记录；本地私有 SQLite journal 只存原始传输意图（规范化的写操作、上下文与 request_id），提交结果未知后用**相同 request_id 与请求体**幂等重放，且在订阅前与每次决策前先恢复，即使 `MarkProcessed` 已抑制重投。未知发布期间权威修订变化时，保留 pending 证据并阻塞，不用新 request_id 重发。
+  - **journal 文件安全**：私有 0700 目录、0600 单链接属主文件，祖先链不跟随符号链接，目录与文件身份被钉住并复核，目录、数据库、worker 三层非阻塞 `flock`，拒绝 fork，拒绝 WAL 且不删证据，发送前先校验。一个 journal 目录对应一个部署、身份与 consumer。
+- **没做**：
+  - 按钮反馈入口：收到属于 `dependency` 的反馈时显式记为 `blocked`（`feedback_not_implemented`），不冒充处理；形式 A/B、纠正生效证明、历史列表等都没接。
+  - P5 历史分配、追赶与跳过：没有自动历史扩展。
+  - 分布式租约：本地锁不是跨主机围栏，只能单 worker，且所有启动须复用同一 journal 目录与命名空间。
+  - 未知发布结果的操作员对账入口，以及用新 ID 的自动重规划。
+  - 依赖图并发改线：没有跨整个调度过程的可串行化，只验证了有界小图，生产规模与吞吐未验证。
+  - `llm_call` 导出、可观测性与保留策略；失败、受保护、不可用或溢出阻塞后的自动重试（旧结果保留，不伪造成功）。
+  - 身份、授权、迁移与核心类型登记不由 ⑤ 创建，由 ① 的 core 初始化提供，同样是工作区未提交的切片。
+- **验证（来源、日期与口径；合成数据，没有真实模型、真实日历，没有访问常驻实例）**：
+  - **最终验收（当前结论）**：2026-11-12T12:03–12:58Z，`/tmp/ear-mvp-second-final.*`，退出码 0，四开关均为 1，本地构建的镜像：全量 3659 passed、11 skipped、2 warnings，3198.40 s。本模块 `services/dependency/tests` 231 项全部通过；`services/storage/tests/test_dependency_runtime.py`（真实回环 HTTP、临时 PostgreSQL 17 与 NATS 2.11）18 项通过（475.2 s）。源码冻结清单经重新对照无变化。逐项与边界见[交接第 6.1 节](../../ai-docs/plans/mvp-runtime-handoff.md)；这不是 Compose 部署，不是真实数据，一次全绿也不证明不再偶发。
+  - **覆盖撤销后的 `records()`**：此前 07:47–08:40Z 的全量验收里，`test_dependency_runtime.py` 的 `[coverage]` 用例红（撤销覆盖后 `records()` 不拒绝）；08:48–09:04Z 修复并加了 2 个回归（该文件 16 项变为 18 项），红 3 failed（真实运行）与 17 failed（单元），绿 231 passed（单元）与 18 passed（548.67 s，真实运行）。来源 `/tmp/ear-mvp-coverage-fix/verification.json`，见[交接第 6.2 节](../../ai-docs/plans/mvp-runtime-handoff.md)。
+  - **历史，保留（已被上面取代）**：2026-11-12T02:12Z（dependency-second 摘要，基线 79e8dc3 加当时工作区）模块单元 137 passed，`test_dependency_runtime.py` 的 16 项一次连续通过（604.02 s），覆盖多所属方菱形与多层链、changed 与 unchanged 的 Finish、相关上游等待与重启后不重复发布、各阶段相同请求重放、撤销覆盖或所属方凭据后阻塞、新进程重启，另有在 `CommitUnknown` 前后让子进程 `os._exit` 的 5 项边界批次。
+  - **“16 项冲突”（历史，已解释）**：2026-11-12T03:50Z（scheduler-compat 摘要）称 ① 改为只由完整 core 轮廓选择 strict 后，这 16 项在整仓 PG+NATS 运行中失败（夹具只登记了部分类型，被判 `coverage_denied`）；诊断运行（完整轮廓，仓库外插件）16 passed（676.17 s）。原因是夹具与收紧后的 strict 不一致，不是生产旁路；夹具修复后通过，现为 18 项并在最终验收里通过。
+  - 首批（79e8dc3）的内存路径与 ②③④⑤ 合成联调的记录见[跑通计划第 2.1、2.2 节](../../ai-docs/plans/mvp-runnable.md)。
+- **历史（保留）**：2026-11-11 的首片只支持内存客户端，并记有“不支持 `RemoteStorageClient`”“根配置尚未含 `services/dependency`”等限制。根接入已在 79e8dc3 的 `pyproject.toml` 中；远程限制由上面的远程路径取代，但远程路径尚未提交，也没有部署。
 
-部署还没有⑤的身份，插件类型的读权限也待①确认，见[提案第 4 节](../../docs/proposals/dependency-scheduler-interfaces.md)。①侧基础能力已在 dev 上（PR #8）；③④的完成协议首片都只在工作区；与 ⑤ 只有上面所说的内存合成联调，没有真实服务联调，见[跑通计划第 2.1 节](../../ai-docs/plans/mvp-runnable.md)。
+① 的 core 轮廓初始化（`init-core-identities`，新库专用、工作区）会签发 `dependency` 身份并预留 `dependency.changes`；插件类型对 ⑤ 的读授权仍是只做显式逐类授权，自动授权（提案中的 A2）未决，见[提案第 4 节](../../docs/proposals/dependency-scheduler-interfaces.md)。③④ 的完成协议首片在 79e8dc3，④ 的 v1.2 对齐在工作区；工作区另有 `services/storage/tests/test_mvp_core_runtime.py`：经真实认证的回环服务 HTTP 与临时 PG/NATS 的核心回路，该文件 6 项（含 4 项网络夹具回归）在最终验收里通过。这是合成数据上的核心回路，不是完整联调或部署，见[跑通交接第 6.1 节](../../ai-docs/plans/mvp-runtime-handoff.md)。
 
 ## 两个入口
 
@@ -39,7 +54,7 @@ based-on: 设计 v1.2 §8；信号补充 §3.4；工作分解 v1.2 ⑤节；orig
 
 新原始数据、规则编辑本身、被历史门控拦截的参考变化都不触发重判。
 
-上表是目标行为。工作区首片只覆盖第一个入口，第二个入口尚未实现，见上面的“状态”。
+上表是目标行为。已实现的两条路径都只覆盖第一个入口，第二个入口尚未实现，见上面的“状态”。
 
 ## 等待③确定的字段
 

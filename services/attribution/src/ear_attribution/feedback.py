@@ -1,7 +1,7 @@
 """Stored ⑥ commands, not the closed public-input validator (null defaults are valid).
 
-create_place/range jobs are explicitly rejected in this first slice; never fake ACK
-or schedule an unpersisted background job. Rejected commands have durable receipts.
+Bounded create_place is atomic; range jobs remain explicitly unsupported.
+Rejected commands have durable receipts, never an unpersisted background job.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from ear_storage_client import (
     iter_query,
 )
 
+from ear_attribution.create_place import plan_create_place
 from ear_attribution.matching import coordinates, reference_dependency, vector
 from ear_attribution.payloads import (
     PAIRS,
@@ -40,6 +41,7 @@ SUPPORTED = {
     "add_reference",
     "remove_reference",
     "rename",
+    "create_place",
 }
 
 
@@ -100,6 +102,8 @@ def _plan(reader: Reader, raw: RawRecord, command: dict) -> tuple[list[WriteOp],
     if not isinstance(kind, str) or kind not in SUPPORTED:
         raise DomainError("unsupported_command")
     fence = read_fence(reader)
+    if kind == "create_place":
+        return plan_create_place(reader, raw, command, fence)
     ops: list[WriteOp] = list(fence.initial_ops)
     if kind == "rename":
         target = entity(reader, _id(command, "target_id"))

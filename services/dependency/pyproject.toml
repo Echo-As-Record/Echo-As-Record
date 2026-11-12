@@ -1,7 +1,7 @@
 [project]
 name = "ear-dependency"
 version = "0.1.0"
-description = "Bounded, storage-backed dependency scheduler core (memory acceptance slice)"
+description = "Bounded dependency scheduler with explicit-grant remote authority and durable replay"
 requires-python = ">=3.12"
 dependencies = ["ear-contracts", "ear-storage-client"]
 

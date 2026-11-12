@@ -42,9 +42,11 @@ class Step(BaseModel):
     reason: str | None = None
     owner: str | None = None
     request_event_id: str | None = None
-    # Local intent identity, NOT a remote write receipt. Memory write has no
-    # request_id API; this slice cannot replay a remote transaction receipt.
+    # Remote mode uses this as the stable transport request_id for publication.
+    # Memory mode has no transport receipt API.
     intent_id: str | None = None
+    authority_revision: str | None = None
+    owner_revision: int | None = None
     request_parent_id: str | None = None
     request_causes: list[TracedCause] = Field(default_factory=list)
     requested_at: float | None = None

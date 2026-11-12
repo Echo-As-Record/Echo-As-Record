@@ -1,14 +1,12 @@
-"""Storage-backed, single-worker scheduler for the bounded memory acceptance slice.
+"""Bounded storage-backed scheduler core; owners execute and Finish independently.
 
-No background threads, network, auto-install, global registry mutation or business
-writes. Call handle(event), then tick(); owners execute and Finish independently.
-All state is recoverable via a new service over the SAME surviving store. Remote
-clients are deliberately refused: filtered graph reads cannot prove completeness.
-Unknown publish outcomes freeze the persisted intent; absence is NOT proof of
-non-commit, and there is no automatic new-ID retry.
+The base path is memory-only with explicit visibility. RemoteDependencyService
+adds server authority, local process locking and durable transport replay.
+Memory-path unknown outcomes freeze rather than blindly issuing new IDs.
 """
 
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from time import time
 
 from ear_contracts import Cause, DataChanged, Event, SemanticRecord, TracedCause, new_id
@@ -22,8 +20,14 @@ from ear_storage_client import (
     Reader,
     StorageClient,
     WriteOp,
+    WriteResult,
 )
 
+from ear_dependency.causal_fields import (
+    CausalVersionsUnavailable,
+    causally_stale,
+    validate_creation,
+)
 from ear_dependency.domain import Step, Trigger, event_causes, union
 from ear_dependency.graph import IncompleteGraph, closure
 from ear_dependency.records import Record, load, put
@@ -56,6 +60,29 @@ class DependencyService:
             raise ValueError("scheduler_authority_unavailable: remote execution refused")
         if not full_visibility:
             raise ValueError("coverage_incomplete: full memory visibility must be explicit")
+        self._configure(
+            client,
+            consumer=consumer,
+            max_nodes=max_nodes,
+            max_records=max_records,
+            max_depth=max_depth,
+            max_generations=max_generations,
+            request_timeout=request_timeout,
+            clock=clock,
+        )
+
+    def _configure(
+        self,
+        client: StorageClient,
+        *,
+        consumer: str = "dependency.changes",
+        max_nodes: int = 200,
+        max_records: int = 5000,
+        max_depth: int = 64,
+        max_generations: int = 5,
+        request_timeout: float = 600,
+        clock: Callable[[], float] = time,
+    ) -> None:
         if client.module != "dependency" or not (
             consumer == "dependency" or consumer.startswith("dependency.")
         ):
@@ -73,15 +100,21 @@ class DependencyService:
 
     def _write(self, ops: list[WriteOp], context: Context | None = None) -> None:
         # Do not hide conflicts or transport errors: event handlers must not ACK them.
-        self.client.write(ops, context or Context.system()).check()
+        self._write_result(ops, context or Context.system()).check()
+
+    def _write_result(self, ops: list[WriteOp], context: Context) -> WriteResult:
+        return self.client.write(ops, context)
 
     def _save(self, record: Record, revision: int) -> None:
         self._write([put(record, revision)])
 
+    def _admission_reader(self) -> AbstractContextManager[Reader]:
+        return self.client.snapshot()
+
     def handle(self, event: Event) -> None:
         if not isinstance(event, DataChanged):
             return
-        with self.client.snapshot() as reader:
+        with self._admission_reader() as reader:
             current = reader.get(event.data_id)  # current state BEFORE marker/gating
             if reader.is_processed(self.consumer, event.event_id):
                 return
@@ -102,33 +135,76 @@ class DependencyService:
                 trigger.status, trigger.reason = "ignored", "rule_edit"
             elif event.skip_history:
                 trigger.status, trigger.reason = "ignored", "skip_history"
+            elif event.operation == "created" or event.old_version is None:
+                try:
+                    validate_creation(reader, event)
+                except (CausalVersionsUnavailable, PermissionDenied) as exc:
+                    trigger.status = "blocked"
+                    trigger.reason = (
+                        "read_denied" if isinstance(exc, PermissionDenied) else str(exc)
+                    )
+                else:
+                    # A proven creation cannot invalidate an existing edge. Do
+                    # not expand a delayed creation against today's descendants
+                    # or consume generations on historical, unrelated debt.
+                    # Independent additional causes must still be evaluated.
+                    if not event.additional_causes:
+                        trigger.status, trigger.reason = "ignored", "semantic_created"
         # Trigger and marker are atomic; even a gated input has an explicit reason.
-        result = self.client.write(
+        result = self._write_result(
             [put(trigger), MarkProcessed(self.consumer, event.event_id)], Context.system()
         )
         if result.conflict is not None and result.conflict.reason == "already_processed":
             return
         result.check()
 
+    def _records_reader(self) -> AbstractContextManager[Reader]:
+        """Scheduler-owned state, separate from consistent business graph reads."""
+        return self.client.snapshot()
+
     def records(self) -> list[Record]:
-        with self.client.snapshot() as reader:
+        with self._records_reader() as reader:
             return [r for r, _ in load(reader, self.max_records).values()]
 
     def tick(self) -> None:
         """One finite pass. New work/second generations progress on subsequent calls."""
-        with self.client.snapshot() as reader:
+        with self._records_reader() as reader:
             records = load(reader, self.max_records)
         # Expand all known events BEFORE deciding any step, so simultaneous causes
         # merge and known upstream work cannot be bypassed by ordering of ticks.
-        for record, _ in records.values():
-            if isinstance(record, Trigger) and record.status == "open":
-                self._expand(record.id)
-        with self.client.snapshot() as reader:
-            records = load(reader, self.max_records)
-        for record, _ in records.values():
-            if isinstance(record, Step) and record.successor_id is None:
-                self._advance(record.id)
-        self._summarize()
+        opened = [
+            record.id
+            for record, _ in records.values()
+            if isinstance(record, Trigger) and record.status == "open"
+        ]
+        for trigger_id in opened:
+            self._expand(trigger_id)
+        if opened:
+            with self._records_reader() as reader:
+                records = load(reader, self.max_records)
+        active = [
+            record.id
+            for record, _ in records.values()
+            if isinstance(record, Step)
+            and record.successor_id is None
+            and (record.state not in TERMINAL or record.pending_causes)
+        ]
+        for step_id in active:
+            self._advance(step_id)
+        # A durable terminal step without pending causes needs no further I/O.
+        # Do not cache it across ticks: a new trigger can create a successor.
+        # Still recover summaries after a crash, even for an empty expansion.
+        if (
+            opened
+            or active
+            or any(
+                isinstance(record, Trigger)
+                and record.status in {"expanded", "waiting", "blocked"}
+                and record.reason is None
+                for record, _ in records.values()
+            )
+        ):
+            self._summarize()
 
     def _expand(self, trigger_id: str) -> None:
         with self.client.snapshot() as reader:
@@ -205,7 +281,7 @@ class DependencyService:
         self._write(ops)
 
     def _advance(self, step_id: str) -> None:
-        with self.client.snapshot() as reader:
+        with self._records_reader() as reader:
             records = load(reader, self.max_records)
             step, rev = records[step_id]
             assert isinstance(step, Step)
@@ -234,7 +310,8 @@ class DependencyService:
                         self._save(step, rev)
                     return
             if step.state == "done" and step.pending_causes:
-                self._followup(reader, step, rev)
+                with self.client.snapshot() as graph_reader:
+                    self._followup(graph_reader, step, rev)
                 return
             if step.state in TERMINAL or (
                 step.state == "blocked" and step.reason != "upstream_blocked"
@@ -256,6 +333,10 @@ class DependencyService:
                 return
             if any(up.state not in TERMINAL or up.pending_causes for up in upstreams):
                 return
+        # Only graph/freshness decisions need a business snapshot. Own records
+        # are stable under the single-worker contract; writes still use CAS.
+        # Finish polling above remains authoritative, including late results.
+        with self.client.snapshot() as reader:
             step.state, step.reason = "pending", None
             target = reader.get(step.target_id)
             if not isinstance(target, SemanticRecord):
@@ -267,18 +348,25 @@ class DependencyService:
                 if inputs is None:
                     step.state, step.reason = "blocked", "dependencies_missing"
                 else:
-                    # ONLY authorized causal paths trigger a request. An unrelated
-                    # stale rule/reference must not revive a path that was unchanged.
-                    relevant = {t.cause.data_id for t in step.causes}
-                    relevant.update(up.target_id for up in upstreams if self._changed(up))
-                    stale = reader.stale_dependencies(sorted(relevant))
-                    if not any(e.dependent.id == step.target_id for e in stale):
-                        step.state = "unaffected"
-                    else:
-                        step.target_version = target.version
-                        self._prepare(
-                            step, upstreams, {e.depends_on.id for e in inputs.dependencies}
+                    try:
+                        affected = causally_stale(
+                            reader,
+                            inputs.dependencies,
+                            union(step.causes, self._derived_causes(upstreams)),
                         )
+                    except (CausalVersionsUnavailable, PermissionDenied) as exc:
+                        step.state = "blocked"
+                        step.reason = (
+                            "read_denied" if isinstance(exc, PermissionDenied) else str(exc)
+                        )
+                    else:
+                        if not affected:
+                            step.state = "unaffected"
+                        else:
+                            step.target_version = target.version
+                            self._prepare(
+                                step, upstreams, {e.depends_on.id for e in inputs.dependencies}
+                            )
             if step.state != "intent":
                 self._save(step, rev)
                 return
@@ -293,20 +381,15 @@ class DependencyService:
             step.result.outcome == "changed" or step.result.disposition == "terminated"
         )
 
-    def _prepare(self, step: Step, upstreams: list[Step], direct_inputs: set[str]) -> None:
-        spec = self.client.registry.data_types.get(step.target_type)  # dynamic, not cached
-        if spec is None or not spec.supports_reevaluation:
-            step.state, step.reason = "blocked", "not_reevaluable"
-            return
-        step.owner = spec.writer
-        origins = list(step.causes)
+    @classmethod
+    def _derived_causes(cls, upstreams: list[Step]) -> list[TracedCause]:
         derived: list[TracedCause] = []
         for up in upstreams:
-            if up.request_event_id:
-                step.upstream_request_ids = union(step.upstream_request_ids, [up.request_event_id])
-            if self._changed(up):
+            if cls._changed(up):
                 result = up.result
-                assert result is not None and result.after_version is not None
+                assert result is not None
+                if result.before_version is None or result.after_version is None:
+                    raise CausalVersionsUnavailable("causal_versions_unavailable")
                 cause = TracedCause(
                     cause=Cause(
                         data_type=up.target_type,
@@ -317,8 +400,6 @@ class DependencyService:
                     root_feedback_id=result.root_feedback_id,
                     depth=result.depth + 1,
                 )
-                if not derived:
-                    step.request_parent_id = up.request_event_id
                 derived = union(derived, [cause])
                 derived = union(
                     derived,
@@ -339,6 +420,22 @@ class DependencyService:
                         for c in result.extra_causes
                     ],
                 )
+        return derived
+
+    def _prepare(self, step: Step, upstreams: list[Step], direct_inputs: set[str]) -> None:
+        spec = self.client.registry.data_types.get(step.target_type)  # dynamic, not cached
+        if spec is None or not spec.supports_reevaluation:
+            step.state, step.reason = "blocked", "not_reevaluable"
+            return
+        step.owner = spec.writer
+        origins = list(step.causes)
+        derived = self._derived_causes(upstreams)
+        for up in upstreams:
+            if up.request_event_id:
+                step.upstream_request_ids = union(step.upstream_request_ids, [up.request_event_id])
+        parent = next((up for up in upstreams if self._changed(up)), None)
+        if parent is not None:
+            step.request_parent_id = parent.request_event_id
         # Non-direct origins have travelled through the completed parent. Preserve
         # their root/cause, but do not reset the path depth back to the seed's depth.
         advanced = []
@@ -394,7 +491,7 @@ class DependencyService:
 
     def _followup(self, reader: Reader, step: Step, revision: int) -> None:
         records = load(reader, self.max_records)
-        relevant = {t.cause.data_id for t in step.pending_causes}
+        upstreams: list[Step] = []
         unresolved_upstream = False
         for upstream_id in step.upstream_step_ids:
             upstream, _ = records[upstream_id]
@@ -403,12 +500,23 @@ class DependencyService:
                 upstream, _ = records[upstream.successor_id]
                 assert isinstance(upstream, Step)
             unresolved_upstream |= upstream.state not in TERMINAL or bool(upstream.pending_causes)
-            if self._changed(upstream):
-                relevant.add(upstream.target_id)
+            upstreams.append(upstream)
         # Absence of direct stale seed edges cannot prove absorption through a
         # parent that has not finished. Preserve a successor with the full barrier.
-        stale = reader.stale_dependencies(sorted(relevant))
-        if not unresolved_upstream and not any(e.dependent.id == step.target_id for e in stale):
+        affected = False
+        if not unresolved_upstream:
+            try:
+                affected = causally_stale(
+                    reader,
+                    reader.dependencies_of(step.target_id),
+                    union(step.pending_causes, self._derived_causes(upstreams)),
+                )
+            except (CausalVersionsUnavailable, PermissionDenied) as exc:
+                step.state = "blocked"
+                step.reason = "read_denied" if isinstance(exc, PermissionDenied) else str(exc)
+                self._save(step, revision)
+                return
+        if not unresolved_upstream and not affected:
             step.absorbed_causes = union(step.absorbed_causes, step.pending_causes)
             step.pending_causes = []
             self._save(step, revision)
@@ -432,7 +540,7 @@ class DependencyService:
         self._write([put(step, revision), put(successor)])
 
     def _summarize(self) -> None:
-        with self.client.snapshot() as reader:
+        with self._records_reader() as reader:
             records = load(reader, self.max_records)
         steps = [r for r, _ in records.values() if isinstance(r, Step)]
         for trigger, revision in records.values():

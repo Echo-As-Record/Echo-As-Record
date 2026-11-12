@@ -57,6 +57,7 @@ jobs:
         run: |
           docker build -f deploy/Dockerfile.api -t "ear-api:ci-${{ github.sha }}" .
           docker build -f deploy/Dockerfile.gateway -t "ear-gateway:ci-${{ github.sha }}" .
+          docker build -f deploy/Dockerfile.worker -t "ear-mvp-worker:ci-${{ github.sha }}" .
 
       - name: Tests (including real PostgreSQL, NATS, backup and API-gateway containers)
         env:
@@ -67,6 +68,7 @@ jobs:
           EAR_STORAGE_TEST_IMAGE: ear-storage:ci-${{ github.sha }}
           EAR_API_TEST_IMAGE: ear-api:ci-${{ github.sha }}
           EAR_GATEWAY_TEST_IMAGE: ear-gateway:ci-${{ github.sha }}
+          EAR_MVP_WORKER_TEST_IMAGE: ear-mvp-worker:ci-${{ github.sha }}
           EAR_TEST_BACKUP_IMAGE: ear-storage:ci-${{ github.sha }}
         run: uv run pytest -q
 

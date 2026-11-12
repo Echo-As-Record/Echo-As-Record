@@ -12,11 +12,13 @@ from typing import Any
 from uuid import UUID
 
 from ear_contracts import (
+    Cause,
     DataChanged,
     Event,
     RawRecord,
     ReevaluationRequested,
     ReevaluationResult,
+    SemanticRecord,
     SystemRecord,
     format_utc,
 )
@@ -36,8 +38,10 @@ from ear_extraction.call_safety import DurableCalls
 from ear_extraction.domain import Blocked, Command, Interval, Waiting, now_utc
 from ear_extraction.model_io import ModelGateway, invoke
 from ear_extraction.planning import apply_plan, extract_plan, preview_reextract, rejudge_plan
+from ear_extraction.reevaluation import discover_rules
 from ear_extraction.rules import rule_operations
 from ear_extraction.scheduler import uncovered
+from ear_extraction.selection import reselect_plan
 from ear_extraction.suggestions import suggestion_operations
 
 logger = logging.getLogger(__name__)
@@ -145,7 +149,7 @@ class ExtractionService:
             # Feedback is the root, independent of a caller's self-reported envelope.
             context = Context.feedback(feedback.id)
         elif isinstance(event, ReevaluationRequested):
-            if event.target_type != "artifact":
+            if event.target_type not in {"artifact", "rule_selection"}:
                 return
             context = Context.of(event)
             if self.storage.get_reevaluation_result(event.event_id) is not None:
@@ -163,6 +167,7 @@ class ExtractionService:
             raw = {
                 "kind": "reevaluate",
                 "target_id": event.target_id,
+                "target_type": event.target_type,
                 "description": event.change_description,
             }
         else:
@@ -173,6 +178,7 @@ class ExtractionService:
             context,
             event_id=event.event_id,
             request_time=event.occurred_at if isinstance(event, ReevaluationRequested) else None,
+            request_cause=event.cause if isinstance(event, ReevaluationRequested) else None,
         )
 
     def _admit(
@@ -184,6 +190,7 @@ class ExtractionService:
         event_id: str | None = None,
         scheduled: bool = False,
         request_time: datetime | None = None,
+        request_cause: Cause | None = None,
     ) -> None:
         def matches(run: SystemRecord) -> bool:
             return (
@@ -222,6 +229,8 @@ class ExtractionService:
             "model_calls": [],
             "gateway_calls": [],
         }
+        if request_cause is not None:
+            payload["request_cause"] = request_cause.model_dump(mode="json")
         if request_time is not None:
             payload["request_occurred_at"] = format_utc(request_time)
         interval = command.get("interval")
@@ -294,6 +303,10 @@ class ExtractionService:
             or run.payload["status"] not in {"failed", "blocked"}
         ):
             raise ValueError("run_not_retryable")
+        if (
+            request_id := run.payload.get("request_event_id")
+        ) and self.storage.get_reevaluation_result(request_id) is not None:
+            raise ValueError("terminal_request_requires_new_request")
         if reason := _retry_barrier(run):
             raise ValueError(reason)
         self.storage.write(
@@ -322,7 +335,7 @@ class ExtractionService:
             payload["root_feedback_id"],
             payload["depth"],
             payload.get("request_event_id"),
-            payload.get("additional_causes", ()),
+            payload.get("execution_additional_causes", payload.get("additional_causes", ())),
         )
 
     @staticmethod
@@ -458,10 +471,10 @@ class ExtractionService:
                 purpose=purpose,
                 data=data,
                 run_id=run.id,
-                root=context.root_feedback_id,
-                depth=context.depth,
-                request_event_id=context.request_event_id,
-                additional_causes=context.additional_causes,
+                root=tracker.context.root_feedback_id,
+                depth=tracker.context.depth,
+                request_event_id=tracker.context.request_event_id,
+                additional_causes=tracker.context.additional_causes,
                 max_input_chars=self.max_input_chars,
             )
             calls.append(
@@ -469,32 +482,81 @@ class ExtractionService:
             )
             return output
 
+        business_ready = False
         try:
             command = Command.model_validate(payload["command"])
             with self.storage.snapshot() as reader:
                 if command.kind in {"extract", "reextract"}:
+                    spec = self.storage.registry.data_types.get("rule_selection")
+                    if (
+                        spec is None
+                        or spec.kind != "semantic"
+                        or spec.unique_fields != ("activity_id",)
+                        or spec.writer != "extraction"
+                        or not spec.requires_dependencies
+                        or not spec.supports_reevaluation
+                    ):
+                        raise Blocked("rule_selection_registration_required")
                     ops, detail = extract_plan(reader, command, run.id, ask)
                 elif command.kind in {"apply_rule", "extract_once"}:
                     ops, detail = apply_plan(reader, command, run.id, ask)
                 elif command.kind == "reevaluate":
                     request_id = context.request_event_id
-                    assert request_id is not None
-                    registry = self.storage.registry
-                    if not registry.data_types["artifact"].supports_reevaluation:
-                        raise Blocked("artifact_reevaluation_not_enabled")
+                    assert request_id is not None and command.target_id is not None
+                    spec = self.storage.registry.data_types.get(command.target_type)
+                    if spec is None or not spec.supports_reevaluation:
+                        raise Blocked(command.target_type + "_reevaluation_not_enabled")
                     if reader.get_reevaluation_result(request_id) is not None:
                         raise Blocked("reevaluation_already_completed")
-                    ops, detail, before, outcome = rejudge_plan(reader, command, ask)
+                    discovered = discover_rules(reader, command)
+                    # Keep admission's original additional_causes intact; discoveries
+                    # are independent execution context, persisted before any model call.
+                    context = Context(
+                        context.root_feedback_id,
+                        context.depth,
+                        request_id,
+                        (
+                            *Context(
+                                payload["root_feedback_id"],
+                                payload["depth"],
+                                request_id,
+                                payload.get("additional_causes", ()),
+                            ).additional_causes,
+                            *discovered.traces,
+                        ),
+                    )
+                    tracker.context = context
+                    if discovered.causes or tracker.payload.get("extra_causes"):
+                        tracker.save(
+                            {
+                                **tracker.payload,
+                                "extra_causes": [
+                                    c.model_dump(mode="json") for c in discovered.causes
+                                ],
+                                "execution_additional_causes": [
+                                    t.model_dump(mode="json") for t in context.additional_causes
+                                ],
+                            }
+                        )
+                    if command.target_type == "rule_selection":
+                        assert command.target_id is not None
+                        plan = reselect_plan(reader, command.target_id, run.id, ask)
+                    else:
+                        plan = rejudge_plan(reader, command, ask)
+                    ops, detail = plan.ops, plan.detail
                     ops.extend(
                         [
                             FinishReevaluation(
                                 ReevaluationResult(
                                     request_event_id=request_id,
-                                    target_type="artifact",
-                                    target_id=detail["artifact_id"],
-                                    outcome=outcome,
-                                    before_version=before,
-                                    after_version=before + (outcome == "changed"),
+                                    target_type=command.target_type,
+                                    target_id=command.target_id,
+                                    outcome=plan.outcome,
+                                    before_version=plan.before,
+                                    after_version=plan.after,
+                                    extra_causes=tuple(discovered.causes),
+                                    reason_code=plan.reason_code,
+                                    disposition=plan.disposition,
                                     root_feedback_id=context.root_feedback_id,
                                     depth=context.depth,
                                     additional_causes=context.additional_causes,
@@ -511,10 +573,14 @@ class ExtractionService:
                     ops, detail = rule_operations(reader, command), {}
                 else:
                     ops, detail = suggestion_operations(reader, command), {}
+            business_ready = True
             final = {
                 **tracker.payload,
                 "status": "succeeded",
                 "error": None,
+                "reevaluation_outcome": detail.get("outcome")
+                if command.kind == "reevaluate"
+                else None,
                 "detail": detail,
                 "model_calls": calls,
                 "lease_until": None,
@@ -542,6 +608,10 @@ class ExtractionService:
             # No exception bodies: model responses can contain private evidence or credentials.
             status = "failed" if isinstance(exc, (ValueError, ValidationError)) else "retry_wait"
             error = type(exc).__name__
+            if business_ready and tracker.payload.get("gateway_calls"):
+                # Even a known write rejection must not convert valid returned output
+                # into a failed Finish or authorize recomputation with a fresh call ID.
+                status, error = "blocked", "gateway_result_not_committed"
 
         current = run.model_copy(
             update={
@@ -554,7 +624,9 @@ class ExtractionService:
     def _finish(self, run: SystemRecord, context: Context, status: str, error: str) -> None:
         payload = run.payload
         barrier = _retry_barrier(run)
-        if barrier == "gateway_outcome_unknown" or (barrier and status == "retry_wait"):
+        if barrier == "gateway_outcome_unknown" or (
+            barrier and status in {"retry_wait", "waiting_attribution"}
+        ):
             status, error = "blocked", barrier
         if status == "retry_wait" and payload["attempts"] >= self.max_attempts:
             status = "failed"
@@ -565,8 +637,54 @@ class ExtractionService:
             "lease_until": None,
             "retry_at": format_utc(self.clock() + timedelta(seconds=self.retry_seconds)),
         }
+        ops: list[WriteOp] = []
+        request_id = context.request_event_id
+        if (
+            status == "failed"
+            and request_id
+            and barrier
+            not in {
+                "gateway_outcome_unknown",
+                "legacy_completion_id_collision",
+                "legacy_gateway_outcome_untracked",
+                "reevaluation_request_required",
+            }
+        ):
+            command = Command.model_validate(payload["command"])
+            target = self.storage.get(command.target_id) if command.target_id else None
+            version = target.version if isinstance(target, SemanticRecord) else None
+            assert command.target_id is not None
+            ops.extend(
+                [
+                    FinishReevaluation(
+                        ReevaluationResult(
+                            request_event_id=request_id,
+                            target_type=command.target_type,
+                            target_id=command.target_id,
+                            outcome="failed",
+                            before_version=version,
+                            after_version=version,
+                            error_code="extraction_failed",
+                            extra_causes=tuple(
+                                Cause.model_validate(c) for c in payload.get("extra_causes", [])
+                            ),
+                            root_feedback_id=context.root_feedback_id,
+                            depth=context.depth,
+                            additional_causes=context.additional_causes,
+                            completed_at=max(
+                                self.clock(), datetime.fromisoformat(payload["request_occurred_at"])
+                            ),
+                        )
+                    ),
+                    MarkProcessed(COMPLETION_CONSUMER, request_id),
+                ]
+            )
+            final["reevaluation_outcome"] = "failed"
         result = self.storage.write(
-            [PutSystemRecord("extraction_run", run.id, final, expected_revision=run.revision)],
+            [
+                *ops,
+                PutSystemRecord("extraction_run", run.id, final, expected_revision=run.revision),
+            ],
             context,
         )
         if not result.ok:

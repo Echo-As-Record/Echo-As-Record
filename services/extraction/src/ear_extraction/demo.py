@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 
-from ear_contracts import DEFAULT_REGISTRY, Registry, new_id
+from ear_contracts import DEFAULT_REGISTRY, DataTypeSpec, Registry, new_id
 from ear_storage_client import AppendRaw, Context, Create, MemoryStorage, Query, iter_query
 from ear_storage_client.testing import make_raw, ts
 
@@ -43,7 +43,13 @@ class DemoGateway:
         )
         pid = person["payload"]["target_id"]
         result = {
-            "body_md": f"- [[person:{pid}]] 整理实验结果。",
+            "body_md": "- "
+            + next(
+                e["payload"].get("name") or "未命名人物"
+                for e in call.data["entities"]
+                if e["id"] == pid
+            )
+            + " 整理实验结果。",
             "evidence_ids": [evidence[0]["id"]],
         }
         rule = call.data["rule"]["payload"]
@@ -56,12 +62,28 @@ class DemoGateway:
         return result
 
 
-def fixture() -> tuple[MemoryStorage, dict[str, str]]:
-    # Opt in only for the synthetic demo; production registry/deployment is unchanged.
+def fixture_registry() -> Registry:
+    """Synthetic opt-in only; production registration belongs to the coordinator."""
     types = dict(DEFAULT_REGISTRY.data_types)
-    types["artifact"] = replace(types["artifact"], supports_reevaluation=True)
-    registry = Registry(types, DEFAULT_REGISTRY.event_publishers, DEFAULT_REGISTRY.core_types)
-    storage = MemoryStorage(registry, duplicate_delivery=True)
+    types["artifact"] = replace(
+        types["artifact"], supports_reevaluation=True, requires_dependencies=True
+    )
+    return Registry(
+        types, DEFAULT_REGISTRY.event_publishers, DEFAULT_REGISTRY.core_types
+    ).extend_core(
+        DataTypeSpec(
+            "rule_selection",
+            "semantic",
+            "extraction",
+            unique_fields=("activity_id",),
+            requires_dependencies=True,
+            supports_reevaluation=True,
+        )
+    )
+
+
+def fixture() -> tuple[MemoryStorage, dict[str, str]]:
+    storage = MemoryStorage(fixture_registry(), duplicate_delivery=True)
     person, voice, transcript, attribution = [new_id() for _ in range(4)]
     adapter = storage.client("adapter")
     adapter.write(

@@ -185,7 +185,10 @@ def test_finish_uses_real_request_id_and_context_on_gateway_and_storage(tmp_path
     result = client.get_system_record(event.event_id)
     assert result is not None and result.data_type == "extraction_completion"
     assert client.is_processed(COMPLETION_CONSUMER, event.event_id)
-    assert not client.stale_dependencies([ids["attribution"]])
+    assert all(
+        d.dependent.data_type == "rule_selection"
+        for d in client.stale_dependencies([ids["attribution"]])
+    )
     final = client.get_system_record(admitted.id)
     assert final is not None and final.payload["status"] == "succeeded"
     assert final.payload["gateway_calls"][0]["state"] == "returned"

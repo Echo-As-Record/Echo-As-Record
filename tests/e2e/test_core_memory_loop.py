@@ -3,7 +3,7 @@
 Synthetic Evidence -> actual adapter/attribution/extraction/dependency -> Finish.
 Platform: MemoryStorage. Model: deterministic fake, NOT gateway HTTP or real LLM.
 Feedback uses the API input model, NOT the HTTP authentication/status endpoints.
-No external actions run. v1.2 rule selection and real deployment remain untested.
+No external actions run. Includes independent v1.2 rule selection; no deployment.
 """
 
 from dataclasses import replace
@@ -79,6 +79,14 @@ def capable_registry() -> Registry:
     ).extend_core(
         DataTypeSpec("attribution_state", "system_record", "attribution"),
         DataTypeSpec("attribution_feedback_result", "system_record", "attribution"),
+        DataTypeSpec(
+            "rule_selection",
+            "semantic",
+            "extraction",
+            unique_fields=("activity_id",),
+            requires_dependencies=True,
+            supports_reevaluation=True,
+        ),
     )
 
 
@@ -174,6 +182,8 @@ def test_import_correction_and_real_owners_finish_in_memory(rebuild_scheduler):
     [activity] = rows(storage, "activity")
     before = {r.id: r for r in rows(storage, "artifact")}
     assert len(before) == 2
+    [selection] = rows(storage, "rule_selection")
+    assert set(selection.payload["rule_ids"]) == {r.payload["rule_id"] for r in before.values()}
     [old_suggestion] = rows(storage, "action_suggestion")
 
     scheduler = DependencyService(storage.client("dependency"), full_visibility=True)
@@ -237,7 +247,9 @@ def test_import_correction_and_real_owners_finish_in_memory(rebuild_scheduler):
     assert new_suggestion.id != old_suggestion.id
     assert new_suggestion.payload["state"] == "pending"  # Never executed.
     requests = [e for e in storage.events if isinstance(e, ReevaluationRequested)]
-    assert len(requests) == 2
+    expected_targets = {**{ident: "artifact" for ident in before}, selection.id: "rule_selection"}
+    assert {r.target_id: r.target_type for r in requests} == expected_targets
+    assert len(requests) == len(expected_targets)
     outcomes = set()
     for request in requests:
         result = storage.client("dependency").get_reevaluation_result(request.event_id)
@@ -246,14 +258,21 @@ def test_import_correction_and_real_owners_finish_in_memory(rebuild_scheduler):
         assert result.root_feedback_id == root
         assert result.request_event_id == request.event_id
     assert outcomes == {"changed", "unchanged"}
-    calls = [c for c in model.calls if c.purpose == "reevaluation"]
-    assert len(calls) == 2 and len({c.call_id for c in calls}) == 2
+    calls = [c for c in model.calls if c.request_event_id is not None]
+    assert len(calls) == len(expected_targets)
+    assert len({c.call_id for c in calls}) == len(calls)
+    purposes = {c.request_event_id: c.purpose for c in calls}
+    assert all(
+        purposes[r.event_id]
+        == ("selection" if r.target_type == "rule_selection" else "reevaluation")
+        for r in requests
+    )
     assert {c.request_event_id for c in calls} == {e.event_id for e in requests}
     assert all(c.root_feedback_id == root and c.depth > 0 for c in calls)
     steps = [r for r in scheduler.records() if isinstance(r, Step)]
-    assert len(steps) == 2
+    assert len(steps) == len(expected_targets)
     assert {r.request_event_id for r in steps} == {e.event_id for e in requests}
-    assert {r.target_id for r in steps} == set(before)
+    assert {r.target_id for r in steps} == set(expected_targets)
     assert all(r.state == "done" for r in steps)
     count = len(model.calls)
     for request in requests:

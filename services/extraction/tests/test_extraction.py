@@ -114,7 +114,7 @@ def test_manual_extraction_and_duplicate_delivery(env):
     assert len(items(env, "action_suggestion")) == 1
     artifact = items(env, "artifact")[0]
     deps = env[0].client("extraction").dependencies_of(artifact.id)
-    assert {d.depends_on.data_type for d in deps} == {"activity", "rule", "attribution"}
+    assert {d.depends_on.data_type for d in deps} == {"activity", "rule", "attribution", "person"}
     assert all(c.module == "extraction" and c.root_feedback_id != "system" for c in env[2].calls)
     env[4].drain()
     env[0].run_until_idle()
@@ -198,7 +198,7 @@ def test_rejudge_changed_preserves_activity_and_approved_suggestions(env):
     assert run(env, id).payload["detail"]["outcome"] == "changed"
     assert items(env, "activity")[0].id == activity.id
     assert items(env, "artifact")[0].version == 2
-    assert p2 in items(env, "artifact")[0].payload["body_md"]
+    assert "合成人物乙" in items(env, "artifact")[0].payload["body_md"]
     assert {r.payload["state"] for r in items(env, "action_suggestion")} == {"approved", "pending"}
 
 
@@ -215,10 +215,13 @@ def test_rejudge_unchanged_refreshes_dependencies(env):
     id = rejudge(env, artifact)
     assert run(env, id).payload["detail"]["outcome"] == "unchanged"
     assert items(env, "artifact")[0].version == 1
-    assert not storage.client("dependency").stale_dependencies([ids["attribution"]])
+    assert all(
+        d.dependent.data_type == "rule_selection"
+        for d in storage.client("dependency").stale_dependencies([ids["attribution"]])
+    )
 
 
-def test_historical_rule_conflict_is_explicit(env):
+def test_historical_rule_uses_current_version_without_eager_recompute(env):
     extract(env)
     rule = items(env, "rule")[0]
     submit(
@@ -233,8 +236,8 @@ def test_historical_rule_conflict_is_explicit(env):
     env[4].drain()
     assert items(env, "artifact")[0].version == 1
     id = rejudge(env, items(env, "artifact")[0])
-    assert run(env, id).payload["error"] == "historical_rule_dependency_unsupported"
-    assert items(env, "artifact")[0].version == 1
+    assert run(env, id).payload["status"] == "succeeded"
+    assert items(env, "artifact")[0].payload["rule_version"] == 2
 
 
 @pytest.mark.parametrize("kind", ["apply_rule", "extract_once"])
