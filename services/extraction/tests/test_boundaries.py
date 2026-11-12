@@ -66,7 +66,7 @@ def test_worker_can_stop_without_processing():
     assert service.runs() == []
 
 
-def test_retry_is_bounded_and_never_publishes_partial_results():
+def test_unknown_port_outcome_stops_after_one_attempt_without_partial_results():
     class Offline:
         def complete(self, call):
             raise TimeoutError()
@@ -86,8 +86,9 @@ def test_retry_is_bounded_and_never_publishes_partial_results():
     service.drain()
     run = storage.client("extraction").get_system_record(id)
     assert run is not None
-    assert run.payload["status"] == "failed"
-    assert run.payload["attempts"] == 2
+    assert run.payload["status"] == "blocked"
+    assert run.payload["error"] == "gateway_outcome_unknown"
+    assert run.payload["attempts"] == 1
     assert not list(iter_query(storage.client("extraction"), Query("activity")))
 
 
@@ -233,3 +234,15 @@ def test_gateway_rejects_invalid_run_id_before_transport(gateway_call):
     ):
         gateway.complete(gateway_call.model_copy(update={"run_id": "synthetic-run"}))
     assert not seen
+
+
+def test_tick_pumps_only_jobs_once_before_drain(monkeypatch):
+    storage, _ = fixture()
+    service = ExtractionService(storage.client("extraction"), DemoGateway())
+    order = []
+    monkeypatch.setattr(
+        service.storage, "poll_once", lambda consumer: order.append(consumer), raising=False
+    )
+    monkeypatch.setattr(service, "drain", lambda: order.append("drain"))
+    tick(service)
+    assert order == ["extraction.jobs", "drain"]

@@ -7,7 +7,7 @@ import logging
 import sys
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 from ear_contracts import DEFAULT_REGISTRY, SYSTEM, new_id
@@ -18,8 +18,9 @@ from ear_storage_client.wire import encode_request
 
 from ear_adapter.config import AdapterConfig
 from ear_adapter.convert import Blocked, Waiting, audio_ref_id, capture_records, readiness
-from ear_adapter.ear_api import SpeakerResolution
-from ear_adapter.source import AudioLocator, EarSource, SourceUnavailable
+from ear_adapter.ear_api import Capture, SpeakerResolution
+from ear_adapter.selection import capture_selection, validate_capture_id
+from ear_adapter.source import AudioLocator, EarSource, SourceProtocolError, SourceUnavailable
 
 logger = logging.getLogger("ear_adapter")
 READ_TYPES = tuple(
@@ -67,8 +68,30 @@ def ingest_capture(
     locator: AudioLocator,
     config: AdapterConfig,
 ) -> Outcome:
+    validate_capture_id(capture_id)
+    try:
+        return _ingest_capture(
+            capture_id, source=source, storage=storage, locator=locator, config=config
+        )
+    except ValueError:
+        # 包括外层/内层 Pydantic 及转换校验；绝不输出 input_value/正文。
+        raise SourceProtocolError() from None
+
+
+def _ingest_capture(
+    capture_id: str,
+    *,
+    source: EarSource,
+    storage: StorageClient,
+    locator: AudioLocator,
+    config: AdapterConfig,
+) -> Outcome:
     try:
         evidence = source.read_capture(capture_id)
+        captures = evidence.of_type("capture", Capture)
+        if evidence.capture_id != capture_id or any(c.capture_id != capture_id for c in captures):
+            raise SourceProtocolError()
+        # capture 数量仍由 readiness 判定；匹配校验先于任何音频/声纹读取及去重。
         state = readiness(evidence)
         if isinstance(state, Waiting):
             return Pending(capture_id, state.reason)
@@ -168,7 +191,13 @@ class Runner:
         self.config = config
         self.done: set[str] = set()
 
-    def run_once(self, *, should_stop: Callable[[], bool] = lambda: False) -> Report:
+    def run_once(
+        self,
+        *,
+        capture_ids: Sequence[str] | None = None,
+        should_stop: Callable[[], bool] = lambda: False,
+    ) -> Report:
+        selected = capture_selection(capture_ids)  # 冻结、去重、校验先于任何 IO。
         report = Report()
         try:
             for data_type in READ_TYPES:
@@ -179,18 +208,22 @@ class Runner:
             report.storage_error = "① 暂时不可用"
             return report
         try:
-            summaries = list(self.source.list_captures())
+            identifiers = (
+                [summary.capture_id for summary in self.source.list_captures()]
+                if selected is None
+                else selected
+            )
         except SourceUnavailable:
             report.source_error = "旧 Ear 暂时不可用"
             _log("source_unavailable", reason=report.source_error)
             return report
-        for summary in summaries:
+        for capture_id in identifiers:
             if should_stop():
                 break
-            if summary.capture_id in self.done:
+            if capture_id in self.done:
                 continue
             outcome = ingest_capture(
-                summary.capture_id,
+                capture_id,
                 source=self.source,
                 storage=self.storage,
                 locator=self.locator,
@@ -198,7 +231,7 @@ class Runner:
             )
             report.outcomes.append(outcome)
             if isinstance(outcome, Ingested | AlreadyIngested):
-                self.done.add(summary.capture_id)
+                self.done.add(capture_id)
             _log_outcome(outcome)
         return report
 

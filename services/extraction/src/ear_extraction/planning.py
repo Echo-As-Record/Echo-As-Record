@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from ear_contracts import SemanticRecord, VersionRef, new_id
 from ear_storage_client import (
@@ -186,7 +186,9 @@ def apply_plan(
     return ops, {"artifact_id": id}
 
 
-def rejudge_plan(reader: Reader, command: Command, ask: Ask) -> tuple[list[WriteOp], dict]:
+def rejudge_plan(
+    reader: Reader, command: Command, ask: Ask
+) -> tuple[list[WriteOp], dict, int, Literal["changed", "unchanged"]]:
     artifact = semantic(reader, command.target_id, "artifact")
     activity = semantic(reader, artifact.payload["activity_id"], "activity")
     rule = semantic(reader, artifact.payload["rule_id"], "rule")
@@ -229,4 +231,5 @@ def rejudge_plan(reader: Reader, command: Command, ask: Ask) -> tuple[list[Write
         check_refs(artifact.payload["body_md"], data.entities)
         ops.append(Update("artifact", artifact.id, artifact.version, artifact.payload))
     ops.append(RegisterDependencies("artifact", artifact.id, dependencies(activity, rule, data)))
-    return ops, {"artifact_id": artifact.id, "outcome": "changed" if changed else "unchanged"}
+    outcome = "changed" if changed else "unchanged"
+    return ops, {"artifact_id": artifact.id, "outcome": outcome}, artifact.version, outcome

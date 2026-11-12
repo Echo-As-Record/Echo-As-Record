@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
-from ear_contracts import new_id
+from ear_contracts import DEFAULT_REGISTRY, Registry, new_id
 from ear_storage_client import AppendRaw, Context, Create, MemoryStorage, Query, iter_query
 from ear_storage_client.testing import make_raw, ts
 
@@ -56,7 +57,11 @@ class DemoGateway:
 
 
 def fixture() -> tuple[MemoryStorage, dict[str, str]]:
-    storage = MemoryStorage(duplicate_delivery=True)
+    # Opt in only for the synthetic demo; production registry/deployment is unchanged.
+    types = dict(DEFAULT_REGISTRY.data_types)
+    types["artifact"] = replace(types["artifact"], supports_reevaluation=True)
+    registry = Registry(types, DEFAULT_REGISTRY.event_publishers, DEFAULT_REGISTRY.core_types)
+    storage = MemoryStorage(registry, duplicate_delivery=True)
     person, voice, transcript, attribution = [new_id() for _ in range(4)]
     adapter = storage.client("adapter")
     adapter.write(

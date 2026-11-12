@@ -6,7 +6,9 @@ requires-python = ">=3.12"
 members = [
     "ear-adapter",
     "ear-api",
+    "ear-attribution",
     "ear-contracts",
+    "ear-dependency",
     "ear-extraction",
     "ear-llm-gateway",
     "ear-storage",
@@ -155,6 +157,21 @@ requires-dist = [
 ]
 
 [[package]]
+name = "ear-attribution"
+version = "0.1.0"
+source = { editable = "services/attribution" }
+dependencies = [
+    { name = "ear-contracts" },
+    { name = "ear-storage-client" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "ear-contracts", editable = "libs/ear_contracts" },
+    { name = "ear-storage-client", editable = "libs/ear_storage_client" },
+]
+
+[[package]]
 name = "ear-contracts"
 version = "0.1.0"
 source = { editable = "libs/ear_contracts" }
@@ -164,6 +181,21 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "pydantic", specifier = ">=2.9" }]
+
+[[package]]
+name = "ear-dependency"
+version = "0.1.0"
+source = { editable = "services/dependency" }
+dependencies = [
+    { name = "ear-contracts" },
+    { name = "ear-storage-client" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "ear-contracts", editable = "libs/ear_contracts" },
+    { name = "ear-storage-client", editable = "libs/ear_storage_client" },
+]
 
 [[package]]
 name = "ear-extraction"
@@ -252,7 +284,9 @@ source = { virtual = "." }
 dev = [
     { name = "ear-adapter" },
     { name = "ear-api" },
+    { name = "ear-attribution" },
     { name = "ear-contracts" },
+    { name = "ear-dependency" },
     { name = "ear-extraction" },
     { name = "ear-llm-gateway" },
     { name = "ear-storage" },
@@ -270,7 +304,9 @@ dev = [
 dev = [
     { name = "ear-adapter", editable = "services/adapters" },
     { name = "ear-api", editable = "services/api" },
+    { name = "ear-attribution", editable = "services/attribution" },
     { name = "ear-contracts", editable = "libs/ear_contracts" },
+    { name = "ear-dependency", editable = "services/dependency" },
     { name = "ear-extraction", editable = "services/extraction" },
     { name = "ear-llm-gateway", editable = "services/llm_gateway" },
     { name = "ear-storage", editable = "services/storage" },

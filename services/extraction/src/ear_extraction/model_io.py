@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Protocol
 
+from ear_contracts import TracedCause
 from pydantic import BaseModel
 
 from ear_extraction.domain import Call, InputBudgetExceeded
@@ -38,12 +39,16 @@ def invoke[T: BaseModel](
     root: str,
     depth: int,
     max_input_chars: int,
+    request_event_id: str | None = None,
+    additional_causes: tuple[TracedCause, ...] = (),
 ) -> T:
     if len(json.dumps(data, ensure_ascii=False)) > max_input_chars:
         raise InputBudgetExceeded("input_budget_exceeded")
     return model.model_validate(
         gateway.complete(
             Call(
+                request_event_id=request_event_id,
+                additional_causes=additional_causes,
                 purpose=purpose,
                 data=data,
                 run_id=run_id,

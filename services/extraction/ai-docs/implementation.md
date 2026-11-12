@@ -3,12 +3,14 @@ audience: ai
 doc-type: reference
 generated-by: Codex (AI)
 generated-at: 2026-11-05
-based-on: services/extraction/ai-docs/mvp-design.md, docs/design/design-v1.1.md, docs/design/signals-supplement.md, dev 48d3c51；本轮负责人授权④直接依赖⑦ GatewayClient，依据当前 client.py/models.py/orchestration.py
+based-on: services/extraction/ai-docs/mvp-design.md, docs/design/design-v1.1.md, docs/design/signals-supplement.md, dev 48d3c51；本轮负责人授权④直接依赖⑦ GatewayClient，依据当前 client.py/models.py/orchestration.py；2026-11-11 增补：工作区未提交的④首片（call_safety.py、orchestration.py、domain.py、model_io.py、planning.py、worker.py、demo.py 与相应测试，作者读 git diff 与源码核对）；任务状态文件 /tmp/ear-mvp-extraction-followup.json 与 /tmp/ear-mvp-extraction-state.json（非仓库文件，其中的测试作者未复跑，只用 pytest --collect-only 核对项数）；未填写或改动任何 reviewed 字段
 ---
 
 # ④ MVP 使用与接入
 
 > 本文记录已恢复的初版 MVP（`f3c28db`），用于演示，不代表已完成当前 v1.2 设计。
+>
+> 2026-11-11 增补：c5c31f8 之上有一个**未提交、未提 PR**的“调用安全与重判完成”首片，见“工作区首片”一节。凡写“c5c31f8 基线”“基线上”的是首片之前的行为；首片也不是完整 v1.2。
 
 
 网页模拟入口与 VS Code 端口转发步骤见[网页演示指南](web-demo.md)。
@@ -54,13 +56,88 @@ with GatewayClient(gateway_url, extraction_token, system=SYSTEM) as gateway:
 - 不提供厂商直连。⑦接入 Octopus 时应通过 Manager 的 `/api/v1/llm/...`；④不绕过⑦。
 - `service.runs()` 查询状态，`service.retry(run_id)` 显式重试终止任务；⑥可封装为受授权操作。本包不新建一套用户 HTTP API。
 
-## ⑦ 契约核对与恢复限制
+## ⑦ 契约核对与恢复限制（c5c31f8 基线）
+
+> 本节的“目前”“当前”指 c5c31f8 基线。工作区首片已改变其中关于 `request_event_id`/`additional_causes`、`call_id` 持久化、自动重算位置的几条，见下一节；改动未提交。
 
 - ④ `Call` 的七个字段均被⑦ `CallRequest` 接受，客户端补 `call_id`、`model`、`system`。两者校验强度不相同：⑦要求 run_id 为小写 UUIDv7、root 为 UUIDv7 或 `system`、depth 为 0–10000 的整数、purpose 为不超过 128 字符的 snake_case。④正常任务 run_id 来自事件 UUIDv7 或 `schedule_id` 生成的稳定 UUIDv7，现有 purpose 均合法，无需改 ID 生成或提示词。任意手造的④ Call 不保证通过⑦校验。
 - ④目前不传 `request_event_id` / `additional_causes`。请求结构可以通过 `CallRequest`，但⑦服务要求无请求关联时 depth=0；因此 depth>0 的重判会被服务拒绝 `request_context_required`（客户端呈现 `gateway_request_failed`），depth=0 也不代表已完成重判请求关联。该跨模块差距本轮只报告，不重置 depth、不放宽⑦校验。
 - 每次 `complete(Call)` 都生成新的 call_id，即使 run_id 和参数相同。传输错误 `gateway_outcome_unknown` 可能表示模型已经执行，**不能自动换新 id 重试**。可恢复流程需要在发送前持久化 call_id，构造带该 ID 的⑦ `CallRequest`，随后用 `reconcile(call_id)` 核对/补写记录；reconcile 不重发模型，也不恢复输出正文。当前④没有这套持久化与对账流程，不能把换客户端视为安全恢复已经完成。
 - 现有自动重算位置均在 `orchestration.py`：`process` 的通用异常分支（包括 GatewayError）进入 retry_wait；业务提交存储冲突同样进入 retry_wait；`drain` / `process` 在重试期限或 running 租约到期后重新计算，`worker.tick` / `serve` 持续驱动。`_finish` 只限制尝试次数，不能防止重复模型调用。`retry(run_id)` 是显式重新排队，也不做对账。调用成功但后续提交失败或进程崩溃同样可能重发。按本轮授权边界保留上述业务流程；接真实⑦前仍需解决该风险。
 - 依赖方向为⑥ → ④ → ⑦ → 共享契约/存储 SDK；⑦运行包没有反向依赖④或⑥。⑦现有跨模块测试导入④属于根 workspace 测试，不是运行包依赖。
+
+## 工作区首片：调用安全与重判完成（未提交）
+
+目的：对应[跑通计划](../../../ai-docs/plans/mvp-runnable.md) T1——模型调用结果未知时不重发、重判请求的上下文完整传递、重判完成能写入 ①。范围有界，**不是完整 v1.2**。路径相对 `src/ear_extraction/`。
+
+### 代码导航
+
+| 位置 | 内容 |
+|---|---|
+| `call_safety.py` | `DurableCalls(storage, gateway, run_id, payload, revision, context)`。`complete(call)`：生成 `call_id`，构造 `CallRequest`（含网关实际的 `model` 与 `system`），对规范化请求取 SHA-256 作指纹（不存提示词），把 `{call_id, purpose, request_fingerprint, state: "sending"}` 追加到 `payload.gateway_calls` 并以 `expected_revision` CAS 写入 `extraction_run`，**写成功后才调用网关**；任何异常（含 `GatewayError`）一律抛 `Blocked("gateway_outcome_unknown")`；返回后把状态存为 `returned`。CAS 失败抛 `Blocked("run_fence_lost")`，不发送。`GatewayClient` 用带固定 `call_id` 的 `CallRequest` 调用，其他实现走 `ModelGateway.complete(Call)` |
+| `orchestration.py` | `reevaluation_run_id(request_event_id)`：域分隔、确定性的 UUIDv7，不等于请求 ID；`COMPLETION_CONSUMER = "extraction.completion"`；`_retry_barrier(run)`；`reconcile_run(run_id)`；`_held_range(run)`；`process` 里的 `DurableCalls` 与重判分支；`handle_event` 对 `ReevaluationRequested` 的兼容处理 |
+| `domain.py` | `Call` 增加可选的 `call_id`、`request_event_id`、`additional_causes`；序列化时省略缺失项，保持旧假实现的形状 |
+| `model_io.py` | `invoke(...)` 增加 `request_event_id`、`additional_causes` |
+| `planning.py` | `rejudge_plan` 返回 `(ops, detail, before_version, outcome)`，`outcome` 为 `changed` 或 `unchanged` |
+| `worker.py` | `tick` 在客户端有 `poll_once` 时先 `poll_once(CONSUMER)` 拉取一条投递；内存客户端仍由宿主驱动；不轮询其他 consumer |
+| `demo.py` | 演示夹具用本地登记表打开 `artifact` 的重判能力，不改核心登记表 |
+
+### `extraction_run` 的新增字段
+
+`request_event_id`、`additional_causes`、`request_occurred_at`（重判请求时间，用于 `completed_at = max(clock, request_occurred_at)`）、`gateway_calls`（`call_id`、`purpose`、`request_fingerprint`、`state` 为 `sending` 或 `returned`）。重判 run 的 `event_id` 仍记原请求事件，run id 另行派生；`_admit` 对已存在的记录要求 `event_id`、`request_event_id`、`scheduled` 都匹配才视为重复，否则抛 `Blocked("extraction_run_id_occupied")`。
+
+### 阻塞原因（`_retry_barrier`）
+
+| 原因 | 条件 | 行为 |
+|---|---|---|
+| `gateway_outcome_unknown` | 最后一次调用仍是 `sending` | `process` 直接阻塞；`retry(run_id)` 抛 `ValueError(原因)` |
+| `gateway_result_not_committed` | 有调用记录且最后一次为 `returned`，但业务计划没能提交 | 阻塞，**不重新计算**（本首片没有输出恢复，重算就是新的逻辑调用） |
+| `legacy_gateway_outcome_untracked` | 升级前的模型命令可能已发送但没有意图记录（`attempts>0`、`running`、`retry_at` 或 `lease_until` 存在） | 阻塞 |
+| `legacy_completion_id_collision` | 旧 `extraction_run` 占用了重判请求的 event_id | 未完成的置为阻塞；已终态的不改写、不迁移、不换 id |
+| `reevaluation_request_required` | `reevaluate` 命令缺请求上下文 | 阻塞或在接纳时失败 |
+
+被这些原因阻塞的区间还会被 `_held_range` 排除在“成功覆盖”之外，定时任务遇到重叠的更大区间时以 `overlapping_unresolved_model_call` 阻塞，避免换一个 run id 隐式重发。`reconcile_run(run_id)` **只做审计**：返回 `call_id`、`record_saved`、`status`、`error_code`、固定的 `response_recoverable: False`，不返回模型输出，也不改变重试资格；在 `gateway_outcome_unknown` 时 `_finish` 会尽力调用一次（吞掉错误）。**目前没有解除这些阻塞的处置路径**：“用户确认重复风险后作为新的逻辑调用重新生成、并留下与旧 id 的对应”没有实现。
+
+### 重判与完成
+
+1. `handle_event(ReevaluationRequested, target_type="artifact")`：已有 `get_reevaluation_result` 则返回；若有 id 等于请求 event_id 的旧 `extraction_run`，`event_id` 或命令类型不符抛 `Blocked("reevaluation_request_id_occupied")`，否则未终态的置阻塞后返回；其余情况用 `reevaluation_run_id` 接纳，`MarkProcessed(extraction.jobs, event_id)` 同批提交。
+2. `process`：先看 `_retry_barrier`；认领后以 `DurableCalls` 为模型端口，每次调用都带请求的 root、depth、`request_event_id`、`additional_causes`。
+3. 重判分支要求 `registry.data_types["artifact"].supports_reevaluation`，否则 `Blocked("artifact_reevaluation_not_enabled")`；已有结果则 `Blocked("reevaluation_already_completed")`。成功时同批提交：业务写入、依赖刷新、`FinishReevaluation(ReevaluationResult(...))`、`MarkProcessed(extraction.completion, request_id)`、`extraction_run` 成功（`expected_revision=tracker.revision`）。`unchanged` 不新增 artifact 版本，不发业务事件。
+4. 提交失败：版本冲突进 `retry_wait`（若已有未知调用则改为阻塞）、`Waiting`、`Blocked`、其他异常按原规则；最终 `_finish` 用 `tracker.payload` 写，避免丢掉调用记录。
+
+### 订阅与身份
+
+只有 `extraction.jobs` 有消息订阅。`extraction.completion` 只是完成标记的保留身份，不是第二个任务订阅；真实运行测试里，可信的 extraction 主体同时保留二者，同模块的对等主体既不能保留也不能标记。
+
+### 测试
+
+| 范围 | 文件与内容 | 运行条件 |
+|---|---|---|
+| 单元（内存） | `tests/test_call_safety.py`：未知结果不因重启、重试或 reconcile 重发；reconcile 报错不放行；崩溃窗口只恢复到阻塞；意图提交结果未知时未确认不发送；CAS 冲突在发送前围住失败方；旧记录有无尝试的处理；定时器不能用更大区间绕过；业务提交结果未知被围住而不是重算；返回确认丢失不启动下一步；租约过期后仍在 provider 内的 worker 被围住。`tests/test_completion_integration.py`：Finish 使用真实请求 id 与上下文；旧请求 ID 冲突不重排队；反馈不能冒充重判请求；未知重判只留接纳记录；终态旧记录不被改写。`test_boundaries.py`、`test_extraction.py` 有小改 | 无外部服务 |
+| 真实运行 | `services/storage/tests/test_extraction_completion_runtime.py`：真实 PostgreSQL、NATS，回环的 ⑦ 网关与 ① HTTP，进程内合成 provider；用独立的登记表夹具（只在夹具里打开 artifact 重判与强制依赖），子进程模拟重启。覆盖：真实 Finish 与重复投递、HTTP 提交结果未知（认领/发送/返回/Finish 各阶段，提交与未提交两种）、未知 provider、旧请求 ID 冲突跨进程保持、并发 CAS 只有赢家发送、迟到 CAS 冲突整批回滚、并发输入变化阻止 Finish、`worker.tick` 真实拉取 NATS | `EAR_RUN_POSTGRES_TESTS=1` 与 `EAR_RUN_NATS_TESTS=1`，需要 Docker；只在临时容器运行，不连外部 DSN |
+
+### 验证记录（来源：任务记录，作者未复跑）
+
+| 项目 | 结果 | 来源与维度 |
+|---|---|---|
+| `PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -q -p no:cacheprovider services/extraction/tests` | 84 项通过 | 任务记录 2026-11-11T20:05Z；作者 `--collect-only` 收集到 84 项，未执行。输入合成｜模型回放｜外部不适用｜平台替身 |
+| 真实运行测试 | 17 项通过、0 跳过，**分 8 组不相交的 `-k` 选择运行，不是一次连续的完整运行** | 任务记录；作者收集到 17 项，未执行。输入合成｜模型回放（进程内合成 provider）｜外部不适用｜平台真实（测试夹具起的临时 PostgreSQL/NATS、回环 ⑦ 网关与 ① HTTP） |
+| 范围内的 ruff、format、pyright、`git diff --check` | 通过 | 任务记录；范围为 `services/extraction/src`、`services/extraction/tests` 与上述真实运行测试文件 |
+| 全仓 pytest、ruff、pyright、`check_docs` | 当时失败：1771 passed、26 failed（全在 ② 的 `test_source.py`）、648 skipped；静态检查与文档检查也有失败 | 任务记录，**历史结果**，发生在其他模块并行修改时，不是当前状态，也不是 ④ 的失败 |
+
+分组运行的方式（需要 Docker，作者未执行）：
+
+```bash
+env EAR_RUN_POSTGRES_TESTS=1 EAR_RUN_NATS_TESTS=1 EAR_RUN_BACKUP_TESTS=0 EAR_RUN_API_GATEWAY_DEPLOY_TESTS=0 \
+  PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -q -x -p no:cacheprovider \
+  services/storage/tests/test_extraction_completion_runtime.py -k '<选择>'
+```
+
+任务记录里用过的 `-k` 选择：`live_finish`；`unknown_provider`；`legacy_completion or concurrent_input`；`real_http_commit and claim`；`real_http_commit and sending`；`real_http_commit and returned`；`real_http_commit and finish`；`late_cas or concurrent_http or worker_tick`。
+
+### 首片没有做的
+
+完整 v1.2 对齐（纯 Markdown、`rule_selection` 的登记与版本化、按当前规则重判、字段依赖）；网关输出恢复与业务计划重放；风险确认后的新调用；终态 `failed`、`not_applicable` 的 Finish；旧记录迁移；远程运行入口、部署与真实模型联调；对网关、数据库、总线做操作系统级强杀的验证（只做了新子进程重启与故障注入）。核心登记表、`contracts/`、根配置、锁文件和 ① 实现都没有改。一个部署只运行一个 worker；进程恢复需要持久化的 ①，`MemoryStorage` 不跨进程保存数据。
 
 ## 反馈格式（模块局部草案）
 
@@ -90,14 +167,14 @@ Command 的确切字段和校验见 `domain.py`；反馈根源采用该反馈自
 | review_suggestion | target_id、expected_version、decision=approved/rejected |
 | action_result | target_id、expected_version、outcome=executed/failed、receipt（回执去重标识，不是外部条目 ID） |
 
-⑤使用现有 `ReevaluationRequested(target_type="artifact")`。④不会对普通归属变化直接执行模型任务。无变化完成结果保存在 extraction_run.detail，供⑤按事件 ID（也是 run ID）读取，不新增总线事件。
+⑤使用现有 `ReevaluationRequested(target_type="artifact")`。④不会对普通归属变化直接执行模型任务。c5c31f8 基线：无变化完成结果保存在 extraction_run.detail，供⑤按事件 ID（也是 run ID）读取，不新增总线事件；该做法让 run 占用了请求 event_id，使 ① 的 Finish 无法写入。工作区首片：重判改为提交 `FinishReevaluation`，run id 另行派生，见上一节。
 
 ②③输入适配草案：转写引用对应 voiceprint_id 或局部说话人来源；归属 payload 使用①建议的 subject_id、target_type、target_id；未知人物/地点应有合法目标对象。字段需相关负责人对齐，不由④写人物或归属。完整演示见 demo.fixture。
 
 ## 运行保证与限制
 
 - 收到事件时原子写入任务和 MarkProcessed；任务最终结果与业务写入同批提交。认领任务用① revision 做 fencing；运行中崩溃后，租约到期可由新 worker 重新计算。
-- 只保证业务提交去重，模型调用在失败恢复时可能重复。一个部署使用一个 worker；⑥的真实外部动作幂等不属于本包。
+- c5c31f8 基线：只保证业务提交去重，模型调用在失败恢复时可能重复。工作区首片对可能已执行的调用改为停止、不重发（见上一节），但不保证任意外部 exactly-once。一个部署使用一个 worker；⑥的真实外部动作幂等不属于本包。
 - ①内存实现不会跨进程保存数据。本版验证的是在①保留记录时重建④执行器的恢复行为；正式进程重启保证需要持久化①。
 - 模型输入有显式字符预算。长输入按不截断话语的边界分窗划分活动，再判断相邻活动是否合并；长产物分段生成后合并并校验原始证据引用。单条证据、合并请求或重判输入仍超预算时明确失败并保留旧结果，不静默截断。合成全天数据测试不代表已经通过真实全天音频验收。
 - 重判遇到原规则已有新版本时，返回 blocked / historical_rule_dependency_unsupported，保留原产物。①“依赖必须是当前版本”与设计“使用原规则”的冲突仍待①④⑤决定，没有静默改用新规则。
@@ -109,4 +186,4 @@ Command 的确切字段和校验见 `domain.py`；反馈根源采用该反馈自
 
 测试覆盖真实共享存储接口上的事件重复投递、原子回滚、归属版本冲突、重判不变/改变、审核回执、旧规则阻塞、任务重试/恢复、定时区间、模型输出校验与 HTTP 适配边界。模型回复为合成测试数据。
 
-真实⑦模型调用、真实②③数据、手机执行和持久化①的跨进程联调尚未验证；本版可作为这些模块的接入基线。
+真实⑦模型调用、真实②③数据和手机执行尚未验证；本版可作为这些模块的接入基线。工作区首片另用测试夹具起的真实 PostgreSQL/NATS 与回环 ⑦ 网关做过分组验证（来源与限制见“工作区首片”一节），那不是持久化 ① 的部署验收。

@@ -6,7 +6,8 @@ from datetime import datetime
 from typing import Any, Literal, Self
 
 from ear_contracts.base import Id, UtcDatetime
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from ear_contracts.events import AdditionalCauses
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 
 class Model(BaseModel):
@@ -123,6 +124,9 @@ class Command(Model):
 
 
 class Call(Model):
+    call_id: Id | None = None
+    request_event_id: Id | None = None
+    additional_causes: AdditionalCauses = ()
     module: Literal["extraction"] = "extraction"
     root_feedback_id: str
     depth: int
@@ -130,6 +134,17 @@ class Call(Model):
     purpose: str
     data: dict[str, Any]
     output_schema: dict[str, Any]
+
+    @model_serializer(mode="wrap")
+    def omit_absent_identity(self, handler):
+        # Preserve the legacy fake/client shape when no durable identity was supplied.
+        data = handler(self)
+        for name in ("call_id", "request_event_id"):
+            if data.get(name) is None:
+                data.pop(name, None)
+        if not self.additional_causes:
+            data.pop("additional_causes", None)
+        return data
 
 
 class Blocked(Exception):
