@@ -25,11 +25,20 @@ class Inputs:
         data = {"evidence": [r.model_dump(mode="json") for r in self.raw]}
         if not anonymous:
             data["attributions"] = [r.model_dump(mode="json") for r in self.attributions]
-            data["entities"] = [r.model_dump(mode="json") for r in self.entities]
+            # Only names are semantic entity inputs; references never reach the model.
+            # Preserve absence versus null, and depend on name even when absent.
+            data["entities"] = [
+                {
+                    "id": r.id,
+                    "data_type": r.data_type,
+                    "payload": {k: r.payload[k] for k in ("name",) if k in r.payload},
+                }
+                for r in self.entities
+            ]
         return data
 
 
-def inputs(reader: Reader, interval: Interval) -> Inputs:
+def raw_inputs(reader: Reader, interval: Interval) -> list[RawRecord]:
     time = TimeRange(interval.start, interval.end)
     for kind in ("voiceprint", "gps_point"):
         if reader.count(Query(kind, time=time, unreferenced_by=("attribution", "subject_id"))):
@@ -41,6 +50,11 @@ def inputs(reader: Reader, interval: Interval) -> Inputs:
         if isinstance(r, RawRecord)
     ]
     raw.sort(key=lambda r: (r.event_start, r.id))
+    return raw
+
+
+def inputs(reader: Reader, interval: Interval) -> Inputs:
+    raw = raw_inputs(reader, interval)
     attrs = records(reader, "attribution", interval)
     entities = {}
     for a in attrs:

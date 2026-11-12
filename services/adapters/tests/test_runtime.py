@@ -171,6 +171,8 @@ def test_pending_and_failed_are_reported(
     waiting["analyzable"] = False
     failed = make_evidence()
     failed["availability"][0]["state"] = "failed"
+    waiting["capture_id"] = waiting["evidence"][0]["payload"]["capture_id"] = "w"
+    failed["capture_id"] = failed["evidence"][0]["payload"]["capture_id"] = "f"
     storage = MemoryStorage()
     runner = _runner(storage, FakeSource({"w": waiting, "f": failed}), config)
     summary = runner.run_once().summary()

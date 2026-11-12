@@ -21,6 +21,7 @@ from ear_storage.codec import EVENT_ADAPTER
 from ear_storage.history_execution import _job, _progress, _release_recovery
 from ear_storage.reader import ConnectionBoundReader
 from ear_storage.repository import registry_from_db
+from ear_storage.scheduler_access import guard_graph
 from ear_storage.schema import ProjectionLimit, one
 
 MAX_PAGE = 100
@@ -294,6 +295,7 @@ def list_reevaluations(client, job_id=None, *, limit=50, cursor=None):
             raise InvalidRequest("invalid history cursor")
         key = (parts[0], parts[1])
     with client._session() as (conn, actor, reader):
+        guard_graph(conn, actor)
         if actor.module != "dependency":
             raise PermissionDenied("scheduler_required")
         if job_id is not None:
@@ -368,6 +370,7 @@ def attach(client, job_id, item_id, request_event_id):
     if not all(is_id(x) for x in (job_id, item_id, request_event_id)):
         raise InvalidRequest("invalid history assignment")
     with client._session() as (conn, actor, reader):
+        guard_graph(conn, actor)
         if actor.module != "dependency":
             raise PermissionDenied("scheduler_required")
         job, owner, rows = _authority(conn, actor, job_id)

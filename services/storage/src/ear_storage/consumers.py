@@ -35,6 +35,7 @@ from ear_storage.consumer_broker import BrokerDelivery, ConsumerBroker, Consumer
 from ear_storage.history import excluded
 from ear_storage.relay import RelayConfig
 from ear_storage.repository import registry_from_db
+from ear_storage.scheduler_access import guard_graph, strict_scheduler
 from ear_storage.schema import check_schema, connection, one, writer
 
 
@@ -120,6 +121,7 @@ class ConsumerService:
         with connection(self.dsn) as conn, writer(conn):
             check_schema(conn)
             principal = authenticate(conn, token_digest(token))
+            guard_graph(conn, principal)
             recovery = conn.execute(
                 "SELECT recovery_pending FROM storage.module_lifecycle WHERE module=%s",
                 (principal.module,),
@@ -137,6 +139,14 @@ class ConsumerService:
         ).fetchone()
         if row is None or row[0] != principal.id or not principal.owns_consumer(name) or not row[7]:
             raise PermissionDenied("access denied")
+        if strict_scheduler(conn, principal):
+            cfg = json.loads(row[3])
+            if "data_changed" in cfg["event_types"]:
+                expected = approved_filters(
+                    principal, registry_from_db(conn), ["data_changed"], self.relay.prefix
+                )
+                if not set(expected) <= set(cfg["filters"]):
+                    raise PermissionDenied("access denied")
         expected_policy = asdict(self.policy)
         expected_policy.pop("history_modules")
         if json.loads(row[3])["policy"] != expected_policy:

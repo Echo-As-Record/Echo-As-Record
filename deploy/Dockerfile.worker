@@ -1,0 +1,42 @@
+# Build only on explicit operator request; no providers, tokens or model assets.
+FROM ghcr.io/astral-sh/uv:0.12.20 AS uv
+FROM python:3.12-slim AS build
+COPY --from=uv /uv /usr/local/bin/uv
+WORKDIR /app
+ENV UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy UV_COMPILE_BYTECODE=0
+COPY pyproject.toml uv.lock ./
+# Keep every workspace manifest visible even when selecting only worker packages.
+COPY libs/ear_contracts/pyproject.toml libs/ear_contracts/pyproject.toml
+COPY libs/ear_storage_client/pyproject.toml libs/ear_storage_client/pyproject.toml
+COPY services/storage/pyproject.toml services/storage/pyproject.toml
+COPY services/adapters/pyproject.toml services/adapters/pyproject.toml
+COPY services/attribution/pyproject.toml services/attribution/pyproject.toml
+COPY services/dependency/pyproject.toml services/dependency/pyproject.toml
+COPY services/extraction/pyproject.toml services/extraction/pyproject.toml
+COPY services/api/pyproject.toml services/api/pyproject.toml
+COPY services/llm_gateway/pyproject.toml services/llm_gateway/pyproject.toml
+COPY libs/ear_contracts/src libs/ear_contracts/src
+COPY libs/ear_storage_client/src libs/ear_storage_client/src
+COPY services/attribution/src services/attribution/src
+COPY services/dependency/src services/dependency/src
+COPY services/extraction/src services/extraction/src
+COPY services/llm_gateway/src services/llm_gateway/src
+RUN uv sync --locked --package ear-attribution --package ear-extraction --package ear-dependency --no-dev --no-editable --no-cache
+
+FROM python:3.12-slim AS runtime
+WORKDIR /app
+ENV PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+COPY --from=build /app/.venv /app/.venv
+COPY --chmod=0444 tools/mvp_worker.py /app/mvp_worker.py
+RUN mkdir -p /state /run/secrets && chown 10001:10001 /state && chmod 0700 /state
+USER 10001:10001
+# Exercise the installed wheels and CLI as the runtime UID, without configuration
+# or network access. This catches omitted workspace packages and unreadable code.
+RUN --network=none python -c "import ear_attribution, ear_extraction, ear_dependency" \
+    && python /app/mvp_worker.py --help > /dev/null
+# Rootfs/capability restrictions are applied by the opt-in Compose overlay.
+# A fresh durable volume inherits /state UID/mode; existing volumes are not repaired.
+VOLUME ["/state"]
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 CMD ["python", "/app/mvp_worker.py", "--config", "/run/secrets/worker-config.json", "--healthcheck"]
+ENTRYPOINT ["python", "/app/mvp_worker.py"]
+CMD ["--config", "/run/secrets/worker-config.json"]

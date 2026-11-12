@@ -9,11 +9,20 @@ from pathlib import Path
 import httpx
 import pytest
 from ear_api.app import create_app
+from ear_api.attribution_results import INTEGRATION, RESULT_TYPE
 from ear_api.business import BUSINESS_TYPES
 from ear_api.cli import load_settings, main
 from ear_api.config import Settings
-from ear_contracts import DEFAULT_REGISTRY, new_id
-from ear_storage_client import Context, Create, PutSystemRecord, Query, Supersede, Update
+from ear_contracts import DEFAULT_REGISTRY, DataTypeSpec, new_id
+from ear_storage_client import (
+    Context,
+    Create,
+    MemoryStorage,
+    PutSystemRecord,
+    Query,
+    Supersede,
+    Update,
+)
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -29,7 +38,7 @@ from .conftest import (
 )
 
 
-def test_business_types_match_original_allowlist():
+def test_business_types_match_original_allowlist_plus_static_core_selection():
     expected = {
         "activity",
         "artifact",
@@ -46,6 +55,7 @@ def test_business_types_match_original_allowlist():
         "ambient_sound",
         "local_speaker",
         "feedback",
+        "rule_selection",
     }
     assert expected == BUSINESS_TYPES
     assert "plugin_management_feedback" not in BUSINESS_TYPES
@@ -542,3 +552,79 @@ def test_no_cross_module_writes_or_direct_admin_code():
     ):
         assert forbidden not in source
     assert "ear_storage.management_input import ManagementInput" in source
+
+
+def test_create_place_admission_projection_support_is_not_worker_liveness(gateway):
+    client, fake, _ = gateway
+    # Test-only registry capability; no consumer is installed or deployed here.
+    fake.storage = MemoryStorage(
+        registry=DEFAULT_REGISTRY.extend_core(
+            DataTypeSpec(RESULT_TYPE, "system_record", "attribution")
+        )
+    )
+    fake.client = fake.storage.client("api")
+    ids = [new_id(), new_id()]
+    data = command(
+        module="attribution",
+        command={
+            "kind": "create_place",
+            "name": "  Synthetic place  ",
+            "gps_ids": ids,
+        },
+    )
+    accepted = client.post("/v1/feedback", headers=headers(), json=data)
+    assert accepted.status_code == 202
+    assert accepted.json()["integration"] == INTEGRATION
+    assert accepted.json()["business_status"] == "pending"
+    fid = accepted.json()["feedback_id"]
+    record = fake.client.get(fid)
+    assert record is not None
+    assert record.payload == {
+        "module": "attribution",
+        "integration": "pending_contract",
+        "command": {
+            "kind": "create_place",
+            "target_id": None,
+            "subject_id": None,
+            "previous_target_id": None,
+            "new_target_id": None,
+            "name": "  Synthetic place  ",
+            "gps_ids": ids,
+            "interval": None,
+            "rejudge_history": False,
+            "expected_version": None,
+        },
+    }
+    pending = client.get(f"/v1/feedback/{fid}/status", headers=headers())
+    assert pending.status_code == 200 and pending.json()["status"] == "pending"
+    assert pending.json()["completion_source"] is None
+    assert client.post("/v1/feedback", headers=headers(), json=data).json() == accepted.json()
+    changed = {**data, "command": {**data["command"], "gps_ids": ids[::-1]}}
+    assert client.post("/v1/feedback", headers=headers(), json=changed).status_code == 422
+    assert fake.client.count(Query("feedback")) == 1
+    assert fake.client.count(Query(RESULT_TYPE)) == 0
+
+
+@pytest.mark.parametrize("mutation", ["empty", "duplicate", "too_many", "bad_id", "blank_name"])
+def test_create_place_public_validation_stays_closed(gateway, mutation):
+    client, fake, _ = gateway
+    id = new_id()
+    changes = {
+        "empty": {"gps_ids": []},
+        "duplicate": {"gps_ids": [id, id]},
+        "too_many": {"gps_ids": [new_id() for _ in range(101)]},
+        "bad_id": {"gps_ids": ["not-a-uuid"]},
+        "blank_name": {"name": " "},
+    }
+    data = command(
+        module="attribution",
+        command={
+            "kind": "create_place",
+            "name": "Synthetic",
+            "gps_ids": [id],
+            **changes[mutation],
+        },
+    )
+    response = client.post("/v1/feedback", headers=headers(), json=data)
+    assert response.status_code == 422 and response.json() == {"code": "invalid_input"}
+    assert not fake.receipts

@@ -16,7 +16,11 @@ def test_demo_correction_and_execution_preserve_activity():
     corrected = session.act("correct", extracted["revision"])
     assert corrected["activity"][0]["id"] == activity_id
     assert corrected["artifact"][0]["version"] == 2
-    assert corrected["speaker_id"] in corrected["artifact"][0]["payload"]["body_md"]
+    assert "[[person:" not in corrected["artifact"][0]["payload"]["body_md"]
+    assert (
+        corrected["artifact"][0]["payload"]["body_md"]
+        != extracted["artifact"][0]["payload"]["body_md"]
+    )
     assert (
         next(s for s in corrected["suggestion_history"] if s["id"] == old_suggestion)["status"]
         == "superseded"

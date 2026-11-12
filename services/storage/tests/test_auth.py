@@ -7,9 +7,18 @@ import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 
 import pytest
-from ear_contracts import DEFAULT_REGISTRY, Cause, VersionRef, new_id, utcnow
+from ear_contracts import (
+    DEFAULT_REGISTRY,
+    Cause,
+    DataTypeSpec,
+    Registry,
+    VersionRef,
+    new_id,
+    utcnow,
+)
 from ear_storage import (
     AuthenticationError,
     AuthOperator,
@@ -53,6 +62,53 @@ def env(pg_dsn: str):
     bootstrap(pg_dsn)
     store = PostgresStorage(pg_dsn)
     return pg_dsn, store, StorageService(pg_dsn), AuthOperator(pg_dsn)
+
+
+@pytest.fixture
+def scheduler_env(pg_dsn: str):
+    """Trusted test-only profile; old activity command test explicitly opts in.
+
+    Default registry and every other old fixture remain unchanged. The activity
+    capability is specific to these generic transport/ACL tests, not core MVP.
+    """
+    types = dict(DEFAULT_REGISTRY.data_types)
+    for name in ("attribution", "artifact"):
+        types[name] = replace(types[name], requires_dependencies=True, supports_reevaluation=True)
+    types["activity"] = replace(types["activity"], supports_reevaluation=True)
+    registry = Registry(
+        types, DEFAULT_REGISTRY.event_publishers, DEFAULT_REGISTRY.core_types
+    ).extend_core(
+        DataTypeSpec("attribution_state", "system_record", "attribution"),
+        DataTypeSpec("attribution_feedback_result", "system_record", "attribution"),
+        DataTypeSpec(
+            "rule_selection",
+            "semantic",
+            "extraction",
+            unique_fields=("activity_id",),
+            requires_dependencies=True,
+            supports_reevaluation=True,
+        ),
+    )
+    migrate(pg_dsn)
+    bootstrap(pg_dsn, registry)
+    return pg_dsn, PostgresStorage(pg_dsn), StorageService(pg_dsn), AuthOperator(pg_dsn)
+
+
+def scheduler_grants(registry):
+    subscriptions = {
+        name
+        for name, spec in registry.data_types.items()
+        if spec.emits_events and name != "plugin_management_feedback"
+    }
+    reads = (
+        subscriptions
+        | {name for name, spec in registry.data_types.items() if spec.reevaluation_result}
+        | {
+            "propagation_record",
+            "attribution_feedback_result",
+        }
+    )
+    return reads, subscriptions
 
 
 def reference(dtype: str, id: str, version: int = 1) -> VersionRef:
@@ -236,8 +292,8 @@ def test_dependency_both_ends_complete_sets_and_filtered_reverse_stale(env):
     assert client.stale_dependencies([source], only_current_dependents=False) == []
 
 
-def test_dependency_input_publish_cause_target_and_consumer_checks(env):
-    _dsn, store, service, operator = env
+def test_dependency_input_publish_cause_target_and_consumer_checks(scheduler_env):
+    _dsn, store, service, operator = scheduler_env
     target, cause = new_id(), new_id()
     store.client("extraction").write([Create("activity", target, {})], SYS).check()
     store.client("attribution").write([Create("person", cause, {})], SYS).check()
@@ -283,7 +339,29 @@ def test_dependency_input_publish_cause_target_and_consumer_checks(env):
     with pytest.raises(PermissionDenied):
         scheduler_client.write([publication], SYS.deeper())
     operator.set_grants(scheduler.principal_id, read_types=["person", "activity"])
+    with pytest.raises(PermissionDenied):
+        scheduler_client.write([publication], SYS.deeper())
+    reads, subscriptions = scheduler_grants(store.registry)
+    operator.set_grants(scheduler.principal_id, read_types=reads)
+    with pytest.raises(PermissionDenied):  # Full reads without subscriptions are insufficient.
+        scheduler_client.write([publication], SYS.deeper())
+    operator.set_grants(scheduler.principal_id, read_types=reads, subscribe_types=subscriptions)
+    operator.reserve_consumer_identity("dependency.changes", scheduler.principal_id)
+    with pytest.raises(PermissionDenied):  # Coverage is not permission to bypass target owner.
+        scheduler_client.write([publication], SYS.deeper())
+    operator.set_grants(
+        issued.principal_id,
+        read_types=["person", "activity", "artifact", "rule_selection"],
+        subscribe_types=["person", "activity", "artifact", "rule_selection"],
+    )
+    authority = scheduler_client.scheduler_state()
+    assert authority["coverage_complete"] is True
+    assert authority["owners"]["extraction"]["enabled"] is True
+    assert authority["owners"]["extraction"]["can_receive"] is True
     scheduler_client.write([publication], SYS.deeper()).check()
+    operator.revoke(issued.principal_id)
+    with pytest.raises(PermissionDenied):
+        scheduler_client.write([publication], SYS.deeper())
 
 
 def test_principal_request_scopes_replay_reauthorization_and_old_internal_namespace(env):

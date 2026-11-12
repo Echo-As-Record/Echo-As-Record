@@ -29,8 +29,17 @@ from ear_api.config import Binding, Settings
 from ear_api.execution import (
     PROTOCOL_BLOCKER,
     ActionAdapter,
+    ExecutionPump,
     ExecutionService,
     journal_status,
+)
+from ear_api.execution_http import (
+    RECOVERY_INPUT,
+    PrepareInput,
+    PumpInput,
+    projection,
+    pump_once,
+    recover,
 )
 from ear_api.execution_journal import ExecutionJournal, JournalUnavailable
 from ear_api.models import FeedbackInput, load_json_object
@@ -92,6 +101,10 @@ def create_app(
     adapter: ActionAdapter | None = None,
 ) -> FastAPI:
     remote = upstream or Upstream(settings)
+    if settings.execution_action_v2 and execution is not None:
+        raise ValueError("action_v2_requires_explicit_adapter_and_journal")
+    if isinstance(execution, ExecutionPump):
+        raise ValueError("action_v2_requires_explicit_adapter_and_journal")
     if execution is not None and (settings.execution_journal is not None or adapter is not None):
         raise ValueError("ambiguous_execution_configuration")
     if adapter is not None and settings.execution_journal is None:
@@ -120,7 +133,8 @@ def create_app(
         redirect_slashes=False,
         lifespan=lifespan,
     )
-    app.state.execution_http_enabled = False
+    v2_enabled = settings.execution_action_v2 and adapter is not None
+    app.state.execution_http_enabled = v2_enabled
 
     def current_journal() -> ExecutionJournal | None:
         if settings.execution_journal is not None and journal is None:
@@ -370,6 +384,13 @@ def create_app(
         # Never disclose a local journal entry without CURRENT upstream authorization.
         with remote.client(binding) as client:
             record = client.get(suggestion_id)
+            if v2_enabled:
+                active = current_journal()
+                if active is None or trusted_adapter is None:
+                    raise JournalUnavailable()
+                return response(
+                    projection(ExecutionPump(client, active, trusted_adapter), suggestion_id)
+                )
         if not isinstance(record, SemanticRecord) or record.data_type != "action_suggestion":
             raise GatewayError(404, "not_found")
         active = current_journal()
@@ -392,31 +413,81 @@ def create_app(
             }
         )
 
+    def advance_execution(suggestion_id: str, request: Request, *, prepare: bool):
+        binding = authenticated(request)
+        params(request, set())
+        valid_id(suggestion_id)
+        parsed = (PrepareInput if prepare else PumpInput).model_validate(body(request))
+        with remote.client(binding) as client:
+            record = client.get(suggestion_id)
+            if not isinstance(record, SemanticRecord) or record.data_type != "action_suggestion":
+                raise GatewayError(404, "not_found")
+            if not v2_enabled:
+                raise GatewayError(501, PROTOCOL_BLOCKER)
+            active = current_journal()
+            if active is None or trusted_adapter is None:
+                raise JournalUnavailable()
+            service = ExecutionPump(client, active, trusted_adapter)
+            with active.lock:
+                if isinstance(parsed, PumpInput):
+                    pump_once(service, suggestion_id, parsed)
+                else:
+                    service.prepare(suggestion_id, parsed.expected_version)
+                return response(projection(service, suggestion_id), 202)
+
+    @app.post("/v1/actions/{suggestion_id}/prepare")
+    def execution_prepare(suggestion_id: str, request: Request):
+        return advance_execution(suggestion_id, request, prepare=True)
+
+    @app.post("/v1/actions/{suggestion_id}/pump")
+    def execution_pump(suggestion_id: str, request: Request):
+        return advance_execution(suggestion_id, request, prepare=False)
+
     @app.post("/v1/actions/{suggestion_id}/recovery")
     def execution_recovery(suggestion_id: str, request: Request):
         binding = authenticated(request)
         params(request, set())
         valid_id(suggestion_id)
+        if settings.execution_action_v2:
+            v2_input = RECOVERY_INPUT.validate_python(body(request))
+            with remote.client(binding) as client:
+                # This request's live identity/grants, never an injected service client.
+                record = client.get(suggestion_id)
+                if (
+                    not isinstance(record, SemanticRecord)
+                    or record.data_type != "action_suggestion"
+                ):
+                    raise GatewayError(404, "not_found")
+                if not v2_enabled:
+                    raise GatewayError(501, PROTOCOL_BLOCKER)
+                active = current_journal()
+                if active is None or trusted_adapter is None:
+                    raise JournalUnavailable()
+                service = ExecutionPump(client, active, trusted_adapter)
+                with active.lock:
+                    # Read authorization before acknowledgement errors or local state.
+                    projection(service, suggestion_id)
+                    recover(service, suggestion_id, v2_input)
+                    return response(projection(service, suggestion_id), 202)
         parsed = RecoveryInput.model_validate(body(request))
-        if parsed.operation == "retry" and not parsed.acknowledge_duplicate_risk:
-            raise GatewayError(409, "duplicate_risk_confirmation_required")
         with remote.client(binding) as client:
             record = client.get(suggestion_id)
         if not isinstance(record, SemanticRecord) or record.data_type != "action_suggestion":
             raise GatewayError(404, "not_found")
+        if parsed.operation == "retry" and not parsed.acknowledge_duplicate_risk:
+            raise GatewayError(409, "duplicate_risk_confirmation_required")
         if parsed.operation == "verify":
             active = current_journal()
             if active is not None and trusted_adapter is not None:
                 # Use THIS request's reauthenticated storage client, not the injected
-                # service's long-lived client. No HTTP operation calls execute().
+                # service's long-lived client. This legacy path only calls lookup().
                 with remote.client(binding) as client:
                     service = ExecutionService(client, active, trusted_adapter)
                     service.verify(suggestion_id, parsed.expected_revision)
                     return response(
                         {"suggestion_id": suggestion_id, **service.status(suggestion_id)}
                     )
-        # Even acknowledged risk is not permission to invent ④'s recovery protocol.
-        # No HTTP self-report can assert success; verification only calls lookup().
+        # Without explicit v2 opt-in, legacy confirmation/retry remains disabled.
         raise GatewayError(501, PROTOCOL_BLOCKER)
 
     @app.get("/v1/plugins")

@@ -38,6 +38,7 @@ class Settings(BaseModel):
     public_origin: str | None = Field(default=None, strict=True)
     static_dir: Path | None = Path(__file__).with_name("static")
     execution_journal: Path | None = None
+    execution_action_v2: bool = Field(default=False, strict=True)
     timeout: float = Field(default=10, strict=True, gt=0, le=60, allow_inf_nan=False)
     max_body_bytes: int = Field(default=65536, strict=True, ge=1024, le=65536)
     body_timeout: float = Field(default=10, strict=True, gt=0, le=30, allow_inf_nan=False)

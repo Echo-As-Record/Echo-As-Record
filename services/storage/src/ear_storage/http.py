@@ -195,6 +195,15 @@ def create_app(
         call = LLMCallPreflight.model_validate(load_json(request.scope["ear.body"]))
         return json_response(client.preflight_llm_call(call).model_dump(mode="json"))
 
+    @app.get("/v1/scheduler/state")
+    def scheduler_state(request: Request):
+        _token, client, module = authenticated(request)
+        if module != "dependency":
+            raise PermissionDenied("access denied")
+        if request.query_params or request.scope["ear.body"]:
+            raise InvalidRequest("scheduler state takes no parameters")
+        return json_response(client.scheduler_state())
+
     @app.get("/v1/management/plugins")
     def plugin_directory(request: Request):
         _token, client, _module = authenticated(request)

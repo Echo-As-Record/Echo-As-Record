@@ -36,6 +36,7 @@ from psycopg import sql
 
 from ear_storage.auth import Principal, can_use_consumer
 from ear_storage.causality import record_input_types, visible_trace_sql
+from ear_storage.scheduler_access import require_coverage, strict_scheduler
 from ear_storage.schema import (
     ProjectionLimit,
     check_schema,
@@ -101,10 +102,24 @@ def validate_lease(conn: psycopg.Connection, principal: Principal, snapshot_id: 
         ).fetchone()
     ):
         raise SnapshotUnavailable("snapshot unavailable")
+    proof = conn.execute(
+        "SELECT record_text FROM storage.snapshot_items WHERE snapshot_id=%s "
+        "AND kind='scheduler_coverage' AND item_key='v1'",
+        (snapshot_id,),
+    ).fetchone()
+    # A captured strict lease must never be restored as legacy after trusted
+    # registry damage/reconfiguration. Genuine old leases still use their ACLs.
+    if proof is not None or strict_scheduler(conn, principal):
+        _, revision = require_coverage(conn, principal)
+        if proof is None or json.loads(proof[0]) != revision:
+            raise SnapshotUnavailable("snapshot coverage changed; create a new snapshot")
 
 
 def _sources(conn: psycopg.Connection, principal: Principal):
     reads = sorted(principal.read_types)
+    if strict_scheduler(conn, principal):
+        _, revision = require_coverage(conn, principal)
+        yield (sql.SQL("SELECT 'scheduler_coverage','v1','',%s::text"), [canonical_json(revision)])
     # All queries yield (kind, key, type, text). Metadata is also counted, not a free blob.
     yield (
         sql.SQL(
@@ -340,6 +355,7 @@ class MaterializedReader(_StateReader):
 def load_reader(
     conn: psycopg.Connection, principal: Principal, sid: str, limits: SnapshotLimits
 ) -> MaterializedReader:
+    validate_lease(conn, principal, sid)
     # Recheck actual persisted sizes before driver buffering, including after service restart.
     count, size = one(
         conn,
