@@ -68,6 +68,49 @@ class Source(BaseModel):
     user: str = Field(min_length=1, description="MVP 统一为 default")
 
 
+class Coordinate(BaseModel):
+    """Actual map query coordinate, in the explicitly named reference system."""
+
+    model_config = _READ
+    latitude: float = Field(strict=True, ge=-90, le=90, allow_inf_nan=False)
+    longitude: float = Field(strict=True, ge=-180, le=180, allow_inf_nan=False)
+    crs: Literal["WGS84", "GCJ-02"]
+
+
+class Geocode(BaseModel):
+    """gps_geocode payload; optional map information is explicitly null."""
+
+    model_config = _READ
+    gps_point_id: Id
+    status: Literal["ok", "no_result", "failed"]
+    provider: str = Field(min_length=1)
+    language: str | None = Field(min_length=1)
+    formatted_address: str | None
+    country: str | None
+    province: str | None
+    city: str | None
+    district: str | None
+    township: str | None
+    street: str | None
+    poi_name: str | None
+    poi_type: str | None
+    poi_distance_m: float | None = Field(strict=True, ge=0, allow_inf_nan=False)
+    query_coordinate: Coordinate | None
+
+    @model_validator(mode="after")
+    def _invalid_coordinate(self) -> Self:
+        if self.provider == "invalid":
+            if self.status != "failed" or any(
+                value is not None
+                for key, value in self.model_dump().items()
+                if key not in {"gps_point_id", "provider", "status"}
+            ):
+                raise ValueError("invalid coordinates require failed status and null map fields")
+        elif self.language is None or self.query_coordinate is None:
+            raise ValueError("map results require language and query_coordinate")
+        return self
+
+
 class NewRawRecord(BaseModel):
     """写入方提交的原始数据：不含 version、ingested_at，由 ① 填写。"""
 
@@ -84,6 +127,8 @@ class NewRawRecord(BaseModel):
     @model_validator(mode="after")
     def _time_order(self) -> Self:
         _check_range(self.event_start, self.event_end)
+        if self.data_type == "gps_geocode":
+            Geocode.model_validate(self.payload)
         return self
 
 
@@ -105,6 +150,8 @@ class RawRecord(BaseModel):
     @model_validator(mode="after")
     def _time_order(self) -> Self:
         _check_range(self.event_start, self.event_end)
+        if self.data_type == "gps_geocode":
+            Geocode.model_validate(self.payload)
         return self
 
     @property

@@ -260,6 +260,7 @@ _BUILTIN = Registry(
                 _raw("voiceprint", "adapter", "声纹"),
                 _raw("ambient_sound", "adapter", "环境声"),
                 _raw("gps_point", "adapter", "GPS 点"),
+                _raw("gps_geocode", "adapter", "GPS 逆地理编码"),
                 _raw("phone_info", "adapter", "手机信息"),
                 _raw("feedback", "api", "用户反馈"),
                 _raw("plugin_management_feedback", "api", "插件管理反馈"),

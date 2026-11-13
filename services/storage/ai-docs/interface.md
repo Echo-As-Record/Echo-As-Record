@@ -163,3 +163,5 @@ uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run 
 当前实现以排序键的 json.dumps 比较 payload，不是 RFC 8785/JCS 实现。修改比较算法时注意数值、数组、字符串及事件时间的一致性。
 
 已知静态审查关注项（run_until_idle 在检查投递上限前出队、并发 runner 的 consumer 串行边界、空时间查询区间、系统记录更新路径的时间校验）已在本分支补回归测试（`test_memory_regressions.py`）并修复，提交与合并状态以分支历史和 PR 为准，见 [progress](progress.md)。正式后端、故障测试与已采纳语义的实现差距也见[进度](progress.md)。
+
+`unreferenced_by` 的引用方现在也支持 `raw_record`，例如 `Query("gps_point", unreferenced_by=("gps_geocode", "gps_point_id"))`。扫描引用方的 payload 顶层字符串字段；原始记录全部有效，有版本数据仅当前未替代版有效，系统记录仍不支持。引用方与被查类型均须有读权限；query/count/snapshot 语义一致。不需要将引用字段登记为 unique_fields；gps_geocode 允许不同 provider 的追加结果。依据[已采纳 GPS 提案](../../../docs/proposals/gps-reverse-geocoding.md)。已有数据库需显式可信 bootstrap 登记新增核心类型，再补发读授权。

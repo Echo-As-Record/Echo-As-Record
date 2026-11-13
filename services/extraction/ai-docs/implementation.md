@@ -110,3 +110,9 @@ Command 的确切字段和校验见 `domain.py`；反馈根源采用该反馈自
 测试覆盖真实共享存储接口上的事件重复投递、原子回滚、归属版本冲突、重判不变/改变、审核回执、旧规则阻塞、任务重试/恢复、定时区间、模型输出校验与 HTTP 适配边界。模型回复为合成测试数据。
 
 真实⑦模型调用、真实②③数据、手机执行和持久化①的跨进程联调尚未验证；本版可作为这些模块的接入基线。
+
+## GPS 地名等待
+
+按[已采纳提案](../../../docs/proposals/gps-reverse-geocoding.md)，`segmentation.inputs()` 在原有归属检查之后，使用同一半开时间范围查询 `gps_point` 的 `unreferenced_by=("gps_geocode", "gps_point_id")`；未完成抛 `Waiting("geocode_pending")`。`RAW_TYPES` 增加 `gps_geocode`，连同坐标进入模型 evidence；ok、no_result、failed 都表示编码已结束，不把原始地名当作③的 place。
+
+宿主授予 extraction 身份 `gps_geocode` 读权限（原有 gps_point/attribution 权限仍需保留）。无需新增订阅或依赖类型：活动仍按现有流程保存 evidence_ids，未启用新的强制依赖能力。等待期限与重试流程保持原样，不额外改变④调度语义。相关回归在② `tests/test_geo.py`，涵盖半开范围、等待和三种终态进入证据。

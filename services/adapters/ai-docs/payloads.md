@@ -6,9 +6,9 @@ based-on: services/adapters/src/ear_adapter/convert.py；contracts/records/raw-r
 
 # ② 写入的原始数据：payload 字段
 
-统一字段（id、时间、来源、适配器版本、去重键）见 `contracts/records/raw-record.schema.json`。本文只列 payload。字段名是 ② 的草案，③④ 有不同需要时提出，修改后同步本文和 `convert.py`。
+统一字段（id、时间、来源、适配器版本、去重键）见 `contracts/records/raw-record.schema.json`。本文只列 payload。旧 Ear 输入字段随 `convert.py` 同步；gps_geocode 按已采纳提案和共享契约实现。
 
-## 共同约定
+## 旧 Ear 输入共同约定（ear_adapter）
 
 - 时间一律 UTC。一段录音的数据在**同一批**写入：收到任何一条的事件时，它引用的其他数据都已经能读到。
 - `*_id` 字段都是 Ear 原始数据的 id，可以直接 `get`。
@@ -89,3 +89,19 @@ based-on: services/adapters/src/ear_adapter/convert.py；contracts/records/raw-r
 | `event` | `event_type`、`details`：一次状态变化（例如解锁），只导入手机直接报告的，不导入推断的 |
 
 IMU 不在 MVP 的原始数据类型里，不导入，原始数据留在 Brain inbox。
+
+## gps_geocode：一个 GPS 点的地图结果
+
+依据[已采纳提案](../../../docs/proposals/gps-reverse-geocoding.md)，由独立 `geo_adapter` 写入；属于原始证据，不是③的地点语义。机器定义在 [raw-record Schema 的 gps_geocode 定义](../../../contracts/records/raw-record.schema.json)，合成示例见 [gps-geocode](../../../contracts/records/examples/raw-record.gps-geocode.valid.json)。来源继承对应 gps_point，时间相同；去重键 `{gps_point_id}:geocode:{provider}`。
+
+| 字段 | 说明 |
+|---|---|
+| `gps_point_id` | 对应原始点 UUIDv7；作为 unreferenced_by 的引用字段 |
+| `status` | ok / no_result / failed，三者都解除④的 geocode_pending |
+| `provider`、`language` | amap / zh-CN 或 nominatim / en；非法坐标为 invalid / null |
+| `formatted_address` | 完整地址，未知为 null |
+| `country`、`province`、`city`、`district`、`township`、`street` | 行政区和街道，未知为 null |
+| `poi_name`、`poi_type`、`poi_distance_m` | 最近返回 POI 的名字、类型和距离（米），未提供为 null；不是③的 place |
+| `query_coordinate` | `{latitude, longitude, crs}`，实际请求坐标，provider=invalid 时为 null；crs 为 WGS84 / GCJ-02。原始 WGS84 先取四位小数用于缓存，再按 provider 转换 |
+
+no_result / failed 的地址及 POI 字段为 null；failed 仅表示瞬态重试耗尽且自 ingested_at 起超过最长等待（`GEO_ADAPTER_MAX_WAIT_SECONDS`，默认6小时），或坐标非法。后者 provider 固定为 invalid，除 gps_point_id、status、provider 外所有字段均为 null。暂时故障未超时不写记录，结束本轮后下轮重试；配置/鉴权错误不写记录。失败响应正文与 key 不进入 payload。换 provider 不覆盖旧记录；当前自动扫描只补完全没有结果的点。

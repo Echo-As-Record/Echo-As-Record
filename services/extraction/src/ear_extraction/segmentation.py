@@ -11,7 +11,14 @@ from ear_storage_client import Query, Reader, TimeRange, iter_query
 from ear_extraction.domain import Activity, Interval, Segmentation, Waiting
 from ear_extraction.persistence import records, semantic
 
-RAW_TYPES = ("transcript_segment", "ambient_sound", "gps_point", "phone_info", "local_speaker")
+RAW_TYPES = (
+    "transcript_segment",
+    "ambient_sound",
+    "gps_point",
+    "gps_geocode",
+    "phone_info",
+    "local_speaker",
+)
 REFERENCES = re.compile(r"\[\[(person|place):([^\]]+)\]\]")
 
 
@@ -34,6 +41,8 @@ def inputs(reader: Reader, interval: Interval) -> Inputs:
     for kind in ("voiceprint", "gps_point"):
         if reader.count(Query(kind, time=time, unreferenced_by=("attribution", "subject_id"))):
             raise Waiting("attributions_pending")
+    if reader.count(Query("gps_point", time=time, unreferenced_by=("gps_geocode", "gps_point_id"))):
+        raise Waiting("geocode_pending")
     raw = [
         r
         for kind in RAW_TYPES

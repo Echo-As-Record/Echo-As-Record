@@ -62,7 +62,8 @@ class Query:
     - where：payload 顶层字段等值过滤，例如 {"target_id": 人物 id}。
     - contains：payload 顶层数组字段包含某个值，例如 {"references": 声纹 id}。
     - unreferenced_by=(类型, 字段)：只返回 id 没有出现在该类型任何未被替代对象的该字段里的数据。
-      例如 ("attribution", "subject_id") 查出还没有归属对象的声纹或 GPS 点。
+      引用方支持 raw_record 和有版本类型；原始记录全部有效，有版本类型只看未替代的当前版。
+      例如 ("attribution", "subject_id") 查未归属点，("gps_geocode", "gps_point_id") 查未编码点。
     - source_user：只用于原始数据。
     - include_superseded：有版本的数据默认不返回已被整体替代的对象。
     - order：time 按 event_start（没有时间的排在最后）再按 id；id 按 id（UUIDv7 大致按创建时间）。

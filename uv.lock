@@ -119,6 +119,7 @@ source = { editable = "services/adapters" }
 dependencies = [
     { name = "ear-contracts" },
     { name = "ear-storage-client" },
+    { name = "httpx" },
     { name = "pydantic" },
 ]
 
@@ -126,6 +127,7 @@ dependencies = [
 requires-dist = [
     { name = "ear-contracts", editable = "libs/ear_contracts" },
     { name = "ear-storage-client", editable = "libs/ear_storage_client" },
+    { name = "httpx", specifier = ">=0.28" },
     { name = "pydantic", specifier = ">=2.9" },
 ]
 

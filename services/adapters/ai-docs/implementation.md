@@ -222,3 +222,16 @@ uv run pytest services/adapters/tests/test_batch_size.py -s
 - ① 测试夹具的容量按合成数据设定：PostgreSQL tmpfs 384 MiB 写满；NATS `max_file_store: 48MB` 小于脚本里流的 `max_bytes`（512 MiB），JetStream 流建不起来，订阅注册一直返回 `ServiceUnavailable`（consumer initialization pending）且没有更具体的原因。本次只在仓库外副本里放大了容量（PostgreSQL 内存 3 GiB / tmpfs 2 GiB，NATS 内存 1.5 GiB / tmpfs 1 GiB / max_file_store 900 MB），没有改 ① 的夹具。
 - ① 的流默认 `max_bytes` 256 MiB、`DiscardPolicy.NEW`；这批真实数据约 11.8 万条事件，正式部署要按真实数据量估算流容量。
 - 远程消费速度约每秒 5 个事件（每个事件一次确认往返，handler 内每个声纹还要再读 3 次）。8849 个订阅事件用了约 25 分钟；③ 从头补消费时这会是瓶颈。
+
+## 8. GPS 逆地理编码实现
+
+依据[已采纳提案](../../../docs/proposals/gps-reverse-geocoding.md)。命令、授权与环境变量以[模块入口](../README.md#gps-逆地理编码)为准；旧 Ear 的七种读权限仅属于 `ear_adapter`，不包含独立 `geo_adapter`。
+
+- `geo_adapter/providers.py`：`Provider` 协议及 `AmapProvider`、`NominatimProvider`，归一化 payload。协议依据[高德逆地理编码](https://lbs.amap.com/api/webservice/guide/api/georegeo)、[Nominatim reverse](https://nominatim.org/release-docs/latest/api/Reverse/)。高德 `extensions=all`，按距离取最近有名称 POI；Nominatim 不保证返回 POI，未给出的距离留 null。通用 User-Agent 为 `EchoAsRecord-GeoAdapter/0.1`。不跟随重定向。
+- `china.json`：从 [Natural Earth 官方仓库的 1:110m countries](https://github.com/nvkelso/natural-earth-vector/blob/master/geojson/ne_110m_admin_0_countries.geojson) 提取中国 geometry，数据为[公有领域](https://www.naturalearthdata.com/about/terms-of-use/)。仅作服务路由/坐标转换的陆地掩膜，不表示领土主张；包括主陆地和海南。离岸小岛、边境和海岸有分辨率误差，不用于精确边界判定。射线法避免传统矩形误包含日本、韩国、蒙古等地区，境外坐标保持 WGS84。
+- `geo_adapter/runtime.py`：`Runner` 每次取待处理集合第一页100点，写后重查第一页，不用偏移游标扫描正在缩小的集合。① memory/PostgreSQL 的 `unreferenced_by` 新增 raw 引用方支持，有版本引用方仍只看未替代当前版。引用字段是 payload 顶层字符串，与 attribution.subject_id 的查询方式一致，不需要额外 registry 字段，也不把 gps_point_id 设为全局唯一（允许未来不同 provider）。
+- `Cache` 使用 data root 下 SQLite，文件0600。WGS84 四位小数取整后转换、请求并保存；缓存键含 provider、服务端地址、语言和实际查询坐标，payload 中 query_coordinate 保留真实请求值。`ok`/`no_result` 持久缓存，`failed` 不缓存；无 TTL。每点重新附加自身 gps_point_id 和时间。改变服务端可隔离缓存，但已写①的点不会自动重查；换 provider 的历史补写需另行显式操作，本扫描器只处理无任何结果的点。
+- 地图超时/传输错误、HTTP 429/5xx、无效 JSON/结构与高德瞬态错误按次数上限重试，退避1、2、4、8秒。耗尽后停止整轮请求；`Runner.resolve` 在尚未超时返回 None，不写①，下轮重扫；只有注入的 `wall_clock`（默认 UTC 墙钟）减 `point.ingested_at` 严格大于 `max_wait`（环境变量 `GEO_ADAPTER_MAX_WAIT_SECONDS`，默认21600秒）时返回 failed，写后仍停止本轮。`clock` 单调时钟仅用于限速，不能与入库时间比较。`deferred` 用① count 统计停止时剩余全部待处理点（含未请求的后续页）。非法、非有限或越界坐标直接返回 provider=invalid、status=failed，其余地图字段全 null；不选 provider、不查缓存、不请求地图，写后继续。HTTP 其他非成功状态、无效 key/权限/配置停止，不记录响应体。Nominatim 明确 `Unable to geocode`（含404）及高德成功空结果为 no_result。未识别的高德错误保守作为配置错误，不伪装成功或无结果。
+- 原始记录使用 `ear_adapter.ids.deterministic_id`，来源继承 GPS 点，时间保持相同，版本 `geo/0.1.0`。①去重键为 `{gps_point_id}:geocode:{provider}`。写入 CommitUnknown 使用同一 ops/context/request_id 最多重放三次；仍未知/①不可用交给下轮扫描，绝不转换为地图 failed。进程重启靠①引用查询与确定性 id/去重键恢复，不靠缓存判断完成。
+- CLI 复用 `ear_adapter.__main__` 的间隔校验与脱敏 JSON 输出；不改其行为。扫描前显式检查两类读权限；信号只设置停止标志，在当前点处理结束后停。超时是 HTTP 各阶段上限；限速是单进程，多个进程不共享速率预算。
+- 测试 `tests/test_geo.py`、`tests/test_geo_cli.py` 用 MockTransport/替身，不请求地图服务；`test_storage_integration.py` 的 GPS 用例沿用 PostgreSQL/NATS 双门控。默认检查不代表真实地图、真实凭据、持久①或真实进程信号联调已完成。
