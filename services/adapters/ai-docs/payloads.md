@@ -98,9 +98,9 @@ IMU 不在 MVP 的原始数据类型里，不导入，原始数据留在 Brain i
 |---|---|
 | `gps_point_id` | 对应原始点 UUIDv7；作为 unreferenced_by 的引用字段 |
 | `status` | ok / no_result / failed，三者都解除④的 geocode_pending |
-| `provider`、`language` | amap / zh-CN 或 nominatim / en；非法坐标为 invalid / null |
+| `provider`、`language` | amap / zh-CN 或 nominatim / zh-CN（OSM 无中文名时为当地名称）；非法坐标为 invalid / null |
 | `formatted_address` | 完整地址，未知为 null |
-| `country`、`province`、`city`、`district`、`township`、`street` | 行政区和街道，未知为 null |
+| `country`、`province`、`city`、`district`、`township`、`street` | 行政区和街道，未知为 null；高德直辖市的 `city` 取省级名称（如“北京市”） |
 | `poi_name`、`poi_type`、`poi_distance_m` | 最近返回 POI 的名字、类型和距离（米），未提供为 null；不是③的 place |
 | `query_coordinate` | `{latitude, longitude, crs}`，实际请求坐标，provider=invalid 时为 null；crs 为 WGS84 / GCJ-02。原始 WGS84 先取四位小数用于缓存，再按 provider 转换 |
 

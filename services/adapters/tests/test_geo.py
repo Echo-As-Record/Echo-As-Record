@@ -189,6 +189,21 @@ def test_amap(tmp_path, body, expected):
             assert result["city"] is None
 
 
+def test_amap_municipality_city_falls_back_to_province():
+    body = {
+        "status": "1",
+        "regeocode": {
+            "formatted_address": "北京市东城区",
+            "addressComponent": {"province": "北京市", "city": [], "district": "东城区"},
+            "pois": [],
+        },
+    }
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=body)))
+    a = AmapProvider(client, "synthetic-key")
+    result = a.reverse(a.coordinate(39.9075, 116.3913))
+    assert result["city"] == "北京市"
+
+
 def test_stop_and_resume(tmp_path):
     store = MemoryStorage().client("adapter")
     point(store)

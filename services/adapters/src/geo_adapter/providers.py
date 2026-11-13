@@ -127,6 +127,9 @@ def request(client: httpx.Client, url: str, params: dict, *, no_result: bool = F
         raise TransientError() from None
 
 
+MUNICIPALITIES = frozenset({"北京市", "上海市", "天津市", "重庆市"})
+
+
 class AmapProvider:
     name = "amap"
     language = "zh-CN"
@@ -167,6 +170,9 @@ class AmapProvider:
         result["formatted_address"] = text(geo.get("formatted_address"))
         for name in ("country", "province", "city", "district", "township"):
             result[name] = text(address.get(name))
+        # 直辖市的 city 由高德返回空数组，城市即省级名称。
+        if result["city"] is None and result["province"] in MUNICIPALITIES:
+            result["city"] = result["province"]
         street = address.get("streetNumber", {})
         result["street"] = text(street.get("street")) if isinstance(street, dict) else None
         candidates = [p for p in pois if isinstance(p, dict) and text(p.get("name"))]
@@ -189,7 +195,8 @@ class AmapProvider:
 
 class NominatimProvider:
     name = "nominatim"
-    language = "en"
+    # 与高德一致优先中文；OSM 没有中文名时 Nominatim 返回当地名称。
+    language = "zh-CN"
 
     def __init__(self, client: httpx.Client, url: str):
         parsed = httpx.URL(url)
