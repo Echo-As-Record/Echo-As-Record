@@ -23,7 +23,7 @@ based-on: 设计 v1.2；信号补充；插件 MVP；工作分解 v1.2；origin/d
 | `app.py` | `create_app(settings, *, upstream, execution, adapter)`；全部路由；`redirect_slashes=False`；`settings.static_dir` 非空时挂载 `/plugins`；`execution_journal` 由 lifespan 拥有并关闭；`execution` 与 `adapter`/`execution_journal` 不能同时给（`ambiguous_execution_configuration`），`adapter` 必须配 `execution_journal`（`execution_journal_required`） |
 | `boundary.py` | ASGI 中间件：请求体大小与截止时间、不含密钥的错误体（含框架层错误）、`Origin` 与 `public_origin` 校验（`cross_origin_denied`） |
 | `upstream.py` | `Upstream`：每次使用前 `_verify`（配置存在 → 向①取当前身份 → 拒绝两个绑定解析到同一①主体）；`client(binding)` 返回用该绑定 `storage_token` 的 `RemoteStorageClient`；`plugin_directory`（仅 admin，只调 `list_plugin_directory`，不回退业务登记表）；`management`；`ready`；`GatewayError(status, code)` |
-| `business.py` | `BUSINESS_TYPES`（从随代码发布的核心 `DEFAULT_REGISTRY` 推导，当前 15 类；筛选规则见[读取 API](../README.md#34-接口一览)）；`feedback_identity`（由主体与 `request_id` 确定性推出反馈 id 和时间）；`submit_feedback`；`feedback_status`；`preview_reextract`；`management_result` |
+| `business.py` | `BUSINESS_TYPES`（从随代码发布的核心 `DEFAULT_REGISTRY` 推导，当前 16 类；筛选规则见[读取 API](../README.md#34-接口一览)）；`feedback_identity`（由主体与 `request_id` 确定性推出反馈 id 和时间）；`submit_feedback`；`feedback_status`；`preview_reextract`；`management_result` |
 | `models.py` | `FeedbackInput`、`PendingCommand`（8 种 kind，本地记录约定，不声称③⑤消费）；`load_json_object`（有界、拒绝重复键和非有限数）、`bound_json` |
 | `execution.py` | 离线 `ExecutionService`（`handle_event`、`process`、`verify`、`status`）、`ActionAdapter` 协议（`lookup`、`execute`，`reliable_idempotency`）、`ExternalResult`（`succeeded`/`not_executed`/`unknown`）、`PROTOCOL_BLOCKER = "extraction_execution_recovery_protocol_pending"` |
 | `execution_journal.py` | `ExecutionJournal`：私有 SQLite 恢复事实，仅 Linux 本地文件系统，持有 OS 文件锁，不是④的权威业务状态 |
@@ -57,7 +57,7 @@ based-on: 设计 v1.2；信号补充；插件 MVP；工作分解 v1.2；origin/d
 | 切片 | 状态 | 说明 |
 |---|---|---|
 | A 骨架与身份 | 已实现 | 包已入 workspace；FastAPI；绑定认证；不读 `.env`；不自报模块身份；不直连数据库 |
-| B 读取 API | 已实现 | 15 个业务类型，经①读取，`consistency: "live"` |
+| B 读取 API | 已实现 | 16 个业务类型，经①读取，`consistency: "live"` |
 | C 用户反馈 | 部分 | ④ 命令接通；③⑤ 命令只记录（`pending_contract`），等契约 |
 | D 管理反馈与轻量页 | 已实现，联调有限 | 页面 + 管理接口；真实浏览器 34 项只对假①；API 层对真实①+隔离 PostgreSQL/NATS 另有 26 项集成测试通过；无真实浏览器↔真实①的页面联调 |
 | E 外部动作执行 | 离线切片；HTTP 501 | 缺④协议；无真实适配器 |

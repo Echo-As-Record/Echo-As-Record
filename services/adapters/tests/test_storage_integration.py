@@ -127,3 +127,37 @@ def test_adapter_without_read_grants(stack):
         pytest.raises(PermissionDenied, match="read_types"),
     ):
         runner(remote).run_once()
+
+
+def test_geo_raw_reference_query_restart_and_permissions(stack, tmp_path):
+    import httpx
+    from geo_adapter.providers import NominatimProvider
+    from geo_adapter.runtime import PENDING, Cache, Runner
+
+    from .test_geo import ok, point
+
+    operator, url, _ = stack
+    adapter = operator.issue_principal("adapter", read_types=["gps_point", "gps_geocode"])
+    denied = operator.issue_principal("adapter", read_types=["gps_point"])
+    cache = Cache(tmp_path)
+    with httpx.Client(transport=httpx.MockTransport(ok)) as http:
+        provider = NominatimProvider(http, "https://map.invalid")
+        with RemoteStorageClient(adapter.token, url) as remote:
+            p = point(remote)
+            assert remote.count(PENDING) == 1
+            with remote.snapshot() as snapshot:
+                assert snapshot.count(PENDING) == 1
+            assert Runner(remote, [provider], cache).run_once()["written"] == 1
+            assert remote.count(PENDING) == 0
+            assert remote.query(PENDING).items == ()
+            with remote.snapshot() as snapshot:
+                assert snapshot.count(PENDING) == 0
+            assert remote.query(Query("gps_geocode")).items[0].payload["gps_point_id"] == p.id
+        with RemoteStorageClient(adapter.token, url) as restarted:
+            assert Runner(restarted, [provider], cache).run_once()["written"] == 0
+        with RemoteStorageClient(denied.token, url) as restricted:
+            with pytest.raises(PermissionDenied):
+                restricted.count(PENDING)
+            with pytest.raises(PermissionDenied):
+                Runner(restricted, [provider], cache).run_once()
+    cache.close()

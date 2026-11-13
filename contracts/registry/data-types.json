@@ -7,6 +7,7 @@
     "local_speaker": { "kind": "raw_record", "writer": "adapter", "description": "局部说话人" },
     "voiceprint": { "kind": "raw_record", "writer": "adapter", "description": "声纹" },
     "ambient_sound": { "kind": "raw_record", "writer": "adapter", "description": "环境声" },
+    "gps_geocode": { "kind": "raw_record", "writer": "adapter", "description": "GPS 逆地理编码" },
     "gps_point": { "kind": "raw_record", "writer": "adapter", "description": "GPS 点" },
     "phone_info": { "kind": "raw_record", "writer": "adapter", "description": "手机信息" },
     "feedback": { "kind": "raw_record", "writer": "api", "description": "用户反馈" },

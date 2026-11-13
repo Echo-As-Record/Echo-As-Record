@@ -1,0 +1,36 @@
+{
+  "id": "0199f0a0-1111-7aaa-9bbb-000000000103",
+  "data_type": "gps_geocode",
+  "version": 1,
+  "event_start": "2026-10-29T06:06:00Z",
+  "event_end": "2026-10-29T06:06:00Z",
+  "ingested_at": "2026-10-29T06:20:03Z",
+  "source": {
+    "device": "phone-01",
+    "channel": "octopus",
+    "user": "default"
+  },
+  "adapter_version": "geo/0.1.0",
+  "dedup_key": "0199f0a0-1111-7aaa-9bbb-000000000102:geocode:nominatim",
+  "payload": {
+    "formatted_address": "Synthetic example address",
+    "country": null,
+    "province": null,
+    "city": null,
+    "district": null,
+    "township": null,
+    "street": null,
+    "poi_name": null,
+    "poi_type": null,
+    "gps_point_id": "0199f0a0-1111-7aaa-9bbb-000000000102",
+    "status": "pending",
+    "provider": "nominatim",
+    "language": "en",
+    "poi_distance_m": null,
+    "query_coordinate": {
+      "latitude": 39.999,
+      "longitude": 116.326,
+      "crs": "WGS84"
+    }
+  }
+}

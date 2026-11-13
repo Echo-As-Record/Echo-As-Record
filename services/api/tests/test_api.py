@@ -29,7 +29,7 @@ from .conftest import (
 )
 
 
-def test_business_types_match_original_allowlist():
+def test_business_types_match_core_allowlist():
     expected = {
         "activity",
         "artifact",
@@ -40,6 +40,7 @@ def test_business_types_match_original_allowlist():
         "attribution",
         "voiceprint",
         "gps_point",
+        "gps_geocode",
         "transcript_segment",
         "phone_info",
         "audio_ref",

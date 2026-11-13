@@ -22,7 +22,7 @@
     "id": { "$ref": "#/$defs/id", "description": "由写入方生成" },
     "data_type": {
       "$ref": "#/$defs/snake_case",
-      "description": "原始数据类型。MVP 用到：audio_ref、transcript_segment、local_speaker、voiceprint、ambient_sound、gps_point、phone_info、feedback。以后新增适配器可登记新类型，因此不用枚举"
+      "description": "原始数据类型。MVP 用到：audio_ref、transcript_segment、local_speaker、voiceprint、ambient_sound、gps_point、gps_geocode、phone_info、feedback。以后新增适配器可登记新类型，因此不用枚举"
     },
     "version": {
       "const": 1,
@@ -76,7 +76,200 @@
       "description": "具体内容，字段按 data_type 另行约定。大文件只存引用，格式见 $defs/file_ref"
     }
   },
+  "allOf": [{"if": {"properties": {"data_type": {"const": "gps_geocode"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/gps_geocode"}}}}],
   "$defs": {
+    "gps_geocode": {
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "provider": {
+                "const": "invalid"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "const": "failed"
+              },
+              "formatted_address": {
+                "type": "null"
+              },
+              "country": {
+                "type": "null"
+              },
+              "province": {
+                "type": "null"
+              },
+              "city": {
+                "type": "null"
+              },
+              "district": {
+                "type": "null"
+              },
+              "township": {
+                "type": "null"
+              },
+              "street": {
+                "type": "null"
+              },
+              "poi_name": {
+                "type": "null"
+              },
+              "poi_type": {
+                "type": "null"
+              },
+              "language": {
+                "type": "null"
+              },
+              "poi_distance_m": {
+                "type": "null"
+              },
+              "query_coordinate": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "language": {
+                "type": "string"
+              },
+              "query_coordinate": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      ],
+      "type": "object",
+      "required": [
+        "formatted_address",
+        "country",
+        "province",
+        "city",
+        "district",
+        "township",
+        "street",
+        "poi_name",
+        "poi_type",
+        "gps_point_id",
+        "status",
+        "provider",
+        "language",
+        "poi_distance_m",
+        "query_coordinate"
+      ],
+      "properties": {
+        "formatted_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "country": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "province": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "city": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "district": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "township": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "street": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "poi_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "poi_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gps_point_id": {
+          "$ref": "#/$defs/id"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "no_result",
+            "failed"
+          ]
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "language": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "poi_distance_m": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "query_coordinate": {
+          "type": ["object", "null"],
+          "required": [
+            "latitude",
+            "longitude",
+            "crs"
+          ],
+          "properties": {
+            "latitude": {
+              "type": "number",
+              "minimum": -90,
+              "maximum": 90
+            },
+            "longitude": {
+              "type": "number",
+              "minimum": -180,
+              "maximum": 180
+            },
+            "crs": {
+              "enum": [
+                "WGS84",
+                "GCJ-02"
+              ]
+            }
+          }
+        }
+      },
+      "additionalProperties": true
+    },
     "id": {
       "type": "string",
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",

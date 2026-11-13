@@ -10,7 +10,7 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from ear_contracts import DEFAULT_REGISTRY, SYSTEM, new_id
+from ear_contracts import SYSTEM, new_id
 from ear_storage_client import AppendRaw, Context, PermissionDenied, Query, StorageClient
 from ear_storage_client.remote import RemoteStorageClient
 from ear_storage_client.remote_errors import CommitUnknown, ResourceLimit, ServiceUnavailable
@@ -22,8 +22,15 @@ from ear_adapter.ear_api import SpeakerResolution
 from ear_adapter.source import AudioLocator, EarSource, SourceUnavailable
 
 logger = logging.getLogger("ear_adapter")
-READ_TYPES = tuple(
-    name for name, spec in DEFAULT_REGISTRY.data_types.items() if spec.writer == "adapter"
+# 旧 Ear 的固定输入类型；新增独立适配器不扩大本进程的权限要求。
+READ_TYPES = (
+    "audio_ref",
+    "transcript_segment",
+    "local_speaker",
+    "voiceprint",
+    "ambient_sound",
+    "gps_point",
+    "phone_info",
 )
 
 
