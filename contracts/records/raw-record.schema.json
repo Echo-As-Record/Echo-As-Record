@@ -114,16 +114,16 @@
               "street": {
                 "type": "null"
               },
-              "poi_name": {
+              "building_name": {
                 "type": "null"
               },
-              "poi_type": {
+              "building_type": {
                 "type": "null"
               },
               "language": {
                 "type": "null"
               },
-              "poi_distance_m": {
+              "building_distance_m": {
                 "type": "null"
               },
               "query_coordinate": {
@@ -152,13 +152,13 @@
         "district",
         "township",
         "street",
-        "poi_name",
-        "poi_type",
+        "building_name",
+        "building_type",
         "gps_point_id",
         "status",
         "provider",
         "language",
-        "poi_distance_m",
+        "building_distance_m",
         "query_coordinate"
       ],
       "properties": {
@@ -204,13 +204,13 @@
             "null"
           ]
         },
-        "poi_name": {
+        "building_name": {
           "type": [
             "string",
             "null"
           ]
         },
-        "poi_type": {
+        "building_type": {
           "type": [
             "string",
             "null"
@@ -234,7 +234,7 @@
           "type": ["string", "null"],
           "minLength": 1
         },
-        "poi_distance_m": {
+        "building_distance_m": {
           "type": [
             "number",
             "null"

@@ -92,9 +92,9 @@ class Geocode(BaseModel):
     district: str | None
     township: str | None
     street: str | None
-    poi_name: str | None
-    poi_type: str | None
-    poi_distance_m: float | None = Field(strict=True, ge=0, allow_inf_nan=False)
+    building_name: str | None
+    building_type: str | None
+    building_distance_m: float | None = Field(strict=True, ge=0, allow_inf_nan=False)
     query_coordinate: Coordinate | None
 
     @model_validator(mode="after")

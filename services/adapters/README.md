@@ -32,6 +32,7 @@ uv run geo-adapter run --interval 60
 - `dry-run` 只读取①并报告待处理数量，不调用地图服务、不写①；仍校验配置和两类读授权。
 - `once` 扫描至待处理集合为空或一个点的瞬态重试耗尽；`run` 轮间默认等待60秒（1–86400），SIGTERM/SIGINT 在当前点的有限请求/写入完成后退出。并发持续导入时一轮可能持续处理新点。
 - 高德用于本地中国陆地掩膜内坐标，先将 WGS84 换算为 GCJ-02；其他坐标用 Nominatim 兼容 `/reverse`。仅配置一个 provider 时全部使用它。掩膜为粗分辨率，不保证边境、海岸和小岛精度，数据来源及限制见[实现说明](ai-docs/implementation.md#8-gps-逆地理编码实现)。原生 Photon API 不是 Nominatim `/reverse`，不能直接填入。
+- 地图结果提供地址和最近楼宇：高德取200米内商务住宅类别的最近 AOI/POI；Nominatim 仅取明确的楼宇名称，距离为 null。具体字段及筛选规则见[已采纳提案第3节](../../docs/proposals/gps-reverse-geocoding.md#3-payload草案以契约为准)。两个 provider 的解析缓存均已升级 v2，旧缓存不会复用；已写入①的记录不会自动重查。
 - 瞬态重试耗尽立即结束本轮，不再请求剩余点；未超过最长等待不写记录，下一轮重试。仅当 UTC 墙钟距点的 `ingested_at` 超过最长等待时写 `failed`。非法坐标不请求地图，直接写 `provider=invalid`、`status=failed`，其余地图字段为 null，继续后续点。明确无结果写 `no_result`；已写的三种状态均结束④的地名等待。配置/鉴权错误退出2，不写失败记录。①临时不可用或提交结果未知留待下轮，`once` 返回1。正常或仅推迟返回0；`once` 写入 failed 返回1。`deferred` 为因瞬态故障结束本轮时仍待处理的总点数（包括未请求的后续页），不表示请求失败次数。
 
 配置仅取环境变量（模板见 [deploy/.env.example](../../deploy/.env.example)）：

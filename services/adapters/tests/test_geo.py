@@ -160,7 +160,7 @@ def test_configuration_errors_do_not_write(tmp_path, status):
                     "addressComponent": {"city": [], "streetNumber": {"street": "Example"}},
                     "pois": [
                         {"name": "Far", "distance": "42"},
-                        {"name": "Near", "distance": "3", "type": "test"},
+                        {"name": "Near", "distance": "3", "type": "商务住宅;楼宇;商务写字楼"},
                     ],
                 },
             },
@@ -171,6 +171,7 @@ def test_configuration_errors_do_not_write(tmp_path, status):
 def test_amap(tmp_path, body, expected):
     def handler(request):
         assert request.url.params["extensions"] == "all"
+        assert "poitype" not in request.url.params
         assert request.url.params["key"] == "synthetic-key"
         return httpx.Response(200, json=body)
 
@@ -184,8 +185,8 @@ def test_amap(tmp_path, body, expected):
         result = a.reverse(coord)
         assert result["status"] == expected
         if expected == "ok":
-            assert result["poi_name"] == "Near"
-            assert result["poi_distance_m"] == 3
+            assert result["building_name"] == "Near"
+            assert result["building_distance_m"] == 3
             assert result["city"] is None
 
 
@@ -521,4 +522,126 @@ def test_invalid_coordinates_fail_and_continue(tmp_path, monkeypatch, lat, lon):
     )
     assert store.count(PENDING) == 0
     assert runner.run_once()["written"] == 0
+    cache.close()
+
+
+@pytest.mark.parametrize(
+    "aois,pois,expected",
+    [
+        (
+            [{"name": "Inside", "type": "120201", "distance": "0"}],
+            [{"name": "Nearby", "type": "商务住宅;楼宇", "distance": "1"}],
+            ("Inside", "120201", 0),
+        ),
+        (
+            [{"name": "Farther", "type": "120300", "distance": "30"}],
+            [{"name": "Office", "type": "商务住宅;楼宇;商务写字楼", "distance": "3"}],
+            ("Office", "商务住宅;楼宇;商务写字楼", 3),
+        ),
+        (
+            [],
+            [{"name": "Park", "type": "Original", "typecode": "120100", "distance": "200"}],
+            ("Park", "Original", 200),
+        ),
+        (
+            [{"name": "Shop", "type": "060100", "distance": "0"}],
+            [{"name": "Cafe", "type": "餐饮服务;咖啡厅", "distance": "1"}],
+            (None, None, None),
+        ),
+        (
+            [{"name": "Far", "type": "120201", "distance": "200.1"}],
+            [{"name": "Farther", "type": "商务住宅;楼宇", "distance": "976"}],
+            (None, None, None),
+        ),
+    ],
+)
+def test_amap_buildings(aois, pois, expected):
+    body = {"status": "1", "regeocode": {"aois": aois, "pois": pois}}
+
+    def handler(request):
+        assert request.url.params["extensions"] == "all"
+        assert "poitype" not in request.url.params
+        return httpx.Response(200, json=body)
+
+    a = AmapProvider(httpx.Client(transport=httpx.MockTransport(handler)), "synthetic-key")
+    result = a.reverse(a.coordinate(39, 116))
+    assert (
+        tuple(result[k] for k in ("building_name", "building_type", "building_distance_m"))
+        == expected
+    )
+    assert result["status"] == ("ok" if expected[0] else "no_result")
+
+
+@pytest.mark.parametrize("value", [None, "", "bad", "nan", "inf", "-1"])
+def test_amap_building_requires_valid_distance(value):
+    body = {
+        "status": "1",
+        "regeocode": {"aois": [{"name": "Unknown distance", "type": "120201", "distance": value}]},
+    }
+    a = AmapProvider(
+        httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=body))),
+        "synthetic-key",
+    )
+    result = a.reverse(a.coordinate(39, 116))
+    assert result["building_name"] is None
+    assert result["building_type"] is None
+    assert result["building_distance_m"] is None
+
+
+@pytest.mark.parametrize(
+    "address,category,name,expected",
+    [
+        ({"building": "Address building"}, "shop", "Shop", "Address building"),
+        ({"building": "Address building"}, "building", "Other", "Address building"),
+        ({}, "building", "Named building", "Named building"),
+        ({}, "shop", "Shop", None),
+        ({}, "tourism", "Attraction", None),
+        ({}, "building", "", None),
+    ],
+)
+def test_nominatim_buildings(address, category, name, expected):
+    def handler(request):
+        assert request.url.params["zoom"] == "18"
+        return httpx.Response(
+            200, json={"address": address, "category": category, "name": name, "type": "original"}
+        )
+
+    n = provider(handler)
+    result = n.reverse(n.coordinate(35, 139))
+    assert result["building_name"] == expected
+    assert result["building_type"] == ("original" if expected else None)
+    assert result["building_distance_m"] is None
+
+
+@pytest.mark.parametrize("name", ["amap", "nominatim"])
+def test_building_cache_namespace_ignores_v1(tmp_path, name):
+    import json
+
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        if name == "amap":
+            return httpx.Response(200, json={"status": "1", "regeocode": {}})
+        return ok(request)
+
+    p = (
+        AmapProvider(httpx.Client(transport=httpx.MockTransport(handler)), "synthetic-key")
+        if name == "amap"
+        else provider(handler)
+    )
+    expected = "amap:v2" if name == "amap" else "nominatim:v2:https://map.invalid/reverse"
+    assert p.cache_namespace == expected
+    store = MemoryStorage().client("adapter")
+    point(store)
+    cache = Cache(tmp_path)
+    old_key = json.dumps(
+        [expected.replace(":v2", ":v1"), p.language, p.coordinate(35, 139)], sort_keys=True
+    )
+    cache.put(old_key, {"status": "ok", "legacy": True})
+    assert Runner(store, [p], cache, delay=0).run_once()["written"] == 1
+    result = store.query(Query("gps_geocode")).items[0].payload
+    assert "legacy" not in result
+    assert "building_name" in result
+    assert len(calls) == 1
     cache.close()

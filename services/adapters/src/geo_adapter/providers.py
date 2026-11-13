@@ -93,9 +93,9 @@ def empty(provider: Provider | None, coordinate: dict | None, status: str) -> di
             "district",
             "township",
             "street",
-            "poi_name",
-            "poi_type",
-            "poi_distance_m",
+            "building_name",
+            "building_type",
+            "building_distance_m",
         )
     ) | {
         "status": status,
@@ -127,13 +127,15 @@ def request(client: httpx.Client, url: str, params: dict, *, no_result: bool = F
         raise TransientError() from None
 
 
+BUILDING_MAX_DISTANCE_M = 200
+
 MUNICIPALITIES = frozenset({"北京市", "上海市", "天津市", "重庆市"})
 
 
 class AmapProvider:
     name = "amap"
     language = "zh-CN"
-    cache_namespace = "amap:v1"
+    cache_namespace = "amap:v2"
 
     def __init__(self, client: httpx.Client, key: str):
         self.client, self.key = client, key
@@ -164,7 +166,12 @@ class AmapProvider:
             raise TransientError()
         address = geo.get("addressComponent", {})
         pois = geo.get("pois", [])
-        if not isinstance(address, dict) or not isinstance(pois, list):
+        aois = geo.get("aois", [])
+        if (
+            not isinstance(address, dict)
+            or not isinstance(pois, list)
+            or not isinstance(aois, list)
+        ):
             raise TransientError()
         result = empty(self, coordinate, "ok")
         result["formatted_address"] = text(geo.get("formatted_address"))
@@ -175,19 +182,30 @@ class AmapProvider:
             result["city"] = result["province"]
         street = address.get("streetNumber", {})
         result["street"] = text(street.get("street")) if isinstance(street, dict) else None
-        candidates = [p for p in pois if isinstance(p, dict) and text(p.get("name"))]
-        if candidates:
-            poi = min(
-                candidates,
-                key=lambda p: d if (d := distance(p.get("distance"))) is not None else math.inf,
+        candidates = [
+            item
+            for items, is_aoi in ((aois, True), (pois, False))
+            for item in items
+            if isinstance(item, dict)
+            and text(item.get("name"))
+            and (
+                (text(item.get("type")) or "").startswith("12")
+                if is_aoi
+                else (text(item.get("type")) or "").startswith("商务住宅")
+                or (text(item.get("typecode")) or "").startswith("12")
             )
+            and (d := distance(item.get("distance"))) is not None
+            and d <= BUILDING_MAX_DISTANCE_M
+        ]
+        if candidates:
+            building = min(candidates, key=lambda item: float(item["distance"]))
             result.update(
-                poi_name=text(poi.get("name")),
-                poi_type=text(poi.get("type")),
-                poi_distance_m=distance(poi.get("distance")),
+                building_name=text(building.get("name")),
+                building_type=text(building.get("type")),
+                building_distance_m=distance(building.get("distance")),
             )
         if not any(
-            result[k] for k in ("formatted_address", "poi_name", "country", "province", "city")
+            result[k] for k in ("formatted_address", "building_name", "country", "province", "city")
         ):
             result["status"] = "no_result"
         return result
@@ -209,7 +227,7 @@ class NominatimProvider:
         ):
             raise ConfigurationError()
         self.client, self.url = client, url.rstrip("/") + "/reverse"
-        self.cache_namespace = "nominatim:v1:" + self.url
+        self.cache_namespace = "nominatim:v2:" + self.url
 
     def coordinate(self, lat: float, lon: float) -> dict:
         return {"latitude": lat, "longitude": lon, "crs": "WGS84"}
@@ -223,6 +241,7 @@ class NominatimProvider:
                 "lon": coordinate["longitude"],
                 "format": "jsonv2",
                 "addressdetails": 1,
+                "zoom": 18,
                 "accept-language": self.language,
             },
             no_result=True,
@@ -232,6 +251,9 @@ class NominatimProvider:
         if "error" in body or not isinstance(body.get("address"), dict):
             raise TransientError()
         address = body["address"]
+        building_name = text(address.get("building")) or (
+            text(body.get("name")) if body.get("category") == "building" else None
+        )
         result = empty(self, coordinate, "ok")
         result.update(
             formatted_address=text(body.get("display_name")),
@@ -241,8 +263,8 @@ class NominatimProvider:
             district=text(address.get("city_district") or address.get("county")),
             township=text(address.get("suburb")),
             street=text(address.get("road")),
-            poi_name=text(body.get("name")),
-            poi_type=text(body.get("type")),
+            building_name=building_name,
+            building_type=text(body.get("type")) if building_name else None,
         )
         return result
 

@@ -101,7 +101,7 @@ IMU 不在 MVP 的原始数据类型里，不导入，原始数据留在 Brain i
 | `provider`、`language` | amap / zh-CN 或 nominatim / zh-CN（OSM 无中文名时为当地名称）；非法坐标为 invalid / null |
 | `formatted_address` | 完整地址，未知为 null |
 | `country`、`province`、`city`、`district`、`township`、`street` | 行政区和街道，未知为 null；高德直辖市的 `city` 取省级名称（如“北京市”） |
-| `poi_name`、`poi_type`、`poi_distance_m` | 最近返回 POI 的名字、类型和距离（米），未提供为 null；不是③的 place |
+| `building_name`、`building_type`、`building_distance_m` | 最近楼宇的名字、原始类型和距离（米）；筛选规则见[提案第3节](../../../docs/proposals/gps-reverse-geocoding.md#3-payload草案以契约为准)。高德仅取200米内候选，Nominatim 距离恒为 null；无楼宇时三项均为 null，不是③的 place |
 | `query_coordinate` | `{latitude, longitude, crs}`，实际请求坐标，provider=invalid 时为 null；crs 为 WGS84 / GCJ-02。原始 WGS84 先取四位小数用于缓存，再按 provider 转换 |
 
-no_result / failed 的地址及 POI 字段为 null；failed 仅表示瞬态重试耗尽且自 ingested_at 起超过最长等待（`GEO_ADAPTER_MAX_WAIT_SECONDS`，默认6小时），或坐标非法。后者 provider 固定为 invalid，除 gps_point_id、status、provider 外所有字段均为 null。暂时故障未超时不写记录，结束本轮后下轮重试；配置/鉴权错误不写记录。失败响应正文与 key 不进入 payload。换 provider 不覆盖旧记录；当前自动扫描只补完全没有结果的点。
+no_result / failed 的地址及楼宇字段为 null；failed 仅表示瞬态重试耗尽且自 ingested_at 起超过最长等待（`GEO_ADAPTER_MAX_WAIT_SECONDS`，默认6小时），或坐标非法。后者 provider 固定为 invalid，除 gps_point_id、status、provider 外所有字段均为 null。暂时故障未超时不写记录，结束本轮后下轮重试；配置/鉴权错误不写记录。失败响应正文与 key 不进入 payload。换 provider 不覆盖旧记录；当前自动扫描只补完全没有结果的点。
