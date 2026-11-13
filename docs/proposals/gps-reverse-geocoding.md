@@ -13,7 +13,7 @@ based-on: docs/design/design-v1.2.md 3.4、6、7.1 节；docs/decisions/mvp-conf
 
 ## 1. 目标
 
-每个 GPS 点在第一次交给大模型（④划分活动、写名称描述）之前，已经有对应的真实地名（地址、附近地点名）。
+每个 GPS 点在第一次交给大模型（④划分活动、写名称描述）之前，已经有对应的真实地名（地址、最近楼宇名）。
 
 ## 2. 决定
 
@@ -33,8 +33,13 @@ based-on: docs/design/design-v1.2.md 3.4、6、7.1 节；docs/decisions/mvp-conf
 | `provider`、`language` | 例如 `amap`、`zh-CN`；非法坐标为 `invalid`、null |
 | `formatted_address` | 完整地址，可为 null |
 | `country`、`province`、`city`、`district`、`township`、`street` | 可为 null |
-| `poi_name`、`poi_type`、`poi_distance_m` | 最近的地点及距离，可为 null |
+| `building_name`、`building_type`、`building_distance_m` | 最近楼宇的名字、原始类型和距离（米），可为 null |
 | `query_coordinate` | 实际发给地图服务的坐标及坐标系（例如 GCJ-02）；非法坐标为 null |
+
+楼宇规则（2026-11-13 按负责人要求修订，PR #17 未合并，直接替换原地点字段）：
+
+- 高德使用 `extensions=all`，不加 `poitype`。候选为 `aois` 中 `type` 以 `12` 开头的项，以及 `pois` 中 `type` 以 `商务住宅` 开头或 `typecode` 以 `12` 开头的项，包含产业园区、楼宇和住宅区。仅取有名称、距离有效且不超过200米的最近候选；AOI 距离0表示点在其中。`building_type` 保留原始 `type`；无合格候选时三个字段均为 null。
+- Nominatim 请求 `zoom=18`；名称优先取 `address.building`，否则仅在 `category == "building"` 时取 `name`。有楼宇时类型取原始 `type`，距离始终为 null；无楼宇时三个字段均为 null。有地址但无楼宇仍可为 ok。
 
 去重键：`{gps_point_id}:geocode:{provider}`。以后换地图服务时写新记录，不覆盖旧记录。
 
