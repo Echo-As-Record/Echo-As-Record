@@ -132,6 +132,32 @@ JSON 文件，必须是当前用户拥有的普通文件、权限不含 group/ot
 - `module` 为 `attribution` 或 `dependency` 时，只接受 `correct_attribution`、`confirm_attribution`、`add_reference`、`remove_reference`、`rename`、`create_place`、`reattribute_range`（属 attribution）和 `reevaluate_related`（属 dependency）；写入后返回 `integration: "pending_contract"`，状态一直是 `pending`——**没有任何模块消费它们**。
 - 状态里的 `status_scope` 固定为“反馈处理，不是外部执行”；受理或入队不是业务完成。
 
+### MCP（Codex 与 Claude Code）
+
+在仓库根目录启动客户端。仓库提供 Claude Code 的 `.mcp.json`；Codex 可在项目配置中使用下列同一启动命令，服务名都是 `ear`。Codex 需信任本项目，Claude Code 首次使用时按客户端提示启用。启动命令为 `uv run --frozen --package ear-api ear-mcp`。stdio 使用 stdout 传协议消息。
+
+Codex 项目配置可使用：
+
+```toml
+[mcp_servers.ear]
+command = "uv"
+args = ["run", "--frozen", "--package", "ear-api", "ear-mcp"]
+env_vars = ["EAR_API_URL", "EAR_API_TOKEN"]
+```
+
+
+按 §3.1–3.3 启动①和⑥。在启动 MCP 客户端的环境中仅设置 `EAR_API_URL`（默认 `http://127.0.0.1:8086`）和 `EAR_API_TOKEN`（⑥普通用户绑定的调用方令牌）。MCP 不读取 `deploy/.env`，文件缺失也能启动；不要把整个 dotenv 导入 MCP。远程⑥使用 HTTPS。重连 MCP 后可用；尚未配置令牌时可发现工具，数据调用会提示缺少凭据。
+
+| 工具 | 输入与返回 |
+|---|---|
+| `find_evidence` | UTC 半开区间、可选原话（原样子串）与条数（默认 5，最多 10）。返回带稳定 ID 的转写摘录、音频文件引用与相对秒数、局部说话人、声纹和可唯一确定的当前人物归属。无声纹或归属时相应字段为空。每次最多检查 100 条转写，空页也要检查 `next_cursor`，保持原查询条件续查。 |
+| `find_person` | 按完整姓名查当前人物，返回 ID，支持游标。同名时让用户明确目标。 |
+| `new_request_id` | 为一次新纠正分配 UUIDv7，调用方保存供重试。 |
+| `correct_attribution` | 用户确认后，传声纹 ID、原人物 ID、新人物 ID 和请求 ID；同一操作重试复用全部参数。纠正对象是声纹，同一声纹可能对应多条转写。 |
+| `feedback_status` | 用受理回执中的反馈 ID 查处理状态。目前③的纠正会显示 `pending_contract`、`pending`。 |
+
+查询对应⑥的 `GET /v1/evidence` 和 `GET /v1/persons`，沿用调用方对①的权限。录音位置依据②的 `audio_ref.file_ref`（相对 Octopus 数据根目录）；实际回听需要客户端能访问对应文件。MCP 只读取已入库的转写；手机收件、解析和常驻入库沿用各模块部署。
+
 ### 3.5 插件管理页
 
 `/plugins/` 提供：令牌只放内存、普通用户不发任何管理请求；已受理 ≠ 已生效，已启用 ≠ 进程在线（在线状态始终显示“未知”）；凭据领取需手动确认且同一反馈只尝试一次；历史补处理范围无默认值，按 UTC 半开区间提交；恢复选择（补/跳）必须明确并带修订号；状态轮询有次数、并发和连续失败上限。CSP 为 `script-src 'self'; style-src 'self'`，无内联脚本和外部资源。纯逻辑测试：在 `services/api/` 下运行 `node --test tests/ui/core.test.js tests/ui/page.test.js`（Node 24 不接受目录参数）。

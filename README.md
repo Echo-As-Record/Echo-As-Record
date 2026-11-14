@@ -52,6 +52,8 @@ uv run pre-commit install
 uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest && uv run python tools/check_docs.py
 ```
 
+Codex 和 Claude Code 可通过项目级 MCP 工具 `ear` 查询转写和提交人物归属纠正。运行前按[⑥ 接入说明](services/api/README.md)配置调用令牌。
+
 ## 4. 文档职责与决策状态
 
 **按内容职责分类，不按作者或审定状态分类。** 人可以阅读实现文档，AI 必须先理解相关设计。
