@@ -67,7 +67,7 @@ based-on: docs/design/design-v1.2.md 3.3–3.4；docs/design/work-breakdown-v1.2
 
 ## 3. 旧 Ear 需要补的接口
 
-旧 Ear 现有的 Evidence API 只能按 id 读一段录音，没有列表。`/api/mvp/recordings` 是主人界面的接口，不对其他服务开放。需要在旧 Ear 仓库补一个只读接口，认证与授权和其他 Evidence 接口相同。已在旧 Ear 分支 `dev-capture-list` 实现，合并请求 herryying30/octopus-service-ear!15（指向 main，未合并）；本机运行中的旧 Ear 目前就是这个分支：
+旧 Ear 现有的 Evidence API 只能按 id 读一段录音，没有列表。`/api/mvp/recordings` 是主人界面的接口，不对其他服务开放。需要在旧 Ear 仓库补一个只读接口，认证与授权和其他 Evidence 接口相同。已在旧 Ear 分支 `dev-capture-list` 实现，合并请求 <owner>/octopus-service-ear!15（指向 main，未合并）；本机运行中的旧 Ear 目前就是这个分支：
 
 ```http
 GET /api/captures?offset=0&limit=100
@@ -124,8 +124,8 @@ Authorization: Bearer <token>   （需要 Evidence-read 授权）
 前提：
 
 - 旧 Ear 已挂载第 3 节的接口。Octopus 启动时只给每个服务 20 秒健康检查，旧 Ear 冷启动超过 20 秒会被杀掉；用 `OCTOPUS_SERVICEHUB_HEALTH_ATTEMPTS=1200 bash octopus/scripts/start.sh` 启动（等待 120 秒）。
-- 旧 Ear 运行目录的 `secrets/gateway.json`（`~/.octopus/local/service/herryying30/octopus-service-ear/secrets/`，文件权限 0600）给 ② 登记 token，并同时授予 `evidence_readers` 和 `embedding_readers`。**缺 `embedding_readers` 时旧 Ear 会隐藏声纹引用**，② 现在会把这种录音拦成 `Failed`（原因写明缺授权），不会导入没有声纹的一批。旧 Ear 每次请求重新读取这个文件，不用重启。
-- 同一个 token 和旧 Ear 地址写进 `deploy/.env`（被 git 忽略）：`EAR_ADAPTER_EAR_URL=http://127.0.0.1:<旧 Ear 端口>/internal`、`EAR_ADAPTER_EAR_TOKEN=…`。端口每次挂载都会变，从 Octopus 日志的 `Spawned subprocess service 'herryying30/octopus-service-ear' on …` 读取。
+- 旧 Ear 运行目录的 `secrets/gateway.json`（`~/.octopus/local/service/<owner>/octopus-service-ear/secrets/`，文件权限 0600）给 ② 登记 token，并同时授予 `evidence_readers` 和 `embedding_readers`。**缺 `embedding_readers` 时旧 Ear 会隐藏声纹引用**，② 现在会把这种录音拦成 `Failed`（原因写明缺授权），不会导入没有声纹的一批。旧 Ear 每次请求重新读取这个文件，不用重启。
+- 同一个 token 和旧 Ear 地址写进 `deploy/.env`（被 git 忽略）：`EAR_ADAPTER_EAR_URL=http://127.0.0.1:<旧 Ear 端口>/internal`、`EAR_ADAPTER_EAR_TOKEN=…`。端口每次挂载都会变，从 Octopus 日志的 `Spawned subprocess service '<owner>/octopus-service-ear' on …` 读取。
 
 ```bash
 set -a && . deploy/.env && set +a && uv run ear-adapter dry-run
