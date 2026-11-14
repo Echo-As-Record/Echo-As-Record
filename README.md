@@ -28,7 +28,8 @@ reviewed-at: 2026-10-30
 | `docs/` | 面向人的功能、核心逻辑、验收、提案与架构决策；入口见 [docs/README.md](docs/README.md) |
 | `ai-docs/` | 面向 AI 开发的代码导航、实现细节、测试与排障；入口见 [ai-docs/README.md](ai-docs/README.md) |
 | `contracts/` | 模块间约定的 JSON Schema 与示例 |
-| `services/` | ①～⑦ 各模块：`storage`、`adapters`、`attribution`、`extraction`、`dependency`、`api`、`llm_gateway` |
+| `services/` | ①～⑦ 各模块：`storage`、`adapters`、`attribution`、`extraction`、`dependency`、`api`、`llm_gateway`；另有手机上传接收服务 `ingest` |
+| `clients/` | 手机采集端：`ios/`（原生 iOS 录音 app），之后加 `android/`；见[提案](docs/proposals/phone-recorder-extraction.md) |
 | `libs/` | 共享库（SDK 等） |
 | `fixtures/` | 合成的假数据 |
 | `tests/` | 仓库级测试；`tests/e2e/` 为端到端 8 步流程 |

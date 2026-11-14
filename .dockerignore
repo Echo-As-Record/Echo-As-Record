@@ -23,3 +23,5 @@ local-data/
 docs/
 ai-docs/
 **/ai-docs/
+experiments/
+.codex/
