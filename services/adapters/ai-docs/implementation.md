@@ -1,7 +1,7 @@
 ---
 audience: ai
 doc-type: guide
-based-on: docs/design/design-v1.2.md 3.3–3.4；docs/design/work-breakdown-v1.2.md ②；contracts/records/raw-record.schema.json；旧 Ear doc/0929_evidence_read_api.md、doc/audio-ingestion.md；负责人 2026-11-05 确认：音频走旧 Ear Evidence API、补列录音接口、每版本只导入一次、确定性 id；旧 Ear ear/evidence/readiness.py（availability 规则）、ear/runtime/model_lifecycle.py；2026-11-05 旧 Ear 卡住根因排查（日志 + 数据库，只读）；2026-11-10 用户授权②接入①远程服务、常驻扫描、CommitUnknown 重放及门控联调测试
+based-on: docs/design/design-v1.2.md 3.3–3.4；docs/design/work-breakdown-v1.2.md ②；contracts/records/raw-record.schema.json；旧 Ear doc/0929_evidence_read_api.md、doc/audio-ingestion.md；负责人 2026-11-05 确认：音频走旧 Ear Evidence API、补列录音接口、每版本只导入一次、确定性 id；旧 Ear ear/evidence/readiness.py（availability 规则）、ear/runtime/model_lifecycle.py；2026-11-05 旧 Ear 卡住根因排查（日志 + 数据库，只读）；2026-11-10 用户授权②接入①远程服务、常驻扫描、CommitUnknown 重放及门控联调测试；2026-11-14 独立旧 Ear 真实回放
 ---
 
 # ② 适配器：实现说明
@@ -19,7 +19,7 @@ based-on: docs/design/design-v1.2.md 3.3–3.4；docs/design/work-breakdown-v1.2
      0. query(七种原始类型, limit=1)         显式验证 read_types
      1. list_captures()                      列出录音
      2. read_capture(id) → readiness()       三个音频阶段都 available/empty 才导入
-     3. ① get(audio_ref 的确定性 id)          已存在 → 已导入，跳过
+     3. ① get(audio_ref 的确定性 id)          已存在 → 仅检查新增 Context
      4. InboxAudioLocator.locate()           按组 id（不限日期目录）+ 大小 + SHA-256 找到原始音频
      5. read_embedding()                     取每条声纹向量
      6. capture_records()（纯函数）           → 一批 NewRawRecord
@@ -48,9 +48,9 @@ based-on: docs/design/design-v1.2.md 3.3–3.4；docs/design/work-breakdown-v1.2
    - 已知实例（2026-10-20～10-27）：旧 Ear 的声纹模型目录改名，加载失败一次后被 `ear/runtime/model_lifecycle.py` 永久锁住，此后一周所有 run 都是 `degraded`、声纹阶段 `failed`，直到改 config 重建才恢复。
    - **看不到声纹引用也不导入。** 旧 Ear 对没有 `embedding_readers` 授权的服务隐藏 `embedding_ref`。availability 显示 `speaker_embedding` 为 `available`、却没有任何说话人结果带引用时 → `Failed`（原因写明缺授权），否则会导入一批没有声纹的数据且换不回来。
    - 看不到的降级：阶段任务成功、但提供方内部退回了备用输出（例如二次分离退回一次分离）时，Evidence API 不暴露，② 无法识别。
-2. **每个 adapter_version 每段录音只导入一次。** 旧 Ear 重新处理后 Evidence id 全变，不跟着重导，避免同一时间出现两份转写。要换成新结果，升级 `config.ADAPTER_VERSION`，重新导入一批；旧批次保留（设计 3.3）。
+2. **每个 adapter_version 的音频识别结果只导入一次。** 旧 Ear 重新处理后 Evidence id 全变，不跟着重导，避免同一时间出现两份转写。要换成新结果，升级 `config.ADAPTER_VERSION`，重新导入一批；旧批次保留（设计 3.3）。
 3. **确定性 id。** `ids.deterministic_id(事件时间, data_type, adapter_version, dedup_key)`：前 48 位为事件时间毫秒，随机位取自 SHA-256。重扫时同一条数据 id 不变，批内引用不会断。
-4. **一段录音一批。** 批内顺序 audio_ref → local_speaker → voiceprint → transcript_segment → ambient_sound → gps_point → phone_info。audio_ref 存在即说明整批已导入（原子写入）。
+4. **一段录音一批。** 批内顺序 audio_ref → local_speaker → voiceprint → transcript_segment → ambient_sound → gps_point → phone_info。首次提交是原子的。之后的 Context 按确定性 ID 比对①，只补入新增 gps_point 和 phone_info。
 5. **去重键**（同一 adapter_version 内唯一）：
 
 | 类型 | dedup_key |
@@ -92,7 +92,7 @@ Authorization: Bearer <token>   （需要 Evidence-read 授权）
 
 - `HttpEarSource` 直接连旧 Ear 的回环地址（`EAR_ADAPTER_EAR_URL`），不经过 Octopus 代理。
 - 连不上或 5xx → `SourceUnavailable` → 本轮记为 `Pending` / `source_error`，下一轮自动重试，不当成数据错误。
-- 不依赖 Brain 事件：每轮全量列出录音，靠 ① 里的 audio_ref 跳过已导入的。
+- 每轮分页列出录音。设置 EAR_ADAPTER_DELIVERY_DB 后，按收件回执触发指定 capture 复查，每小时另做一次兜底检查；无回执库时每五分钟复查已导入段。重启时从①查询现有 ID。
 - `Report.summary()` 列出所有 `Pending` 和 `Failed` 的录音及原因，旧 Ear 卡住的录音不会被静默漏掉。
 
 - 降级结果记为 `Failed` 并每轮重读，旧 Ear 恢复并重新处理后自动补上；长期停在 `Failed` 的录音说明旧 Ear 没有重新处理，需要人去旧 Ear 触发。
@@ -222,6 +222,20 @@ uv run pytest services/adapters/tests/test_batch_size.py -s
 - ① 测试夹具的容量按合成数据设定：PostgreSQL tmpfs 384 MiB 写满；NATS `max_file_store: 48MB` 小于脚本里流的 `max_bytes`（512 MiB），JetStream 流建不起来，订阅注册一直返回 `ServiceUnavailable`（consumer initialization pending）且没有更具体的原因。本次只在仓库外副本里放大了容量（PostgreSQL 内存 3 GiB / tmpfs 2 GiB，NATS 内存 1.5 GiB / tmpfs 1 GiB / max_file_store 900 MB），没有改 ① 的夹具。
 - ① 的流默认 `max_bytes` 256 MiB、`DiscardPolicy.NEW`；这批真实数据约 11.8 万条事件，正式部署要按真实数据量估算流容量。
 - 远程消费速度约每秒 5 个事件（每个事件一次确认往返，handler 内每个声纹还要再读 3 次）。8849 个订阅事件用了约 25 分钟；③ 从头补消费时这会是瓶颈。
+
+### 7.4 独立识别进程的历史录音回放（2026-11-14）
+
+[启动和回放命令](../README.md#独立运行旧-ear-识别后端)。旧 Ear 源码锁定在 `7b21bb81`，在仓库外的独立 checkout 和虚拟环境运行 `ear.standalone:app`。对识别进程应用 macOS 进程级规则 `(version 1)(allow default)(deny network-outbound (remote tcp "localhost:31415"))`，实测同规则访问 Manager 得到 `Operation not permitted`。新数据库在启动时有零条 capture。语音依赖实际 MOSS HTTP 服务，声纹和环境声分别在 Mac 加载 ECAPA、PANNs 本地模型。模型服务设置使用手动控制和旧实现的 `process_manager=systemd_user`，后者选用支持持久 job ID 和重启恢复的 HTTP 客户端；手动控制下没有 SSH 动作。本阶段没有运行下游场景 LLM 或人物归属。
+
+回放单个已封口的历史 iPhone 分段，先发 Context，再发约 30 分钟的 AAC。旧 Ear 接受音频后，接收端自动重试 Context。两个附件的 SHA-256 和原件逐一匹配；Context 一共尝试两次、音频一次，生成两条受理回执并关联同一 capture。两个附件通过 HTTP 再次上传，回执仍为两条，capture 和 pipeline run 均仍为一条。隔离进程曾在排查模型代理之后重启；原队列自动恢复。旧客户端经 Mac 用户代理访问模型健康接口得到 502，直连同一地址返回 200。手机现用接收端、Manager 和原旧 Ear 继续运行，测试在独立目录内完成。
+
+该次 run 在 05:05:45 JST 建立，05:10:38 成功，处理耗时 292.9 秒，包含一次服务重启。25 个 pipeline task 均成功，Evidence 报告九项 availability 全部 available，`analyzable=true`。最终能读取 7 个音频块、30 条转写、6 条说话人解析、157 个环境声事件、1 个设备状态传感观测、1 个手机状态快照和 1 个上下文事件。原 Context 共 357 行：初始快照的经纬度和定位时间均为 JSON null，随后有 354 个运动状态 delta、1 个充电状态 delta 以及末尾汇总。Evidence 唯一传感观测为 device_context，location=null。该计时从回放段进入处理起算，不包含真机 30 分钟封口时间和蜂窝传输。
+
+
+② 通过常驻命令导入后，从独立①实际读回 201 条：audio_ref 1、transcript_segment 30、local_speaker 6、voiceprint 5、ambient_sound 157、phone_info 2、gps_point 0。跨进程重扫没有新增。随后在隔离接收端给同一段单独上传一个带合成坐标的 Context 修订。②只新增 1 个 gps_point，其他六种计数保持原值；再次启动②重扫新增 0 条。再上传第二个不同时间的合成点，已运行的②根据收件回执在下一轮自动新增该点，无须重启。两个合成坐标仅用于迟到验证。
+
+本轮拆分新增 `deploy/adapter.py`，按私有 JSON 环境映射启动既有 CLI。`read_transcripts.py` 返回稳定记录与引用 ID；配置和兼容识别路径限制见[部署说明](../../../deploy/launchagents/README.md)。
+
 
 ## 8. GPS 逆地理编码实现
 
