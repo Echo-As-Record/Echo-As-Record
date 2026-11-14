@@ -134,7 +134,7 @@ JSON 文件，必须是当前用户拥有的普通文件、权限不含 group/ot
 
 ### MCP（Codex 与 Claude Code）
 
-在仓库根目录启动客户端。仓库提供 Claude Code 的 `.mcp.json`；Codex 可在项目配置中使用下列同一启动命令，服务名都是 `ear`。Codex 需信任本项目，Claude Code 首次使用时按客户端提示启用。启动命令为 `uv run --frozen --package ear-api ear-mcp`。stdio 使用 stdout 传协议消息。
+在仓库根目录启动客户端。仓库提供 Claude Code 的 `.mcp.json` 和 Codex 的 `.codex/config.toml`，使用同一启动命令，服务名都是 `ear`。Codex 需信任本项目，Claude Code 首次使用时按客户端提示启用。启动命令为 `uv run --frozen --package ear-api ear-mcp`。stdio 使用 stdout 传协议消息。
 
 Codex 项目配置可使用：
 

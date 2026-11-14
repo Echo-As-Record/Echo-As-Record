@@ -1,0 +1,4 @@
+[mcp_servers.ear]
+command = "uv"
+args = ["run", "--frozen", "--package", "ear-api", "ear-mcp"]
+env_vars = ["EAR_API_URL", "EAR_API_TOKEN"]
