@@ -8,6 +8,95 @@ based-on: 本轮负责人对 iOS 原生录音 app 的明确实施授权；docs/p
 
 原生 SwiftUI 手机采集端。连续录制 16 kHz 单声道、32 kbps AAC，每 30 分钟封口 m4a；同 index 保存 GPS、系统电量、充电状态与系统运动分类 Context。不包含 Flutter、第三方包或高频 IMU。功能依据见[提案](../../docs/proposals/phone-recorder-extraction.md)（已采纳）。
 
+## 从零开始：在自己的 iPhone 上跑起来
+
+适合第一次接触本项目的团队成员。照着做完，你的 iPhone 会持续录音，并把录音和 GPS 上传到你自己的 Mac。这里只到“Mac 收到文件”为止；转写和入库是另外的服务，见 [② 适配器](../../services/adapters/README.md)。
+
+### 0. 准备
+
+- 一台 Mac，安装 Xcode 26.6 或更新版本（App Store 安装），首次打开时按提示装好 iOS 平台组件。
+- 一台 iPhone，iOS 17 或更新版本，和一根能传数据的数据线。
+- 一个 Apple ID。免费账号就能装到自己手机上，但签名约 7 天过期，过期后重新 Run 一次即可。
+- Mac 上安装 [uv](https://docs.astral.sh/uv/)（Python 环境管理），用来运行接收服务。
+- 第一次联调时，手机和 Mac 连同一个 Wi-Fi。
+
+### 1. 取代码
+
+```sh
+git clone https://github.com/Echo-As-Record/Echo-As-Record.git
+cd Echo-As-Record
+uv sync
+```
+
+手机代码合入 `dev` 之前，先切到对应分支：`git switch phone/ios`。之后的命令都在仓库根目录执行。
+
+### 2. 在 Mac 上启动接收服务
+
+先生成一个随机口令。手机上传时要用它，自己记好，不要提交到仓库：
+
+```sh
+export EAR_INGEST_TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
+echo "$EAR_INGEST_TOKEN"
+uv run ear-ingest serve --host 0.0.0.0 --port 8791
+```
+
+这个终端窗口保持开着。录音默认存到 `~/.local/share/ear/inbox/brain`，要换目录就在启动前设置 `EAR_INGEST_INBOX_ROOT`。再查一下 Mac 在局域网里的名字：
+
+```sh
+scutil --get LocalHostName
+```
+
+假设输出是 `my-mac`，手机要填的地址就是 `http://my-mac.local:8791`。可以先用手机 Safari 打开 `http://my-mac.local:8791/health`，看到 `{"ok":true}` 说明网络是通的。
+
+### 3. 用 Xcode 装到手机
+
+1. 打开 Xcode → **Settings → Accounts**，点左下角 **+**，登录你的 Apple ID。
+2. 在 Finder 里双击打开 `clients/ios/EarRecorder/EarRecorder.xcodeproj`。
+3. 按 `⌘1` 打开左侧导航，点最上面蓝色的 **EarRecorder** 工程 → 中间 **TARGETS** 选 **EarRecorder** → 顶部 **Signing & Capabilities**：
+   - 勾选 **Automatically manage signing**；
+   - **Team** 选你的账号，个人账号显示为“你的名字 (Personal Team)”；
+   - 如果提示 Bundle Identifier 已被占用，把 `com.prts.ear.recorder` 改成你自己的，例如 `com.<你的名字>.ear.recorder`。这个改动只留在本地，不要提交；
+   - 要跑测试的话，对 **EarRecorderTests** 也做同样设置。
+4. 用数据线连上 iPhone，手机上点“信任此电脑”。
+5. 打开手机的开发者模式：**设置 → 隐私与安全性 → 开发者模式**，打开后按提示重启，解锁后再确认一次。菜单里没有这一项时，先做下一步，让 Xcode 连一次手机，它就会出现。
+6. 在 Xcode 顶部工具栏，点 `EarRecorder` 右边的设备名，选你的 iPhone，然后点左上角 ▶︎（Run）。
+   - 弹出“codesign 想要访问钥匙串”时，输入的是 **Mac 的登录密码**，点“始终允许”。
+   - 第一次装好后，手机上可能提示“不受信任的开发者”：到 **设置 → 通用 → VPN 与设备管理**，信任你的开发者证书，再回 Xcode 点一次 Run。
+
+### 4. 第一次打开 App
+
+1. 点 **“申请麦克风、定位 Always、运动、通知权限”**，逐个允许。定位要选 **“始终”** 并打开精确位置；如果只出现“使用 App 期间”，先允许，再到系统设置里改成“始终”（页面上有“打开系统设置”按钮）。
+2. 弹出“查找并连接本地网络上的设备”时选 **允许**，否则连不上 Mac。
+3. 在 **设置** 区填写：
+   - 服务地址：第 2 步的 `http://my-mac.local:8791`，不要加 `/api/v1/record`；
+   - Bearer token：第 2 步生成的口令；
+   - 用户 ID 可以空着。
+
+   点 **“保存设置”**，看到“已保存”即可。
+4. 点 **“测试已保存的直连和备用地址”**，确认直连可用。
+
+想换成扫码配对（走 HTTPS，换网络后也能找到这台 Mac），见下面的[扫码配对接收端](#扫码配对接收端)。
+
+### 5. 确认 Mac 收到录音
+
+为了不用等 30 分钟，先把分段时长（默认 `1800000` 毫秒）改成 `60000`（1 分钟）并保存，再点 **“开始录音”**。分段时长要到下一次切段才生效，所以第一段仍是 30 分钟：可以停止录音再重新开始。等一两分钟后在 Mac 上查看：
+
+```sh
+find ~/.local/share/ear/inbox/brain -type f -name '*.m4a'
+```
+
+能看到 `.m4a` 和对应的 `richVoice` / `phoneContext` 记录就说明跑通了。测试完把分段时长改回 `1800000`。
+
+### 6. 常见问题
+
+| 现象 | 处理 |
+|---|---|
+| Safari 打开 `/health` 失败 | 确认手机和 Mac 在同一 Wi-Fi、接收服务还在运行。校园网等会隔离设备的网络不允许设备互访，换个人热点再试 |
+| App 报 “App Transport Security” 错误 | 地址必须是 `http://<名字>.local:端口` 或局域网 IP；公网地址要用 HTTPS |
+| 一直显示待上传 | 检查“本地网络”权限（设置 → 隐私与安全性 → 本地网络），以及 token 是否和 Mac 上的一致 |
+| 几天后 App 打不开 | 免费账号签名过期，连上数据线在 Xcode 里重新 Run |
+| 锁屏后好像停了 | 定位必须是“始终”；强制划掉 App 后要手动重新打开。详见[真机验收边界](#真机验收边界) |
+
 ## 打开、签名、安装
 
 1. 用 Xcode 26.6 打开 `EarRecorder/EarRecorder.xcodeproj`，选择 `EarRecorder` scheme。
