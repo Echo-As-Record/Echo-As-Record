@@ -378,4 +378,3 @@ final class Upload: NSObject, URLSessionTaskDelegate, URLSessionDataDelegate {
         queue.async { DispatchQueue.main.async { self.backgroundCompletion?(); self.backgroundCompletion = nil } }
     }
 }
-
