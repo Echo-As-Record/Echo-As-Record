@@ -8,6 +8,8 @@ based-on: 本轮负责人对 iOS 原生录音 app 的明确实施授权；docs/p
 
 原生 SwiftUI 手机采集端。连续录制 16 kHz 单声道、32 kbps AAC，每 30 分钟封口 m4a；同 index 保存 GPS、系统电量、充电状态与系统运动分类 Context。不包含 Flutter、第三方包或高频 IMU。功能依据见[提案](../../docs/proposals/phone-recorder-extraction.md)（已采纳）。
 
+跨平台实现请先读[手机客户端协议与固定测试向量](../../docs/modules/phone-client-protocol.md)；其中单列当前 iOS 与接收端的不一致和待定项。
+
 ## 从零开始：在自己的 iPhone 上跑起来
 
 适合第一次接触本项目的团队成员。照着做完，你的 iPhone 会持续录音，并把录音和 GPS 上传到你自己的 Mac。这里只到“Mac 收到文件”为止；转写和入库是另外的服务，见 [② 适配器](../../services/adapters/README.md)。
@@ -28,7 +30,7 @@ cd Echo-As-Record
 uv sync
 ```
 
-手机代码合入 `dev` 之前，先切到对应分支：`git switch phone/ios`。之后的命令都在仓库根目录执行。
+手机代码合入 `dev` 之前，先切到对应分支：`git switch clients/ios-recorder`。之后的命令都在仓库根目录执行。
 
 ### 2. 在 Mac 上启动接收服务
 
