@@ -40,8 +40,8 @@ struct Multipart {
             try write("\r\n--\(boundary)--\r\n"); try output.synchronize(); try output.close()
             let size = try FileManager.default.attributesOfItem(atPath: body.path)[.size] as! NSNumber
             request.setValue(size.stringValue, forHTTPHeaderField: "Content-Length")
-            if Relay.accepts(url) {
-                guard settings.receiver != nil else { throw RecorderError("请先扫码配对中继") }
+            // Plain HTTP is a direct LAN upload unless this device is paired; only then is it the encrypted relay.
+            if Relay.accepts(url) && settings.receiver != nil {
                 let encrypted = temporary.appendingPathComponent(UUID().uuidString + ".sealed")
                 FileManager.default.createFile(atPath: encrypted.path, contents: nil)
                 do {
@@ -326,7 +326,7 @@ final class Upload: NSObject, URLSessionTaskDelegate, URLSessionDataDelegate {
             guard let key = task.taskDescription else { return }
             let code = (task.response as? HTTPURLResponse)?.statusCode ?? 0
             var authenticated = true
-            if Relay.accepts(task.originalRequest?.url) {
+            if task.originalRequest?.value(forHTTPHeaderField: "X-Ear-Request") != nil {
                 let ticket = task.originalRequest?.value(forHTTPHeaderField: "X-Ear-Request") ?? ""
                 authenticated = (try? Relay(secret: Settings.load().credential, ticket: ticket).verified(task.response as? HTTPURLResponse)) == true
             }
