@@ -77,6 +77,7 @@
     var timeoutMs = opts.timeoutMs || LIMITS.requestTimeoutMs;
     var onAuthFailure = typeof opts.onAuthFailure === 'function' ? opts.onAuthFailure : function () {};
     var token = null;
+    var noAuth = false;
     var generation = 0;
 
     function fail(err, ctx) {
@@ -87,15 +88,17 @@
     function request(method, path, o) {
       o = o || {};
       var ctx = { method: method, claim: o.claim === true };
-      if (token === null) return Promise.resolve(fail({ kind: 'not_connected' }, ctx));
+      if (token === null && !noAuth && path !== '/v1/session') return Promise.resolve(fail({ kind: 'not_connected' }, ctx));
       var gen = generation;
-      var headers = { Accept: 'application/json', Authorization: 'Bearer ' + token };
+      var headers = { Accept: 'application/json' };
+      if (token !== null && path !== '/v1/session') headers.Authorization = 'Bearer ' + token;
       var init = {
         method: method,
         headers: headers,
         cache: 'no-store',
         credentials: 'omit',
         redirect: 'error',
+        mode: 'same-origin',
         referrerPolicy: 'no-referrer'
       };
       if (o.body !== undefined) {
@@ -145,15 +148,17 @@
     return {
       setToken: function (value) {
         if (!core.isToken(value)) return false;
+        noAuth = false;
         token = value;
         generation++;
         return true;
       },
+      setNoAuth: function () { token = null; noAuth = true; generation++; },
       clear: function () {
-        token = null;
+        token = null; noAuth = false;
         generation++;
       },
-      connected: function () { return token !== null; },
+      connected: function () { return noAuth || token !== null; },
       get: function (path) { return request('GET', path); },
       post: function (path, body) { return request('POST', path, { body: body }); },
       claim: function (feedbackId) {
@@ -432,7 +437,7 @@
       AbortController: Abort,
       setTimeout: setT,
       clearTimeout: clearT,
-      onAuthFailure: function () { disconnect('令牌无效、已被撤销或缺失，已断开。请重新连接。'); }
+      onAuthFailure: function () { disconnect(testNoAuth ? '测试身份当前不可用，请联系部署方检查内部授权。' : '令牌无效、已被撤销或缺失，已断开。请重新连接。'); }
     });
     var poller = createPoller({
       client: client,
@@ -470,12 +475,21 @@
       banner(desc.outcomeUnknown ? 'warn' : 'error', desc.message);
     }
 
+    var testNoAuth = false;
+    var discovering = true;
+
     // ---- 会话
     function renderSession() {
       var me = state.me;
       $('session-info').textContent = me
         ? '已连接：' + me.subject + '（' + (me.role === 'admin' ? '管理员' : '普通用户') + '）'
         : '未连接。';
+      $('connect-form').hidden = discovering || testNoAuth;
+      if ($('auth-note')) $('auth-note').hidden = discovering || testNoAuth;
+      if (testNoAuth) {
+        $('session-info').textContent = '本地测试模式：无需登录；固定普通用户，无管理权限。';
+        if ($('user-note')) $('user-note').textContent = '当前测试身份没有管理权限，插件管理不可用。本页不会发起管理请求，也不会自动授予管理员权限。';
+      }
       $('token-input').disabled = !!me;
       show($('connect-btn'), !me);
       show($('disconnect-btn'), !!me);
@@ -485,11 +499,11 @@
     function connect(raw) {
       var t = typeof raw === 'string' ? raw.trim() : '';
       $('token-input').value = '';
-      if (!core.isToken(t)) {
+      if (!testNoAuth && !core.isToken(t)) {
         banner('error', '令牌格式不对：应是 43 位字母、数字、下划线或连字符。');
         return Promise.resolve();
       }
-      client.setToken(t);
+      if (testNoAuth) client.setNoAuth(); else client.setToken(t);
       t = null;
       banner('', '');
       live('正在连接…');
@@ -1166,8 +1180,16 @@
     renderSession();
     renderSubmitNote();
     updateForm();
+    var discovery = client.get('/v1/session').then(function (r) {
+      discovering = false;
+      if (r.stale) { renderSession(); return; }
+      testNoAuth = !!(r.ok && r.data.test_no_auth === true);
+      renderSession();
+      if (testNoAuth) return connect('');
+    });
 
     return {
+      discovery: discovery,
       state: state,
       client: client,
       poller: poller,

@@ -39,6 +39,7 @@ class Settings(BaseModel):
     static_dir: Path | None = Path(__file__).with_name("static")
     execution_journal: Path | None = None
     execution_action_v2: bool = Field(default=False, strict=True)
+    test_no_auth: bool = Field(default=False, strict=True)
     timeout: float = Field(default=10, strict=True, gt=0, le=60, allow_inf_nan=False)
     max_body_bytes: int = Field(default=65536, strict=True, ge=1024, le=65536)
     body_timeout: float = Field(default=10, strict=True, gt=0, le=30, allow_inf_nan=False)
@@ -74,11 +75,23 @@ class Settings(BaseModel):
         ]
         if len(set(credentials)) != len(credentials):
             raise ValueError("identity bindings must be distinct")
+        if self.test_no_auth:
+            if self.public_origin is None or httpx.URL(self.public_origin).host not in {
+                "127.0.0.1",
+                "localhost",
+                "::1",
+            }:
+                raise ValueError("test_no_auth requires an explicit loopback public_origin")
+            if len([b for b in self.bindings if b.role == "user"]) != 1:
+                raise ValueError("test_no_auth requires exactly one ordinary user binding")
         if self.static_dir is not None and not self.static_dir.is_dir():
             raise ValueError("static directory unavailable")
         return self
 
     def authenticate(self, authorization: list[str]) -> Binding | None:
+        if self.test_no_auth:
+            # No caller input (including an admin bearer) can select another identity.
+            return next(b for b in self.bindings if b.role == "user")
         if len(authorization) != 1:
             return None
         value = authorization[0]

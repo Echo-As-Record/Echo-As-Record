@@ -1614,7 +1614,7 @@ define('./ws-client.js', function (module, require) {
     var uuid = '[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
     var records = new RegExp('^/v1/records/([a-z_]+)(?:/' + uuid + '(?:/history)?)?$').exec(pathname);
     if (records) return Object.prototype.hasOwnProperty.call(core.TYPES, records[1]);
-    return pathname === '/v1/me' || pathname === core.EVIDENCE_PATH || pathname === '/health/ready' ||
+    return pathname === '/v1/session' || pathname === '/v1/me' || pathname === core.EVIDENCE_PATH || pathname === '/health/ready' ||
       new RegExp('^/v1/(?:previews/person/' + uuid + '|actions/' + uuid + '/execution|feedback/' + uuid + '/status)$').test(pathname);
   }
 
@@ -1627,6 +1627,7 @@ define('./ws-client.js', function (module, require) {
     var maxConcurrent = opts.maxConcurrent || LIMITS.maxConcurrent;
     var onAuthFailure = typeof opts.onAuthFailure === 'function' ? opts.onAuthFailure : function () {};
     var token = null;
+    var noAuth = false;
     var generation = 0;
     var authReported = false;
     var inflight = 0;
@@ -1643,7 +1644,7 @@ define('./ws-client.js', function (module, require) {
     function run(path, gen, resolve) {
       inflight++;
       var headers = { Accept: 'application/json' };
-      if (path.indexOf('/health/') !== 0) headers.Authorization = 'Bearer ' + token;
+      if (token !== null && path !== '/v1/session' && path.indexOf('/health/') !== 0) headers.Authorization = 'Bearer ' + token;
       var ctrl = Abort ? new Abort() : null;
       var completed = false, timer;
       var init = {
@@ -1711,7 +1712,7 @@ define('./ws-client.js', function (module, require) {
     }
 
     function invalidate() {
-      token = null; generation++;
+      token = null; noAuth = false; generation++;
       var q = queue; queue = [];
       q.forEach(function (j) { j.resolve(stale()); });
       cancelers.slice().forEach(function (cancel) { cancel(); });
@@ -1720,7 +1721,7 @@ define('./ws-client.js', function (module, require) {
     function get(path) {
       if (!pathOk(path)) return Promise.resolve(fail({ failure: 'bad_path' }));
       var isHealth = path.indexOf('/health/') === 0;
-      if (!isHealth && token === null) return Promise.resolve(fail({ failure: 'not_connected' }));
+      if (!isHealth && path !== '/v1/session' && token === null && !noAuth) return Promise.resolve(fail({ failure: 'not_connected' }));
       return new Promise(function (resolve) {
         queue.push({ path: path, gen: generation, resolve: resolve });
         pump();
@@ -1735,8 +1736,9 @@ define('./ws-client.js', function (module, require) {
         token = t; authReported = false;
         return true;
       },
+      setNoAuth: function () { invalidate(); noAuth = true; authReported = false; },
       clear: invalidate,
-      connected: function () { return token !== null; },
+      connected: function () { return noAuth || token !== null; },
       generation: function () { return generation; },
       inflight: function () { return inflight; },
       queued: function () { return queue.length; }
@@ -2266,7 +2268,7 @@ define('./ws-pages.js', function (module, require) {
     function overviewPage(ctx) {
       const root = ctx.root;
       root.appendChild(titleEl('概览'));
-      root.appendChild(h('p', { class: 'lead-text', text: '这是 Ear 的只读工作台：用当前令牌读取①里的真实数据，不写入、不审核、不执行。下面逐类显示“你是否能读到数据”，不显示总数（接口不提供计数）。' }));
+      root.appendChild(h('p', { class: 'lead-text', text: '这是 Ear 的只读工作台：用当前身份读取①里的真实数据，不写入、不审核、不执行。下面逐类显示“你是否能读到数据”，不显示总数（接口不提供计数）。' }));
 
       const conn = ui.section('连接与服务');
       root.appendChild(conn.node);
@@ -3326,6 +3328,8 @@ define('./ws-app.js', function (module, require) {
 
     let zone = core.makeZone('local', inj.offsetAt);
     let session = null;
+    let testNoAuth = false;
+    let discovering = true;
     let route = core.parseHash('');
     let current = null;
     let pageToken = 0;
@@ -3338,7 +3342,7 @@ define('./ws-app.js', function (module, require) {
       AbortController: inj.AbortController || win.AbortController,
       setTimeout: timers.setTimeout,
       clearTimeout: timers.clearTimeout,
-      onAuthFailure: function () { disconnect('令牌无效、已被撤销或格式不对，已断开连接并清除令牌。', 'error'); }
+      onAuthFailure: function () { disconnect(testNoAuth ? '测试身份当前不可用，请联系部署方检查内部授权。' : '令牌无效、已被撤销或格式不对，已断开连接并清除令牌。', 'error'); }
     });
     const data = mods.pages.createData(client);
 
@@ -3408,6 +3412,13 @@ define('./ws-app.js', function (module, require) {
     }
     function renderDisconnected() {
       disposeCurrent();
+      if (discovering || testNoAuth) {
+        ui.fill($('view-root'), h('div', { class: 'view' }, [
+          h('h2', { id: 'view-title', text: discovering ? '正在连接…' : '连接暂不可用' }),
+          h('p', { text: '本地测试模式自动连接；连接失败时请刷新，或联系部署方检查服务。' })
+        ]));
+        return;
+      }
       const view = h('div', { class: 'view' }, [
         h('h2', { id: 'view-title', tabindex: '-1', text: '请先连接' }),
         h('p', { class: 'lead-text', text: '在左侧粘贴 API 令牌并点“连接”。令牌只保存在本页内存里，刷新或关闭页面即丢失；本工作台只读取数据，不会修改任何内容。' }),
@@ -3456,7 +3467,14 @@ define('./ws-app.js', function (module, require) {
         badge.className = 'badge tone-muted';
         $('session-info').textContent = '未连接。';
       }
-      $('disconnect-btn').hidden = !session;
+      if (testNoAuth) {
+        badge.textContent = session ? '本地测试 · 已连接' : '本地测试 · 未连接';
+        $('session-info').textContent = '无需登录；使用固定普通用户权限。插件管理不可用。';
+      }
+      $('connect-form').hidden = discovering || testNoAuth;
+      const note = $('auth-note');
+      if (note) note.hidden = discovering || testNoAuth;
+      $('disconnect-btn').hidden = testNoAuth || !session;
       $('connect-btn').disabled = false;
       $('token-input').disabled = !!session;
     }
@@ -3470,14 +3488,15 @@ define('./ws-app.js', function (module, require) {
       disposeCurrent();
       paintSession();
       banner(message ? (kind || 'info') : '', message || '');
-      announce(message || '已断开并清除令牌。');
+      announce(message || (testNoAuth ? '已断开。' : '已断开并清除令牌。'));
       renderDisconnected();
     }
     async function connect() {
       const input = $('token-input');
       const token = input.value;
       input.value = '';
-      if (!client.setToken(token)) {
+      if (testNoAuth) client.setNoAuth();
+      else if (!client.setToken(token)) {
         banner('error', '令牌格式不对：应为 43 位的 URL 安全字符（字母、数字、- 和 _）。');
         return;
       }
@@ -3491,6 +3510,7 @@ define('./ws-app.js', function (module, require) {
         const msg = r.error ? r.error.message : '连接失败。';
         client.clear();
         paintSession();
+        renderDisconnected();
         banner('error', '连接失败：' + msg);
         announce('连接失败。');
         return;
@@ -3499,6 +3519,7 @@ define('./ws-app.js', function (module, require) {
       if (!core.isObj(d) || typeof d.subject !== 'string' || (d.role !== 'user' && d.role !== 'admin')) {
         client.clear();
         paintSession();
+        renderDisconnected();
         banner('error', '连接失败：服务返回的身份信息格式异常。');
         return;
       }
@@ -3526,8 +3547,17 @@ define('./ws-app.js', function (module, require) {
     win.addEventListener('pagehide', function () { disconnect('', ''); });
     win.addEventListener('keydown', function (ev) { if (ev && ev.key === 'Escape') setNavOpen(false); });
     renderRoute();
+    const discovery = client.get('/v1/session').then(function (r) {
+      discovering = false;
+      if (r.stale) { paintSession(); if (!client.connected()) renderRoute(); return; }
+      testNoAuth = !!(r.ok && r.data.test_no_auth === true);
+      paintSession();
+      if (testNoAuth) return connect();
+      if (!client.connected()) renderRoute();
+    });
 
     return {
+      discovery: discovery,
       client: client, data: data, ui: ui,
       state: function () { return { connected: client.connected(), session: session, route: route, zone: zone.id }; },
       connect: connect,

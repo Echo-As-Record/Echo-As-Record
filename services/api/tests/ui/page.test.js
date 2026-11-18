@@ -411,7 +411,7 @@ test('page: 普通用户看不到管理界面，且不会发出任何管理请�
     return c.url === '/v1/me' ? { body: { subject: subject, role: 'user' } } : { status: 500 };
   });
   await connectAs(env);
-  assert.deepEqual(env.f.calls.map(function (c) { return c.url; }), ['/v1/me']);
+  assert.deepEqual(env.f.calls.map(function (c) { return c.url; }), ['/v1/session', '/v1/me']);
   assert.equal(env.dom.n('user-panel').hidden, false);
   assert.equal(env.dom.n('admin-area').hidden, true);
   assert.equal(env.dom.n('token-input').value, '');
@@ -420,7 +420,7 @@ test('page: 普通用户看不到管理界面，且不会发出任何管理请�
   await env.page.startSubmit({ action: 'status', module: 'demo' }, false);
   await env.page.loadTasks(true);
   await env.page.loadPlugins(true);
-  assert.equal(env.f.calls.length, 1);
+  assert.equal(env.f.calls.length, 2);
   assert.deepEqual(env.dom.stored, []);
 });
 
@@ -688,4 +688,16 @@ test('page: 历史补处理只填了一端时仍被拒绝，不会替用户补�
   assert.equal(env.dom.n('confirm-dialog').open, false);
   assert.equal(posts(), 0);
   assert.equal(env.dom.n('range-end').value, '');
+});
+
+test('page: test mode auto-connects ordinary user, hides login and explicitly disables admin without management requests', async () => {
+  const env = bootPage(c => c.url === '/v1/session' ? {body:{test_no_auth:true}} : {body:{subject:'local-test',role:'user'}});
+  await env.page.discovery; await settle();
+  assert.deepEqual(env.f.calls.map(c=>c.url), ['/v1/session','/v1/me']);
+  assert.ok(env.f.calls.every(c=>!c.headers.Authorization && c.method==='GET' && c.init.mode==='same-origin'));
+  assert.equal(env.dom.n('connect-form').hidden,true);
+  assert.equal(env.dom.n('auth-note').hidden,true);
+  assert.equal(env.dom.n('user-panel').hidden,false);
+  assert.equal(env.dom.n('admin-area').hidden,true);
+  assert.ok(env.dom.n('user-note').textContent.includes('插件管理不可用'));
 });

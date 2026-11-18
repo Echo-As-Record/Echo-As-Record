@@ -33,6 +33,37 @@ based-on: 设计 v1.2；信号补充；插件 MVP；工作分解 v1.2；origin/d
 
 运行项目 `ear-real-sample-20261118` 在vm-remote；Docker internal网络未发布host ports，当前回环18100/18186由私有有界userspace forwarder提供，transient用户单元不跨主机重启。重启后须操作者人工恢复并验证，非自动恢复/完整可复现承诺。**真实链路已通过：3段录音、1007原始、125归属、重入0新增，真实Chromium无mock验证。源专用身份依用户授权临时接受额外写能力，实际只GET；现已撤销且关闭专用连接。** 没有LLM提取，自动人物未质量校准，dependency队列尚有积压。 使用方式与所有证据边界统一见[事实交接](../../../ai-docs/plans/real-sample-web-mcp.md)；只读[MCP提案](../../../docs/proposals/mcp-interface.md)仍待采纳。
 
+## 2026-11-18 本地免登录实现
+
+依据本轮用户明确要求取消测试版本面向用户的API令牌检查。`Settings.test_no_auth` 默认false，
+开启必须有回环public_origin及唯一user绑定；authenticate忽略所有入站Authorization并选该绑定。
+仍使用Upstream每次重新认证与原有①授权，不给用户admin或修改任何内部凭据。
+`Boundary`仅在该模式校验精确Host与Sec-Fetch-Site，并要求写请求有同源Origin；健康检查只额外
+允许127.0.0.1:8086。默认认证模式、CSP、JSON边界均保留。
+
+新增公开`/v1/session`仅返回布尔模式；两个flat页面先发现模式，测试模式自动GET `/v1/me`，
+不发Authorization且隐藏登录控件；插件普通用户只显示明确不可用。工作台仅GET。
+能力发现错误不会自动免登录；内部身份失效清空会话，并说明内部授权不可用。
+
+回归位于`test_no_auth.py`、`ui/workspace-flat.test.js`、`ui/page.test.js`：默认401、
+缺失/畸形/重复/管理员Bearer在测试模式均固定普通身份、live撤权、admin403、Host/Origin、
+无凭据泄漏及无登录UI/无Authorization。测试数字与部署结果由完成后的私有回执记录，
+不把准备中的测试当已通过。
+
+实际更新限定`ear-real-sample-20261118`的API镜像及私有API配置的test_no_auth字段；
+原配置私下备份，初始化回执/intent保持不变，另存noauth-update-receipt.json。
+不调用有冻结保护的helper up、不伪造原初始化记录；只改现有loopback转发器API pin并重启其原单元。
+原数据卷/凭据/worker/旧ear-dev保留，外部源不读取、不重启；不启动模型/地图/外部动作。
+现有transient转发器重启持久化和冻结回执采纳仍未解决，不宣称此次更新解决了它们。
+
+### 本次最终验证（2026-11-18）
+
+- 默认全套3227 passed、862 skipped；API定向807 passed；Node与合成Chromium148 passed。范围重叠，不相加；不是本次四开关全量验收。全仓ruff、format、pyright、docs通过。
+- 真实实例无Bearer HTTP已通过：普通身份200、管理403、错误Host/Origin/跨站请求403；原3段录音、1007原始记录、125归属保持不变，8服务运行、7healthy，旧ear-dev不变。
+- 真实Chromium无mock最终通过全部10个入口：自动连接、桌面/窄屏无登录控件、无Authorization、人物历史、真实转写及检索、插件管理不可用提示。无外站/非GET请求、运行时/CSP错误；不输出真实内容。
+- 保留历史两次验证失败：转发器启动后首次连接失败，后续只读检查成功；初版浏览器脚本漏点“加载版本历史”而超时，修正实际点击步骤后全部断言通过，未改产品源码或削弱断言。
+- 最终记录 `/tmp/ear-noauth-browser-final-20261118.json`，持久副本在实例私有 `noauth-update-20261118/final-acceptance.json`；原初始化和更新回执不删除、不冒充重启恢复已完成。
+
 ## 0. 历史状态与使用（2026-11-07/12）
 
 - **部分交付，待审。** 首批代码在 dev 的历史里（8750a83，即 #11，是 HEAD 79e8dc3 的祖先；“功能分支待合并”的旧说法已过期）；第二批（action-v2 的 HTTP 接线、③ 命令结果投影等）已在 `697de3b` 提交至未合并 PR #16，见第 3A 节；其中“工作区”是历史时点描述。第 1–8 节的 2026-11-07 内容描述首批；本页不是完成报告，不得据此宣称 ⑥ 是完整 MVP。面向人的用法见[⑥入口](../README.md)。

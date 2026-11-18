@@ -31,7 +31,7 @@
     <aside id="sidebar" class="sidebar" aria-label="侧边栏">
       <section class="connect" aria-labelledby="connect-title">
         <h2 id="connect-title">连接</h2>
-        <form id="connect-form" autocomplete="off">
+        <form id="connect-form" autocomplete="off" hidden>
           <label for="token-input">API 令牌（Bearer，43 位）</label>
           <input id="token-input" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="64" placeholder="粘贴后点“连接”">
           <div class="row">
@@ -40,7 +40,7 @@
           </div>
         </form>
         <p id="session-info" class="meta" role="status">未连接。</p>
-        <p class="meta">令牌只保存在本页内存：不写入浏览器存储、地址栏或日志，刷新或关闭页面即丢失。本页只发送只读（GET）请求。</p>
+        <p id="auth-note" class="meta" hidden>令牌只保存在本页内存：不写入浏览器存储、地址栏或日志，刷新或关闭页面即丢失。本页只发送只读（GET）请求。</p>
       </section>
 
       <nav id="nav" aria-label="工作台导航">

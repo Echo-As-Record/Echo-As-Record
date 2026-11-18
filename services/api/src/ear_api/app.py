@@ -194,6 +194,12 @@ def create_app(
             200 if healthy else 503,
         )
 
+    @app.get("/v1/session")
+    def session(request: Request):
+        params(request, set())
+        # Public capability discovery only; never expose bindings or credentials.
+        return response({"test_no_auth": settings.test_no_auth})
+
     @app.get("/v1/me")
     def me(request: Request):
         params(request, set())

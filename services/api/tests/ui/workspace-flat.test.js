@@ -853,7 +853,7 @@ function newClient(f, t, extra) {
 
 test('client: 没有任何写方法；所有请求都是 GET，选项固定为同源、无 cookie、不缓存、不跟随重定向', async () => {
   const c = newClient(makeFetch(() => ({ body: { ok: 1 } })), makeTimers());
-  assert.deepEqual(Object.keys(c).sort(), ['clear', 'connected', 'generation', 'get', 'inflight', 'queued', 'setToken']);
+  assert.deepEqual(Object.keys(c).sort(), ['clear', 'connected', 'generation', 'get', 'inflight', 'queued', 'setNoAuth', 'setToken']);
   for (const m of ['post', 'put', 'patch', 'delete', 'request']) assert.equal(c[m], undefined, m);
   const f = makeFetch(() => ({ body: { ok: 1 } }));
   const c2 = newClient(f, makeTimers());
@@ -1126,10 +1126,11 @@ const { bootWorkspace, settle, TOKEN, core, fake, mock } = flatEnv;
 
 const { id } = mock;
 
-test('session: 未连接时只显示连接提示，不发任何请求；侧边栏导航含全部 9 个视图与插件管理链接', async () => {
+test('session: 未连接时仅发现公开模式，不发业务请求；侧边栏导航含全部 9 个视图与插件管理链接', async () => {
   const env = bootWorkspace();
+  await env.page.discovery;
   assert.ok(env.text().includes('请先连接'));
-  assert.equal(env.f.calls.length, 0);
+  assert.deepEqual(env.gets(), ['/v1/session']);
   const navLinks = fake.links(env.n('nav-list'));
   assert.deepEqual(navLinks.map((a) => a.textContent), ['概览', '证据时间线', '活动', '产物', '人物', '地点', '规则', '动作建议', '追溯']);
   assert.deepEqual(navLinks.map((a) => a.attrs.href), ['#/overview', '#/timeline', '#/activities', '#/artifacts', '#/people', '#/places', '#/rules', '#/actions', '#/trace']);
@@ -1143,7 +1144,7 @@ test('session: 令牌格式不对不会发请求；正确令牌连接后输入�
   env.n('token-input').value = 'short';
   env.n('connect-form').dispatch('submit');
   await settle();
-  assert.equal(env.f.calls.length, 0);
+  assert.deepEqual(env.gets(), ['/v1/session']);
   assert.equal(env.n('banner').hidden, false);
   assert.ok(env.n('banner').textContent.includes('43 位'));
 
@@ -1156,7 +1157,7 @@ test('session: 令牌格式不对不会发请求；正确令牌连接后输入�
   for (const c of env.f.calls) {
     assert.equal(c.method, 'GET');
     assert.ok(!c.url.includes(TOKEN));
-    if (c.url.startsWith('/v1/')) assert.equal(c.headers.Authorization, 'Bearer ' + TOKEN);
+    if (c.url.startsWith('/v1/') && c.url !== '/v1/session') assert.equal(c.headers.Authorization, 'Bearer ' + TOKEN);
   }
   // 令牌不会出现在页面任何文字、属性或地址里
   const dump = [];
@@ -2352,4 +2353,41 @@ for (const ErrorType of [Error, RangeError]) {
     await env.go('#/people'); assert.match(pane(env).textContent, /合成人物甲/);
   });
 }
+}
+
+{
+const test = require('node:test');
+const assert = require('node:assert/strict');
+test('test mode: auto-connects fixed user without bearer or login UI; failed internal identity stays unavailable', async () => {
+  const env = flatEnv.bootWorkspace({ handler(c) {
+    if (c.url === '/v1/session') return {body:{test_no_auth:true}};
+    if (c.url === '/v1/me') return {body:{subject:'local-test',role:'user'}};
+    if (c.url === '/health/ready') return {body:{status:'ready'}};
+    return {body:{items:[],next_cursor:null,consistency:'live'}};
+  }});
+  await env.page.discovery; await flatEnv.settle();
+  assert.equal(env.page.state().connected,true);
+  assert.equal(env.page.state().session.role,'user');
+  assert.equal(env.n('connect-form').hidden,true);
+  assert.equal(env.n('auth-note').hidden,true);
+  assert.equal(env.n('token-input').value,'');
+  assert.ok(!env.text().includes('请先连接'));
+  assert.ok(env.f.calls.length > 2);
+  assert.ok(env.f.calls.every(c=>c.method==='GET' && !c.headers.Authorization && c.init.mode==='same-origin'));
+  env.page.disconnect();
+  assert.ok(!env.text().includes('API 令牌'));
+  assert.equal(env.n('connect-form').hidden,true);
+  const revoked=flatEnv.bootWorkspace({handler:c=>c.url==='/v1/session'?{body:{test_no_auth:true}}:{status:401}});
+  await revoked.page.discovery; await flatEnv.settle();
+  assert.equal(revoked.page.state().connected,false);
+  assert.equal(revoked.n('connect-form').hidden,true);
+  assert.ok(!revoked.text().includes('粘贴'));
+});
+test('test mode discovery is strict: truthy strings do not bypass default token requirement', async () => {
+  const env=flatEnv.bootWorkspace({handler:()=>({body:{test_no_auth:'true'}})});
+  await env.page.discovery;
+  assert.equal(env.page.state().connected,false);
+  assert.deepEqual(env.gets(),['/v1/session']);
+  assert.equal(env.n('connect-form').hidden,false);
+});
 }

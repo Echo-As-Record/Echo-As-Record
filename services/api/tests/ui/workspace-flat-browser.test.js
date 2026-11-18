@@ -213,6 +213,7 @@ test('flat browser: actual DOM/CSP/mobile/session/history/evidence/get-only flow
     if(!url.pathname.startsWith('/v1/')&&!url.pathname.startsWith('/health/'))return send(404,'{"code":"not_found"}');
     requests.push({method:req.method,url:req.url,hasAuth:!!req.headers.authorization});
     assert.equal(req.method,'GET');assert.ok(!req.url.includes(token));
+    if(url.pathname==='/v1/session')return send(200,JSON.stringify({test_no_auth:false}));
     if(!url.pathname.startsWith('/health/')&&(unauthorized||req.headers.authorization!=='Bearer '+token))return send(401,'{"code":"unauthenticated"}');
     if(denyPeople&&url.pathname==='/v1/records/person')return send(403,'{"code":"forbidden"}');
     const result=handler({url:req.url});send(result.status||200,JSON.stringify(result.body));
@@ -247,8 +248,8 @@ test('flat browser: actual DOM/CSP/mobile/session/history/evidence/get-only flow
   const visit=async(hash,needle)=>{await evaluate('location.hash='+JSON.stringify(hash));await until('document.getElementById("view-root").textContent.includes('+JSON.stringify(needle)+')',hash);};
   await c.send('Emulation.setDeviceMetricsOverride',{width:1280,height:900,deviceScaleFactor:1,mobile:false});
   await c.send('Page.navigate',{url:origin+'/workspace/'});
-  await until('!!document.getElementById("view-title")','boot');
-  assert.ok((await text()).includes('请先连接'));assert.equal(requests.length,0);
+  await until('!!document.getElementById("view-title") && document.getElementById("view-root").textContent.includes("请先连接")','boot');
+  assert.ok((await text()).includes('请先连接'));assert.deepEqual(requests.map(r=>r.url),['/v1/session']);
   assert.deepEqual(assets.sort(),['/workspace/','/workspace/workspace.css','/workspace/workspace.js']);
   await evaluate(`document.getElementById('token-input').value=${JSON.stringify(token)};document.getElementById('connect-form').dispatchEvent(new Event('submit',{cancelable:true}));`);
   await until('document.getElementById("session-badge").textContent.includes("tester")','connect');
@@ -286,7 +287,7 @@ test('flat browser: actual DOM/CSP/mobile/session/history/evidence/get-only flow
   assert.ok(!(await text()).includes('预算会议'));assert.equal(await evaluate('document.getElementById("session-badge").textContent'),'未连接');
   assert.equal(await evaluate('localStorage.length+sessionStorage.length'),0);
   assert.equal(requests.filter(r=>r.method!=='GET').length,0);
-  assert.ok(requests.filter(r=>r.url.startsWith('/v1/')).every(r=>r.hasAuth));
+  assert.ok(requests.filter(r=>r.url.startsWith('/v1/')&&r.url!=='/v1/session').every(r=>r.hasAuth));
   assert.deepEqual(offOrigin,[]);assert.deepEqual(errors,[]);
   t.diagnostic('Real Chromium + synthetic same-origin API; '+requests.length+' GET requests; no external requests/CSP violations; desktop and 390px mobile checks passed.');
   // Close before removing the isolated browser profile, including on assertion failures.

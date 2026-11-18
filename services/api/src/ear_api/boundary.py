@@ -6,6 +6,7 @@ import asyncio
 import json
 from typing import Any
 
+import httpx
 from ear_storage_client import InvalidRequest, PermissionDenied
 from ear_storage_client.errors import ConflictError
 from ear_storage_client.remote_errors import (
@@ -112,6 +113,21 @@ class Boundary:
         for name in (b"content-type", b"content-length", b"content-encoding", b"host"):
             if sum(k.lower() == name for k, _v in headers) > 1:
                 raise GatewayError(422, "invalid_input")
+        if self.settings.test_no_auth:
+            hosts = [v.decode("latin1") for k, v in headers if k.lower() == b"host"]
+            assert self.settings.public_origin is not None
+            expected = httpx.URL(self.settings.public_origin).netloc.decode("ascii")
+            # Container-local health checks use the service port, not the browser port.
+            health = scope["path"] in {"/health/live", "/health/ready"}
+            if hosts != [expected] and not (health and hosts == ["127.0.0.1:8086"]):
+                raise GatewayError(403, "host_denied")
+            sites = [v for k, v in headers if k.lower() == b"sec-fetch-site"]
+            if sites and sites not in ([b"same-origin"], [b"none"]):
+                raise GatewayError(403, "cross_origin_denied")
+            if scope["method"] not in {"GET", "HEAD", "OPTIONS"} and not any(
+                k.lower() == b"origin" for k, _v in headers
+            ):
+                raise GatewayError(403, "origin_required")
         lengths = [v for k, v in headers if k.lower() == b"content-length"]
         if lengths and (not lengths[0].isdigit() or len(lengths[0]) > 10):
             raise GatewayError(422, "invalid_input")
