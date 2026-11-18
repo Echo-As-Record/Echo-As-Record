@@ -9,9 +9,41 @@ based-on: README.md、AGENTS.md、docs/README.md；设计v1.2/信号/插件/确�
 
 # 真实小样本运行时、只读 Web 与 MCP：事实与恢复交接
 
-> **MCP/后续工程计划保持 proposed；下面已观察事实不等于提案采纳。** 这是截至2026-11-18的限定文档同步，不是完整MVP、真实数据处理或生产验收。行为定义见[人读MCP提案](../../docs/proposals/mcp-interface.md)与已采纳设计；旧[跑通计划](mvp-runnable.md)、[运行时交接](mvp-runtime-handoff.md)保留各时点证据，不能当作本候选的新结果。
+> **MCP/后续工程计划保持 proposed；下面已观察事实不等于提案采纳。** 本文记录真实最小证据链路，不是完整MVP、LLM提取或生产验收。行为定义见[人读MCP提案](../../docs/proposals/mcp-interface.md)与已采纳设计；旧[跑通计划](mvp-runnable.md)、[运行时交接](mvp-runtime-handoff.md)保留各时点证据，不能当作本候选的新结果。
 
-## 1. 基线、写入边界与历史说明
+## 0. 最终真实验收与收尾（优先于下文初始空库记录）
+
+**代码已提交并推送：`85c8e5b`，既有PR #16；包含最新dev ba36543。真实最小链路已通过，不再是空库。** 下文15:09空库、15:39构建中、源授权未证明等是此前阶段的取证，不覆盖本节。本节只保存汇总，不含原文、人名、坐标、向量、样本ID或凭据。
+
+- 正常源Evidence/embedding API → ②标准适配器 → 独立① → ③确定性归属 → ⑥实际Web：3段已处理录音导入1007条原始记录（audio_ref3、transcript_segment573、local_speaker141、voiceprint124、ambient_sound151、gps_point1、phone_info14）。原始内容、引用和时间保留；2798条链接校验通过。
+- 124条声纹及1个GPS全部具有且仅具有一条归属。自动人物为候选，不是经人工确认的真实人数或识别准确率；本次阈值没有质量验收。
+- 同一3段显式选择再运行：全部AlreadyIngested、新增原始记录0、全部业务计数不变。成功导入的3个批次回执保留；读取观察中断/超时后先核对回执再继续观察，未盲目重导入。
+- 真实Chromium直连实际后端、无mock：三个样本时间窗、转写原文、人物/历史/聚合、证据搜索和追溯均通过；39次HTTP响应无错误，无JS/CSP错误。精确路由、窗口及7张截图仅存私有目录，不进仓库或CI。
+- **没有真实LLM提取或外部动作**。④/⑦/geocoder/执行器未启用；activity/artifact/rule/rule_selection/action_suggestion仍0，不编造活动或产物。真实GPS未地理编码，后续提取仍受既有门控约束。
+- **队列尚未全部排空**：2026-11-18 17:30:52Z，attribution pending/ack_pending均0；dependency pending602、ack_pending0、redelivered0。所需125条归属完成不等于全传播完成；吞吐和长期恢复未验收。
+
+### 源授权变化和已完成收尾
+
+用户明确授权最多3段已处理录音、必要内网读取/复制；发现现有服务身份有额外写能力后，用户明确表示“暂时不为了只读这样的权限问题修改 ear，可写身份也可以先用来测试。”因此**没有改Ear源码、没有重启Ear或Manager**。专用token通过原机制热加载Evidence/embedding grants；凭据仍有任务注册能力、无服务端样本范围限制，本次脚本仅对固定3段及引用集合执行正常GET，不把客户端只读用法说成服务端只读角色。没有借用其他admin身份、源数据库或处理缓存绕过API。
+
+3个原音频文件仅经SSH内网复制到私有目录，共14,663,017字节，源/本地/规范引用的SHA-256和大小一致，InboxAudioLocator通过。未注册任务、重处理、调用模型/地图/日历、修改源音频。
+
+**临时源凭据已经撤销**：只移除此身份与新增grants，无关/并发配置保留；撤销后401、健康200、源进程不变。专用SSH控制连接已关闭，source connection为enabled=false/revoked=true。目标API用户、已导入资料和服务保留。未来导入必须重新明确范围和源凭据，不自动复活本次授权。
+
+### 最新验证（各范围不累加）
+
+| 范围 | 结果 | 边界 |
+|---|---|---|
+| 代码85c8e5b远端CI run44342822642 | **SUCCESS；4058 passed、13 skipped、2 warnings；1899.57秒；Node144通过** | 2026-11-18 16:36:39Z完成，PG/NATS/备份/API-gateway四开关全1；输入/模型/效果合成，不含用户资料 |
+| 提交前本机最终全套 | **3209 passed、862 skipped、2 warnings；88.94秒；Node144通过** | ear-real-release-20261118日志/JUnit/exit0；ruff/format/pyright/lock/docs/staged gitleaks通过 |
+| 真实最小链路 | 3段、1007原始、125归属、重入0新增、实际Web通过 | ear-real-import-acceptance-20261118.json，不是LLM八步或准确率验收 |
+| 源端收尾 | 撤销401、健康200、进程不变、专用连接关闭 | ear-real-source-cleanup-20261118.json；不改目标资料 |
+
+验收报告持久副本在vm-remote私有 `/home/aytony/.local/state/ear-real-sample-20261118/import-acceptance/acceptance.json`，源收尾副本在其source目录；/tmp同名报告便于当前会话取证但不保证重启持久。恢复先读摘要，不输出整个私有目录或真实资料；不要因会话丢失重新导入/发token。
+
+访问仍用第3节的SSH隧道、`/workspace/`和私有clients.json中的api_user_token。样本日期未必是页面默认今天，先看概览，再用私有验收窗口切换时间线。原初始化回执保持不变，UI更新回执另存；helper up的冻结检查仍保守拒绝，转发单元仍不跨重启持久。**安全的更新回执采纳/重启恢复、dependency积压、人物校准、真实④/⑦提取和MCP实现仍待完成。** 本次没有授权真实资料进入云模型。
+
+## 1. 初始基线与文档任务边界（历史）
 
 - 只读 Git 核对：HEAD `84d2d0fa1291b3b454a3ad6e9786826c41e6373c`；`origin/dev` 为 `ba36543dfb7c24551b6c591c9acc6287be0871db`，且是 HEAD 的祖先；含 PR #20 手机录音接收及此前 GPS。没有未合并索引项。早先 HEAD697de3b、MERGE_HEAD7f98132、尚待合并ba36543的文字只属于历史。
 - 新 evidence、flat viewer、runtime及部分修复仍有工作区改动；HEAD包含上游不等于这些内容已提交。本任务只写 `docs/proposals/mcp-interface.md`、本页、`services/api/README.md`、`services/api/ai-docs/implementation.md`、`ai-docs/README.md`；不修改源码/测试/部署/锁文件，不暂存、提交、fetch、合并或改Git索引。
@@ -34,7 +66,7 @@ based-on: README.md、AGENTS.md、docs/README.md；设计v1.2/信号/插件/确�
 
 原PR #23 a7baf9e的OPEN/CI成功/冲突是此前只读观察，本轮未刷新远端PR状态。EAR-MCP-001～009保留在[提案§9](../../docs/proposals/mcp-interface.md#9-审查缺口复用决定与采纳门槛)，不是本轮Web两项P2。不得整文件覆盖app/config/business以迁就PR旧pending_contract语义；写工具、新request_id工具不进首期，stdio/SDK版本/取消/严格输出仍待实现验收。
 
-## 3. 独立空运行时：已部署，但没有真实数据
+## 3. 初始空库部署与仍适用的访问/恢复限制（历史空库）
 
 依据 `/tmp/ear-real-deployment-20261118.json`（completed_at `2026-11-18T15:09:00Z`）：
 
@@ -59,7 +91,7 @@ ssh -N -L18186:127.0.0.1:18186 vm-remote
 
 本机打开 `http://127.0.0.1:18186/workspace/`（保留末尾斜杠；用127.0.0.1以匹配public_origin）。在凭据所在的受信任本地环境中私下查看该部署的私有 `clients.json`，仅取 **`api_user_token`** 输入页面；原文件位于vm-remote私有状态目录。不要把文件/令牌打印进终端记录、聊天、报告、截图或Git，不取adapter/storage/admin凭据，不借管理员。此文与文档任务不读取其内容；无法安全取得普通用户令牌时停止并交操作者处理。隧道不提供新的API权限，也不能恢复已丢失的远端转发服务。
 
-## 4. GPS/profile 与真实数据阻塞分别处理
+## 4. 初始GPS/profile与源授权调查（历史，授权结果见第0节）
 
 当前 `services/storage/src/ear_storage/core_deployment.py` 的 `RAW_TYPES` 已包含 `gps_geocode`，extraction的读取策略引用该集合；早先“缺gps_geocode read grant”的新库profile阻塞已修复，**不是仍待实现**。这不自动修改已有库grant，也不证明源Evidence/embedding授权成立；本任务没有补grant。
 
@@ -67,7 +99,7 @@ ssh -N -L18186:127.0.0.1:18186 vm-remote
 
 ## 5. 验证证据：各范围分别记录，不相加
 
-文档任务读取下列实际产物，不声称亲自重跑这些功能验收；默认全套核对exit/JUnit/log，GPS核对摘要与各套exit/JUnit。未执行最新四开关全量重跑。
+下表保留早期各套取证；当时尚无最新四开关结果，现已由第0节的85c8e5b远端CI补齐，不再是当前未测项。
 
 | 验证/出处 | 实际结果 | 范围与限制 |
 |---|---|---|
@@ -90,10 +122,10 @@ UI额外探针 `SCAN_DROPPED_ROW_COMPLETENESS` 的合成丢行仍可能 `complet
 ## 6. 后续门槛（不是新增授权）
 
 1. API-only最终重部署已经完成；后续需补安全的更新回执采纳与重启恢复，不放宽旧初始化校验。
-2. 真实导入前明确小时间窗/capture集合、源系统专用Evidence及embedding读grant、数据同意和处理范围；私有材料不进仓库。缺任一授权继续阻塞，不借admin。新库读取可用不是源数据读取获批。
+2. 本次3段真实导入已完成、源身份已撤销。未来新导入仍须明确范围与源凭据；不复活旧授权、不自动扫描。
 3. 查看与处理分离：只读不隐式触发导入、转写、LLM、geocoder、重新提取或外部动作。真实处理验收须另记输入/模型/效果/平台四维，不将空库和合成八步混称真实数据跑通。
 4. MCP仍待采纳与实现：固定GET白名单、普通API身份、严格投影/限额/错误去敏、当前授权与撤权、stdio/SDK兼容/取消、主机数据外发同意；不得默认注册纠正或动作工具。精确姓名查询缺口显式保留。
-5. 最新候选完整四开关重跑、主机重启恢复与长时可靠性未证明；历史2026-11-07/12的全量不能替代本轮。
+5. 代码85c8e5b四开关远端CI已通过；主机重启恢复、长时可靠性、dependency积压仍未解决，历史验收不能替代这些未测项。
 
 ## 7. 文档检查与恢复记录
 

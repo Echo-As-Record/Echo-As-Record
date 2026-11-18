@@ -1,14 +1,14 @@
 ---
 audience: ai
 doc-type: guide
-based-on: 设计 v1.2；信号补充；插件 MVP；工作分解 v1.2；origin/dev 376294d 的 contracts、ear_storage_client 与 ear_storage 代码；services/api 的实际源码与测试（逐文件阅读；2026-11-07 取自功能分支 api/gateway-mvp，其后 #11 已合入 dev，2026-11-12 对照 HEAD 79e8dc3 与工作区）及 deploy/Dockerfile.api、deploy/compose.api-gateway.yaml；2026-11-07 本机取证记录（/tmp，非仓库文件）：ear-67-browser-state.json、ear-api-gateway-deploy-state.json、ear-67-postfix-review.json、ear-67-final-fixes.json、ear-67-full-acceptance.log、ear-67-acceptance-fixes.json、ear-67-full-v2.log（及 .exit）、ear-67-static-v2.log、ear-67-static-final.log（及 .exit）；用户对⑥⑦实现与文档同步的授权；2026-11-12 增补依据：execution_http.py、execution.py、app.py、config.py、cli.py 源码，仓库外摘要 /tmp/ear-mvp-{action-http,action-evidence-fix,eight-steps}.json（作者读取并核对各自的退出码文件、日志末行与 junit 用例名，测试结果未复跑），git 记录（8750a83 即 #11 是 HEAD 79e8dc3 的祖先）；本文不新增用户授权记录，也不增加用户决定；2026-11-18事实同步：HEAD84d2d0f已含origin/dev ba36543/PR20与此前GPS；app/evidence/flat workspace与core_deployment实际源码；ear-real-deployment、ear-real-ui-fix、ear-gps-integration、ear-real-default-final的20261118磁盘产物；限定五文档授权
+based-on: 设计 v1.2；信号补充；插件 MVP；工作分解 v1.2；origin/dev 376294d 的 contracts、ear_storage_client 与 ear_storage 代码；services/api 的实际源码与测试（逐文件阅读；2026-11-07 取自功能分支 api/gateway-mvp，其后 #11 已合入 dev，2026-11-12 对照 HEAD 79e8dc3 与工作区）及 deploy/Dockerfile.api、deploy/compose.api-gateway.yaml；2026-11-07 本机取证记录（/tmp，非仓库文件）：ear-67-browser-state.json、ear-api-gateway-deploy-state.json、ear-67-postfix-review.json、ear-67-final-fixes.json、ear-67-full-acceptance.log、ear-67-acceptance-fixes.json、ear-67-full-v2.log（及 .exit）、ear-67-static-v2.log、ear-67-static-final.log（及 .exit）；用户对⑥⑦实现与文档同步的授权；2026-11-12 增补依据：execution_http.py、execution.py、app.py、config.py、cli.py 源码，仓库外摘要 /tmp/ear-mvp-{action-http,action-evidence-fix,eight-steps}.json（作者读取并核对各自的退出码文件、日志末行与 junit 用例名，测试结果未复跑），git 记录（8750a83 即 #11 是 HEAD 79e8dc3 的祖先）；本文不新增用户授权记录，也不增加用户决定；2026-11-18事实同步：HEAD84d2d0f已含origin/dev ba36543/PR20与此前GPS；app/evidence/flat workspace与core_deployment实际源码；ear-real-deployment、ear-real-ui-fix、ear-gps-integration、ear-real-default-final的20261118磁盘产物；文档分工
 ---
 
 # ⑥ 实现说明与验证记录（api/gateway-mvp）
 
 ## 2026-11-18 当前入口与验证（旧批次不代替本轮）
 
-只读核对HEAD `84d2d0f`，`origin/dev ba36543`是其祖先，含PR #20与此前GPS；合并已完成。第0–9节的79e8dc3、“第二批工作区未提交”及2026-11-07/12数字保留为历史记录；本轮新增工作区evidence/Web/runtime不能因HEAD已含上游就称已提交。原reviewed字段与proposed状态不改变。
+只读核对HEAD `84d2d0f`，`origin/dev ba36543`是其祖先，含PR #20与此前GPS；合并已完成。第0–9节的79e8dc3、“第二批工作区未提交”及2026-11-07/12数字保留为历史记录；本轮evidence/Web/runtime已提交推送为85c8e5b至PR #16。原reviewed字段与proposed状态不改变。
 
 ### 当前代码与路由
 
@@ -27,11 +27,11 @@ based-on: 设计 v1.2；信号补充；插件 MVP；工作分解 v1.2；origin/d
 | `/tmp/ear-real-ui-fix-20261118.json` | EAR-REAL-INDEPENDENT-001/002两项P2已修；Node144通过（全UI集合另1跳过）；Chromium5个合成检查通过 | file fixture、mock fetch、隔离网络；不是线上HTTP/CSP/重部署验证。错误态保持、节点计账与详情异常边界修复；额外SCAN_DROPPED_ROW_COMPLETENESS未关闭 |
 | `/tmp/ear-real-deployment-20261118.json` | 独立8服务空库、7healthy+relay无探针；真实Chromium无mock，普通用户鉴权与17类0行通过 | 初始部署、UI修复前；没有真实数据、LLM/geocoder/动作；旧ear-dev未动 |
 
-历史默认 **7 failed/3197 passed/861 skipped** 保留为失败快照：GPS合成夹具4、旧prototype断言2、umask私有journal夹具1，均已修并由上述默认最终结果取代。未跑最新四开关全量，不能用历史四开关数字覆盖本轮未测项。
+历史默认 **7 failed/3197 passed/861 skipped** 保留为失败快照：GPS合成夹具4、旧prototype断言2、umask私有journal夹具1，均已修并由上述默认最终结果取代。后续代码85c8e5b远端run44342822642四开关均为1，已成功：4058 passed、13 skipped、2 warnings，Node144通过；不含真实资料或真实LLM。
 
 **API-only最终重部署已核对完成**：`/tmp/ear-real-ui-deployment-final-20261118.json`记录83项HTTP/镜像检查与真实Chromium无mock验证通过，修复后flat资产已在线。原始初始化回执保留，私有更新回执另存；helper `up`仍拒绝 `frozen_source_or_images_changed`，尚无已审核的回执采纳/重启恢复流程。此前building状态属于中间观察，不能替代最终记录。
 
-运行项目 `ear-real-sample-20261118` 在vm-remote；Docker internal网络未发布host ports，当前回环18100/18186由私有有界userspace forwarder提供，transient用户单元不跨主机重启。重启后须操作者人工恢复并验证，非自动恢复/完整可复现承诺。**真实源专用Evidence及embedding读grant未证明，NO REAL DATA IMPORTED；不借admin。** 使用方式与所有证据边界统一见[事实交接](../../../ai-docs/plans/real-sample-web-mcp.md)；只读[MCP提案](../../../docs/proposals/mcp-interface.md)仍待采纳。
+运行项目 `ear-real-sample-20261118` 在vm-remote；Docker internal网络未发布host ports，当前回环18100/18186由私有有界userspace forwarder提供，transient用户单元不跨主机重启。重启后须操作者人工恢复并验证，非自动恢复/完整可复现承诺。**真实链路已通过：3段录音、1007原始、125归属、重入0新增，真实Chromium无mock验证。源专用身份依用户授权临时接受额外写能力，实际只GET；现已撤销且关闭专用连接。** 没有LLM提取，自动人物未质量校准，dependency队列尚有积压。 使用方式与所有证据边界统一见[事实交接](../../../ai-docs/plans/real-sample-web-mcp.md)；只读[MCP提案](../../../docs/proposals/mcp-interface.md)仍待采纳。
 
 ## 0. 历史状态与使用（2026-11-07/12）
 

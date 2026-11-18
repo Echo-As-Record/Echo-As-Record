@@ -17,11 +17,11 @@ based-on: 设计 v1.2、信号补充、插件 MVP、确认索引；integration/m
 
 2026-11-18 本轮只读核对得到（与早先 PR 审查分开）：
 
-- 当前 HEAD 为 `84d2d0fa1291b3b454a3ad6e9786826c41e6373c`，本地 `origin/dev` 为 `ba36543dfb7c24551b6c591c9acc6287be0871db` 且是 HEAD 的祖先；已包含 PR #20 手机录音接收及此前 GPS 合并。早先 `697de3b` 正在合并 `7f98132`、尚未包含 ba36543 的描述已过时；当前新 evidence/Web/runtime 仍须区分工作区文件与已提交历史。
-- 当前⑥已接 `GET /v1/evidence/search`，参数为 `start`、`end`、`q`、`limit`、`cursor`；`/workspace/` 已挂载 flat 三文件只读 viewer。**`/v1/evidence` 与 `/v1/persons` 不是当前路由**；人物现经 `/v1/records/person` 读取，没有专用服务端精确姓名查询。已部署的独立空库与真实 Chromium 无 mock 验证不等于已导入真实数据。
+- 当前 HEAD 为 `84d2d0fa1291b3b454a3ad6e9786826c41e6373c`，本地 `origin/dev` 为 `ba36543dfb7c24551b6c591c9acc6287be0871db` 且是 HEAD 的祖先；已包含 PR #20 手机录音接收及此前 GPS 合并。早先 `697de3b` 正在合并 `7f98132`、尚未包含 ba36543 的描述已过时；本轮evidence/Web/runtime后续已提交推送为85c8e5b，验收记录见工程交接。
+- 当前⑥已接 `GET /v1/evidence/search`，参数为 `start`、`end`、`q`、`limit`、`cursor`；`/workspace/` 已挂载 flat 三文件只读 viewer。**`/v1/evidence` 与 `/v1/persons` 不是当前路由**；人物现经 `/v1/records/person` 读取，没有专用服务端精确姓名查询。后续已完成3段真实录音的导入/归属/真实Chromium无mock验证，但不是LLM提取或MCP启用。
 - **MCP 仍仅 proposed；本候选没有安装/接线 MCP 代码或默认启用客户端配置。** Web/API 已存在不构成 MCP 的采纳、实现、协议兼容或安全审查关闭证明。
 - 历史 PR #23（`api/mcp`，head `a7baf9eb7713e8eacf595386b8088bb28df8ea64`）包含 `evidence.py`、`mcp.py`、stdio 测试、客户端配置与依赖变更；当时 `gh` 观察为 OPEN、非 draft、check SUCCESS、CONFLICTING / DIRTY。本轮不刷新该 PR 的远端状态，也不把旧成功 CI 当本候选结果。原 PR 工具含 `find_evidence`、`find_person`、`new_request_id`、`correct_attribution`、`feedback_status`；“用户已确认”的工具描述不构成可信确认。
-- 当前 `evidence.py` 是主 agent 整合的有界 live 实现，不是原 PR 全库 snapshot handler。真实空库浏览、GPS/profile 修复、默认全套、UI 两项 P2 修复与最终 API 重部署的各自证据/限制统一见[工程交接](../../ai-docs/plans/real-sample-web-mcp.md)。源系统专用 Evidence 与 embedding 读授权尚未证明，**没有真实数据导入**；不借管理员令牌，不调用真实模型、geocoder 或外部动作。
+- 当前 `evidence.py` 是主 agent 整合的有界 live 实现，不是原 PR 全库 snapshot handler。真实空库浏览、GPS/profile 修复、默认全套、UI 两项 P2 修复与最终 API 重部署的各自证据/限制统一见[工程交接](../../ai-docs/plans/real-sample-web-mcp.md)。后续依用户明确授权，用具有额外写能力的专用测试身份仅执行固定范围GET，完成3段真实导入；身份现已撤销。未修改源代码/重启，不借管理员，不调用真实模型、geocoder或外部动作；这个临时测试例外不自动放宽未来MCP权限设计。
 
 ## 2. 边界和架构
 

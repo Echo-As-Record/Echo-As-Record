@@ -1,19 +1,19 @@
 ---
 audience: human
 doc-type: reference
-based-on: 设计 v1.2、信号补充、插件 MVP、工作分解 v1.2；origin/dev 376294d 的 contracts 与①代码；api/gateway-mvp 功能分支（待合并）中 services/api 的实际源码（config、cli、app、boundary、business、models、upstream、execution、execution_journal、static）与 deploy 覆盖文件；2026-11-07 本机取证记录（均在 /tmp，不属于仓库）：ear-67-browser-state.json、ear-api-gateway-deploy-state.json、ear-67-postfix-review.json、ear-67-full-acceptance.log、ear-67-acceptance-fixes.json、ear-67-full-v2.log（及 .exit）、ear-67-static-v2.log、ear-67-static-final.log（及 .exit）；用户对⑥⑦实现与文档同步的授权；2026-11-12 增补依据：services/api 工作区未提交的源码（attribution_results.py、business.py、execution.py、execution_journal.py、app.py、config.py、execution_http.py，作者读源码与 git diff，不运行测试）、services/attribution 的 create_place.py 与 feedback.py、services/extraction 的 domain.py 与 suggestions.py（只读核对）、仓库外摘要 /tmp/ear-mvp-api-place.json 与 /tmp/ear-mvp-action-protocol.json（作者读取，其中的测试结果作者未复跑，只用 pytest --collect-only 与文件哈希核对）、git 记录（8750a83 即 #11 是 HEAD 79e8dc3 的祖先）；2026-11-12 action-v2 HTTP 与证据校验增补依据：execution_http.py、execution.py、app.py、config.py、cli.py 源码与仓库外摘要 /tmp/ear-mvp-{action-http,action-evidence-fix,eight-steps}.json（作者读取并核对各自的退出码文件、日志末行与 junit 用例名，测试结果未复跑）；本文不新增用户授权记录，也不增加用户决定；未填写或改动任何 reviewed 字段；2026-11-18事实同步：HEAD84d2d0f已含origin/dev ba36543 / PR20及此前GPS；实际app/evidence/flat workspace、core profile；仓库外ear-real-deployment、ear-real-ui-fix、ear-gps-integration及ear-real-default-final的20261118产物；本轮限定五文档授权（功能测试读取产物而非重跑）
+based-on: 设计 v1.2、信号补充、插件 MVP、工作分解 v1.2；origin/dev 376294d 的 contracts 与①代码；api/gateway-mvp 功能分支（待合并）中 services/api 的实际源码（config、cli、app、boundary、business、models、upstream、execution、execution_journal、static）与 deploy 覆盖文件；2026-11-07 本机取证记录（均在 /tmp，不属于仓库）：ear-67-browser-state.json、ear-api-gateway-deploy-state.json、ear-67-postfix-review.json、ear-67-full-acceptance.log、ear-67-acceptance-fixes.json、ear-67-full-v2.log（及 .exit）、ear-67-static-v2.log、ear-67-static-final.log（及 .exit）；用户对⑥⑦实现与文档同步的授权；2026-11-12 增补依据：services/api 工作区未提交的源码（attribution_results.py、business.py、execution.py、execution_journal.py、app.py、config.py、execution_http.py，作者读源码与 git diff，不运行测试）、services/attribution 的 create_place.py 与 feedback.py、services/extraction 的 domain.py 与 suggestions.py（只读核对）、仓库外摘要 /tmp/ear-mvp-api-place.json 与 /tmp/ear-mvp-action-protocol.json（作者读取，其中的测试结果作者未复跑，只用 pytest --collect-only 与文件哈希核对）、git 记录（8750a83 即 #11 是 HEAD 79e8dc3 的祖先）；2026-11-12 action-v2 HTTP 与证据校验增补依据：execution_http.py、execution.py、app.py、config.py、cli.py 源码与仓库外摘要 /tmp/ear-mvp-{action-http,action-evidence-fix,eight-steps}.json（作者读取并核对各自的退出码文件、日志末行与 junit 用例名，测试结果未复跑）；本文不新增用户授权记录，也不增加用户决定；未填写或改动任何 reviewed 字段；2026-11-18事实同步：HEAD84d2d0f已含origin/dev ba36543 / PR20及此前GPS；实际app/evidence/flat workspace、core profile；仓库外ear-real-deployment、ear-real-ui-fix、ear-gps-integration及ear-real-default-final的20261118产物；本轮实现授权及文档分工（功能测试读取产物而非重跑）
 ---
 
 # ⑥ 客户端与 API
 
 ## 2026-11-18 当前状态（优先于下文历史批次措辞）
 
-HEAD **`84d2d0f` 已包含 `origin/dev ba36543`（PR #20）及此前GPS**；不再处于697de3b/7f98132合并中。旧79e8dc3/2026-11-12的“第二批工作区未提交”仅是历史观察；本轮新evidence/viewer/runtime及修复仍有未提交工作区文件，不能将其一概说成已提交。保留③可信回执/`create_place`、v1.2、action-v2默认关闭与未知不自动重试；核心业务读取共17类（含rule_selection、gps_geocode），profile已增加extraction的gps_geocode读取授权，不自动修改已有库grant。
+HEAD **`84d2d0f` 已包含 `origin/dev ba36543`（PR #20）及此前GPS**；不再处于697de3b/7f98132合并中。旧79e8dc3/2026-11-12的“第二批工作区未提交”仅是历史观察；本轮代码已提交并推送为85c8e5b至PR #16。保留③可信回执/`create_place`、v1.2、action-v2默认关闭与未知不自动重试；核心业务读取共17类（含rule_selection、gps_geocode），profile已增加extraction的gps_geocode读取授权，不自动修改已有库grant。
 
 - **已有真实入口**：`GET /v1/evidence/search` 与 flat只读 `/workspace/`；**`/v1/evidence` 和 `/v1/persons` 不是当前路径**，人物用 `/v1/records/person`，没有专用精确姓名API。浏览页不提供纠正、审核、执行或恢复操作；普通API令牌本身不是新增的只读scope。
-- **已有独立空部署**：vm-remote项目 `ear-real-sample-20261118`，8服务运行、7healthy，relay无健康探针。初始部署报告已用真实Chromium、无mock验证普通用户鉴权、17类空结果和空页面。旧ear-dev未动。Docker内网未实际发布host ports，回环可达性依赖私有有界用户态转发；临时用户单元不跨重启持久化，重启后须操作者人工恢复并复验，**不宣称完整可复现或自动恢复**。
-- **没有真实数据导入**：源系统专用Evidence与embedding读授权未证明，不借admin；未调用真实LLM/geocoder/外部动作，④/⑦及相关执行器未启动。
-- **最新已读验证**：默认全套exit0，**3209 passed/862 skipped/2 warnings**；GPS定向真实PG/NATS **10 passed**（两个八步均通过，但输入/模型/效果合成），另有347内存与926契约/API，范围重叠不相加。**没有最新四开关全量重跑**。
+- **已有独立部署（初始为空，现已导入3段）**：vm-remote项目 `ear-real-sample-20261118`，8服务运行、7healthy，relay无健康探针。初始部署报告已用真实Chromium、无mock验证普通用户鉴权、17类空结果和空页面。旧ear-dev未动。Docker内网未实际发布host ports，回环可达性依赖私有有界用户态转发；临时用户单元不跨重启持久化，重启后须操作者人工恢复并复验，**不宣称完整可复现或自动恢复**。
+- **真实最小链路已通过**：3段录音、1007条原始记录、125条需归属输入全部归属；重复导入0新增；真实Chromium无mock验证转写/检索/人物/历史。没有启动真实LLM/geocoder/外部动作，活动/产物仍为空。用户明确接受专用测试凭据具有额外写能力，实际请求限定GET；测试结束已撤销该身份并关闭专用源连接。
+- **最新已读验证**：默认全套exit0，**3209 passed/862 skipped/2 warnings**；GPS定向真实PG/NATS **10 passed**（两个八步均通过，但输入/模型/效果合成），另有347内存与926契约/API，范围重叠不相加。**代码85c8e5b远端四开关CI已成功：4058 passed/13 skipped/2 warnings，Node144通过**（run44342822642）。
 - **UI复审**：两个P2已修，Node144通过、Chromium5个合成检查通过（mock fetch，非线上验收）。最终API-only重部署报告 `/tmp/ear-real-ui-deployment-final-20261118.json` 已核对完成，83项HTTP/镜像检查和真实Chromium无mock验证通过，修复资产已在线。初始化材料保留；启动helper仍拒绝变化后的冻结镜像，更新回执采纳与重启恢复尚未完成，见恢复交接。
 - **MCP仅proposed，未安装/接线代码或启用客户端配置**。见[只读优先MCP提案](../../docs/proposals/mcp-interface.md)；实际证据、旧失败、重部署终态、访问及重启边界统一见[事实与恢复交接](../../ai-docs/plans/real-sample-web-mcp.md)。不是完整MVP或生产验收。
 
@@ -25,7 +25,7 @@ HEAD **`84d2d0f` 已包含 `origin/dev ba36543`（PR #20）及此前GPS**；不�
 
 ## 1. 历史批次状态（2026-11-07/12）
 
-本节保留当时的交付与未测边界；“未提交/未部署/浏览器只对假①”等仅描述对应批次，不覆盖上面的2026-11-18空库真实浏览与工作区状态。
+本节保留当时的交付与未测边界；“未提交/未部署/浏览器只对假①”等仅描述对应批次，不覆盖上面的2026-11-18真实小样本验收。
 
 **部分交付，待审。这不是完整的 ⑥ MVP，也不是生产就绪。** 首批代码已在 dev 的历史中（git 记录里 8750a83，即 #11，是 HEAD 79e8dc3 的祖先；早先“功能分支 `api/gateway-mvp` 待合并”的说法已过时）。第二批已于 `697de3b` 提交至 PR #16（未合并）；以下旧“工作区”措辞保留为当时记录，不代表当前Git状态。
 

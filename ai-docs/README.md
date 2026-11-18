@@ -28,7 +28,7 @@ based-on: README.md；docs/README.md；本轮已确认设计v1.2；代码基线o
 | 全局契约/实施顺序 | [实施计划](plans/mvp-implementation.md) |
 | MVP 跑通：阶段门槛、首批任务、演练维度（输入/模型/外部适配器/平台）、真实数据边界与授权范围 | [跑通计划](plans/mvp-runnable.md) |
 | MVP 第二批切片的历史运行时交接：初始化、worker与各时点验收 | [运行时交接](plans/mvp-runtime-handoff.md)（历史快照；“第二批未提交/PR16 CI不含”不描述当前HEAD） |
-| 2026-11-18 当前事实：HEAD84d2d0f含ba36543/PR20与GPS；真实evidence API、flat只读Web、独立空运行时及验证/重启边界 | [事实与恢复交接](plans/real-sample-web-mcp.md)（默认3209通过/862跳过；GPS定向10通过但输入/模型/效果合成，范围不相加；无最新四开关；无真实数据导入，源Evidence/embedding授权未证明；最终API重部署已核对完成；helper更新回执采纳/重启恢复未完） |
+| 2026-11-18 当前事实：HEAD84d2d0f含ba36543/PR20与GPS；真实evidence API、flat只读Web、独立空运行时及验证/重启边界 | [事实与恢复交接](plans/real-sample-web-mcp.md)（默认3209通过/862跳过；GPS定向10通过但输入/模型/效果合成，范围不相加；代码85c8e5b远端四开关4058通过/13跳过；3段真实导入/归属/浏览通过，临时源身份已撤销；最终API重部署已核对完成；helper更新回执采纳/重启恢复未完） |
 | MCP只读优先、权限/外发/确认与启用门槛 | [MCP提案](../docs/proposals/mcp-interface.md)（proposed；未安装/接线，不因Web/API已部署而视为MCP交付） |
 | 原结构提案 | [历史参考](proposals/module-internal-structure.md)，已superseded，不照搬旧API与职责 |
 | 原依赖提案 | [历史来源](../docs/proposals/dependency-refinement.md)，最终以设计及确认索引为准 |
