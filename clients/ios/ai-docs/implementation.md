@@ -1,14 +1,14 @@
 ---
 audience: ai
 doc-type: reference
-based-on: 本轮负责人明确实施授权；docs/proposals/phone-recorder-extraction.md；octopus-flutter 67869770 的 LocalRecordingPhoneAudioInput.swift、PhoneLocalRecordingRuntimeSessionDriver.swift、LocalRecordingPhoneAudioNotifications.swift、LocalRecordingPcmRecoveryEncoder.swift、LocalRecordingActivePartRecovery.swift、LocalRecordingAutoContinuation.swift、LocalRecordingContextWriter.swift、LocalRecordingGzipJsonlRecovery.swift、LocalRecordingPcTransferSegmentUploader.swift；2026-11-12 context_0002.jsonl.gz 真实样本
+based-on: 本轮负责人明确实施授权；docs/proposals/phone-recorder-extraction.md；octopus-flutter 67869770 的 LocalRecordingPhoneAudioInput.swift、PhoneLocalRecordingRuntimeSessionDriver.swift、LocalRecordingPhoneAudioNotifications.swift、LocalRecordingPcmRecoveryEncoder.swift、LocalRecordingActivePartRecovery.swift、LocalRecordingAutoContinuation.swift、LocalRecordingContextWriter.swift、LocalRecordingGzipJsonlRecovery.swift、LocalRecordingPcTransferSegmentUploader.swift；2026-11-12 context_0002.jsonl.gz 真实样本；2026-11-18 授权移植主检出目录 11-17 / 11-18 中断修复（不含实时转写）
 ---
 
 # EarRecorder 实现与验证
 
 ## 范围与入口
 
-只新增 `clients/ios/`。不提交、不推送、不切换 `phone/ear-recorder-proposal`，不修改 Python 或 `services/ingest/`。实现时依据负责人直接授权，提案现已采纳。用户入口见[README](../README.md)，需求来源见[提案](../../../docs/proposals/phone-recorder-extraction.md)。此前没有 iOS 模块 README，本次创建。
+首轮实现只新增 `clients/ios/`，提案现已采纳。本轮按负责人授权在 `clients/ios-recorder` 新增本地提交，不推送；主检出目录仅作只读来源，不修改 Python 或 `services/ingest/`。用户入口见[README](../README.md)，需求来源见[提案](../../../docs/proposals/phone-recorder-extraction.md)。此前没有 iOS 模块 README，本次创建。
 
 规范词汇为 `Audio`（音频）、`Context`（上下文流）、`Location`（系统定位/运动）、`Runtime`（采集状态机）、`Store` / `Manifest` / `Segment`（持久状态）、`Upload` / `Transfer`（上传状态）、`Recovery`（音频恢复）、`Diagnostics`（诊断）。没有引入 Flutter 原来的多层 Driver/Coordinator/Projection；新目录没有需要迁移的旧名称。`GzipRecovery` 从原实现裁剪移植，保留有界扫描、SHA256 完整性核对与原子替换。
 
@@ -37,7 +37,7 @@ based-on: 本轮负责人明确实施授权；docs/proposals/phone-recorder-extr
 
 - `LocalRecordingPhoneAudioInput`：沿用 AVAudioEngine → AVAudioConverter → 16k mono PCM16 → AVAudioFile AAC 的转换及连续 sink 交换。码率固定 32 kbps，不回退到系统默认码率。增加 mixWithOthers、默认扬声器、可选 HFP；没有 Flutter、输入音量可视化或 100Hz IMU。
 - 原 writer 使用 `.active.m4a` 工作文件；这里以 `.opening.m4a` 打开 AVAudioFile 后立即重命名正在写入的 inode 为 `.m4a.part`，PCM 备份同步写。正常切段不重启 engine。每次写入只保留本次小块，不异步排队音频缓冲。
-- `PhoneLocalRecordingRuntimeSessionDriver` / Notifications：实现为一个串行 Runtime，DispatchSourceTimer 每秒检查切段/重试。中断、engine configuration、媒体服务重置触发封口；所有 routeChange 仅记录原因，不切段，真正停机由配置变化通知和 tick 检测处理。旧 engine 通知仍过滤。无限退避替代原有限尝试；interruption ended 是立即重试信号，不是允许重试的必要条件。
+- `PhoneLocalRecordingRuntimeSessionDriver` / Notifications：实现为一个串行 Runtime，DispatchSourceTimer 每秒检查切段/重试。中断、engine configuration、媒体服务重置触发封口；所有 routeChange 仅记录原因，不切段，真正停机由配置变化通知和 tick 检测处理。旧 engine 通知仍过滤。系统中断 began 设置 `systemInterrupted`，等待 ended、通话结束、回前台或显式开始解除；等待期间不激活。解除后激活失败按无限退避重试，ended 绕过旧退避。普通中断也申请后台恢复窗口，由系统到期回调释放，不再自行设置 12 秒上限。
 - `LocalRecordingPcmRecoveryEncoder` / ActivePartRecovery：以 64 KiB 块重编码备份，全文件解码验证 AAC。PCM 真实字节数决定时长；若 AAC 只是明显短于备份的可解码前缀，仍重编码。失败保留原文件并标记人工恢复，不制造成功或猜时长。
 - `LocalRecordingAutoContinuation`：按最新 manifest 的 `userStopped` 判定，非用户停止的 paused 会话也可续录；先恢复，再建新 UUID 会话，记录 continuedFrom 与 auto_continuation。用户停止先落盘，避免停止期间被杀后误续录。
 - Context 样本确认 `elapsedMs` 相对会话开始，字段 `device_model` / `os_version`、`locationAccuracy` / `locationTimestamp` / `locationMeta` 大小写不改。新会话无定位时使用 null，不伪造坐标；只将变化字段写入 delta。新定位触发为 continuous/source core_location_update。CLVisit 的 event 沿用 event/changed/meta 形状，reason 为 visit_arrival/visit_departure。运动分类为 motionActivity 对象（type/confidence），无原始惯性数据。
@@ -192,3 +192,21 @@ Runtime 在启动恢复前订阅 CXCallObserver，监听最后一通电话结束
 ### 手填 HTTP 直连修复（2026-11-18）
 
 `Upload.swift` 原先把所有 HTTP 地址都当作加密中继（`Relay.accepts` 只看 scheme），未配对时报“请先扫码配对中继”，手填 `http://<名字>.local:8791` 无法上传。现改为仅在已配对时走 `/api/v1/relay`，未配对时普通直连；完成回调按请求是否带 `X-Ear-Request` 决定是否校验中继回执。验证：模拟器 `build` 与 `build-for-testing` 通过；未在真机复测手填直连。
+
+### 中断恢复基线（2026-11-17 / 11-18）
+
+本节依据主检出目录未提交代码及其真机联调记录；本分支仅移植中断处理，不含实时转写。保留原有 HTTP 直连修复和去个人配置改动。
+
+`Interruption` 是持久中断记录，manifest 的可选 `interruption` 保存 ID、trigger、observedAt 和 audioEndedAt，旧 manifest 缺少该字段仍可读取。续录继承未结束记录；缺少记录时使用 `unknown_before_relaunch`，不推断起因。`diagnostic()` 统一附加会话、段号、时间和 interruption_id；失败在清理前记录 stage、NSError 域/码和路由，成功记录 interruption_resolved 和可计算的 audio_gap_ms，人工停止独立记录 user_stop。
+
+`beginRecovery` 将后台窗口扩展到普通系统中断和引擎停止；`recoveryID` 标识当前窗口，`expireRecovery` 忽略旧窗口的到期回调。系统到期、成功、通话开始或人工停止调用 `endRecovery`。结束通知可重新申请窗口；解除系统等待后，输入从空变为可用的路由通知绕过退避。`audio_activate` 失败只停止音频资源，不重复封口；后续启动阶段失败仍按既有逻辑封口。
+
+`Audio.stop(preservingSession:)` 在 Runtime 持有 interruption 时保留音频会话，用户停止先清除记录再释放会话；协议扩展保留无参数 stop 的普通释放语义。中断 began 到 ended 期间禁止激活；通话结束、回前台或显式开始也可解除等待。没有这些事件时持续暂停，没有定时兜底。
+
+来源验证记录：11-17 观察到输出从 A2DP 切到 HFP、输入为空且无活跃 CallKit 电话，证据不能确定占用方或进程退出原因。11-18 首轮闹钟测试仅保留会话仍提前激活，报 2003329396、560557684 且缺 ended；加入系统等待后，第二轮锁屏闹钟 16:47:13.858 收到 ended，16:47:14.057 续录，响应约 0.2 秒，总缺音 14.018 秒包含响铃，PCM 持续增长。这些是来源版本的历史真机记录，不是本分支重新部署验收；长时间响铃及稍后提醒未测。
+
+移植的 XCTest 覆盖等待结束期间不激活、停止释放会话、结束通知覆盖退避、后台窗口到期后结束通知恢复，并保留电话测试中的会话保留断言。未移植 preview 测试。
+
+本分支验证（2026-11-18，沙箱）：README 的模拟器 build、generic 真机 `CODE_SIGNING_ALLOWED=NO build`、模拟器 build-for-testing 均成功，构建使用 Xcode Developer 路径和 `/tmp/ear-pr21-*` DerivedData。测试构建含 26 个测试方法；App Intents 阶段输出 `Could not archive SSU artifacts`，最终仍为 TEST BUILD SUCCEEDED。`simctl list devices available` 报 CoreSimulatorService 连接无效 / Connection refused；随后 `xcodebuild test` 未找到 iPhone 15 destination，退出 70，未执行 XCTest，也未重新部署真机。
+
+仓库 ruff check、ruff format --check（200 files）、pyright（0 errors）通过。pytest 为 81 failed、1463 passed、631 skipped、96 errors；在 `/tmp` 导出的 `origin/dev`（7f98132）使用相同 Python 环境运行，结果计数及全部 177 个失败/错误 ID 完全一致。输出包括 socket PermissionError、execution_journal_unavailable 和依赖 Linux `/proc/self/fd` 的 journal 失败，未修改范围外代码。pytest 使提交前 `&&` 链中止，因此另行运行普通文档检查；它与 `--base origin/dev` 均通过（51 个 Markdown），人工 review 清单不代表审定。`git diff --check` 及旧恢复标识全仓检索通过。

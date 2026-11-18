@@ -1,7 +1,7 @@
 ---
 audience: human
 doc-type: guide
-based-on: 本轮负责人对 iOS 原生录音 app 的明确实施授权；docs/proposals/phone-recorder-extraction.md；octopus-flutter 67869770
+based-on: 本轮负责人对 iOS 原生录音 app 的明确实施授权；docs/proposals/phone-recorder-extraction.md；octopus-flutter 67869770；2026-11-18 授权移植主检出目录 11-17 / 11-18 中断修复（不含实时转写）
 ---
 
 # Ear Recorder（iOS 17+）
@@ -142,7 +142,7 @@ Library/Application Support/EarRecorder/
 
 活动音频为 `segment_0001.m4a.part`，同时保留 `segment_0001.pcm.part`（16 kHz、mono、PCM16 little endian）。活动 Context 为 `context_0001.jsonl.gz.part`。封口和恢复均先校验，再标为可上传。都无法恢复的段标记 `manual_recovery_required`，保留原文件；不要当作成功上传。manifest 用原子替换写入。
 
-启动先扫描恢复，再根据最新会话的 `userStopped` 决定是否新建会话；新会话记录 `auto_continuation`。录音被电话中断时封口当前段，CallKit 显示仍有电话进行时等待，最后一通结束时申请最多 12 秒的后台执行时间，等待约 1 秒让系统释放音频路由，再尝试开启下一段；实际执行时间由 iOS 决定。已停止录音的会话保持停止。系统允许 App 执行时，位置和音频路由回调也可触发到期重试。激活失败后按 1、2、5、10、30、60 秒持续重试，随后每 60 秒重试，回前台立即再试。诊断日志记录恢复、位置唤醒、上传结果和每 5 分钟的可用内存/进程占用；超过 5 MiB 后轮转，保留上一份。
+启动先扫描恢复，再根据最新会话的 `userStopped` 决定是否新建会话；新会话记录 `auto_continuation`。中断封口和失败重试清理保留系统音频会话状态，用户停止时释放会话。收到系统中断开始后，等待结束通知或通话结束、用户回前台或显式开始再激活，避免响铃期间反复激活。普通系统音频中断时，App 在封口前申请系统授予的后台恢复时间，中断结束后在系统允许的时间内重试；窗口过后收到中断结束通知时重新申请恢复时间。录音被电话中断时封口当前段，CallKit 显示仍有电话进行时等待，最后一通结束时申请系统授予的后台执行时间，等待约 1 秒让系统释放音频路由，再尝试开启下一段；实际执行时间由 iOS 决定。已停止录音的会话保持停止。系统允许 App 执行且已解除系统中断等待时，位置和音频路由回调也可触发到期重试；中断结束或等待解除后输入从无到有时立即重试。激活失败后按 1、2、5、10、30、60 秒持续重试，随后每 60 秒重试，回前台立即再试。诊断日志记录恢复、位置唤醒、上传结果和每 5 分钟的可用内存/进程占用；超过 5 MiB 后轮转，保留上一份。
 
 在 Xcode Devices and Simulators 中下载 app 容器，可取回 manifest、录音和日志。日志不记录 token、完整服务 URL 或音频正文。
 
@@ -169,3 +169,9 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project cli
 ### 扫码配对接收端
 
 在 Mac 上运行[接收端配对命令](../../services/ingest/README.md#设备配对与公网入口)，使用 iPhone 系统相机扫码，核对接收端 UUID 后点「配对」，并允许访问本地网络。已配对时设置页显示 Mac 的 UUID。手机解析该 UUID 的 Bonjour 服务，直连不可用时尝试二维码中的中继；HTTPS 路径校验同一台 Mac 的证书。显式配对的 HTTP 备用入口使用二维码中的配对秘密加密请求和回执。之前手填地址的用户可继续沿用原设置。重新配对会把待传和今后录音的目的地切换到确认的 Mac。
+
+### 断录排障
+
+查断录时，在本机导出的 `diag.jsonl` 和轮转文件 `diag.previous.jsonl` 里先找 `interruption`，按同一 `interruption_id` 串起恢复窗口、路由、重试失败和 `interruption_resolved`。其中 `system_reason` 来自系统通知；没有具体原因时显示 unknown。通话方向与接通状态可辅助判断。进程重启时用 manifest 里的未结束中断连接前后两次运行；未观察到触发事件的重启标记为 unknown_before_relaunch。audio_gap_ms 用上一段有效音频的结束位置和新段开始位置估算，缺少端点时省略。
+
+若始终没有收到系统中断结束通知，也没有通话结束、回前台或显式开始，当前实现会继续等待；定时器和位置回调不会解除这个等待。

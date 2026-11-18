@@ -6,7 +6,10 @@ protocol AudioInput: AnyObject {
     func activate(bluetooth: Bool) throws
     func start(at url: URL) throws
     func rotate(to url: URL) throws -> Int64
-    func stop() throws -> Int64
+    func stop(preservingSession: Bool) throws -> Int64
+}
+extension AudioInput {
+    func stop() throws -> Int64 { try stop(preservingSession: false) }
 }
 final class Audio: AudioInput {
     static let format = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16_000, channels: 1, interleaved: true)!
@@ -100,10 +103,12 @@ final class Audio: AudioInput {
         lock.lock(); let previous = sink; sink = next; lock.unlock()
         return try previous?.finish() ?? 0
     }
-    func stop() throws -> Int64 {
+    func stop(preservingSession: Bool) throws -> Int64 {
         if let engine { engine.inputNode.removeTap(onBus: 0); engine.stop() }
         engine = nil
-        if sessionActive {
+        // During an interruption, iOS owns session deactivation and resumption.
+        // Explicit deactivation here changes that state while awaiting its end.
+        if sessionActive && !preservingSession {
             do {
                 try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
                 sessionActive = false

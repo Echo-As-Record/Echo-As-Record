@@ -48,7 +48,14 @@ struct Segment: Codable {
         try c.encode(audio, forKey: .audio); try c.encode(context, forKey: .context); try c.encodeIfPresent(recovery, forKey: .recovery)
     }
 }
+struct Interruption: Codable {
+    var id = UUID().uuidString.lowercased()
+    let trigger: String
+    let observedAt: Int64
+    let audioEndedAt: Int64?
+}
 struct Manifest: Codable {
+    var interruption: Interruption?
     var groupId = UUID().uuidString.lowercased()
     var startedAt = epochMS()
     var status: SessionState = .recording

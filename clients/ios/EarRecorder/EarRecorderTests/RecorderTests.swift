@@ -246,6 +246,7 @@ final class RecorderTests: XCTestCase {
                 userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.ended.rawValue]))
             XCTAssertFalse(audio.running)
             XCTAssertEqual(audio.stops, 1)
+            XCTAssertTrue(audio.preservedSession)
             runtime.updateCalls(active: true) // A second call is still active.
             runtime.updateCalls(active: false)
             runtime.updateCalls(active: false)
@@ -259,6 +260,76 @@ final class RecorderTests: XCTestCase {
         runtime.stop(); runtime.queue.sync {}
         runtime.queue.sync { runtime.updateCalls(active: true); runtime.updateCalls(active: false) }
         XCTAssertFalse(audio.running)
+    }
+    func testSystemInterruptionWaitsForEndBeforeActivating() throws {
+        let store = try Store(root: root), audio = FakeAudio()
+        var clock: Int64 = 1000
+        let runtime = Runtime(store: store, audio: audio, location: FakeLocation(), now: { clock })
+        runtime.start(); runtime.queue.sync {}
+        runtime.queue.sync {
+            let began = Notification(name: AVAudioSession.interruptionNotification, userInfo:
+                [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue])
+            runtime.handleAudioNotification(began)
+            let attempts = audio.activations
+            for _ in 0..<5 { clock += 60_000; runtime.tick() }
+            XCTAssertEqual(audio.activations, attempts)
+            XCTAssertFalse(audio.running)
+            runtime.handleAudioNotification(Notification(name: AVAudioSession.interruptionNotification,
+                userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.ended.rawValue]))
+            XCTAssertTrue(audio.running)
+        }
+        runtime.stop(); runtime.queue.sync {}
+    }
+    func testUserStopReleasesInterruptedSession() throws {
+        let audio = FakeAudio()
+        let runtime = Runtime(store: try Store(root: root), audio: audio, location: FakeLocation())
+        runtime.start(); runtime.queue.sync {}
+        runtime.queue.sync {
+            runtime.handleAudioNotification(Notification(name: AVAudioSession.interruptionNotification,
+                userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue]))
+        }
+        XCTAssertTrue(audio.preservedSession)
+        runtime.stop(); runtime.queue.sync {}
+        XCTAssertFalse(audio.preservedSession)
+    }
+    func testEndNotificationOverridesPendingBackoff() throws {
+        let audio = FakeAudio()
+        var clock: Int64 = 1000
+        let runtime = Runtime(store: try Store(root: root), audio: audio, location: FakeLocation(), now: { clock })
+        runtime.start(); runtime.queue.sync {}
+        runtime.queue.sync {
+            runtime.handleAudioNotification(Notification(name: AVAudioSession.interruptionNotification,
+                userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue]))
+            audio.activationDenied = true
+            clock += 1000
+            runtime.handleAudioNotification(Notification(name: AVAudioSession.interruptionNotification,
+                userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.ended.rawValue]))
+            XCTAssertFalse(audio.running)
+            audio.activationDenied = false
+            runtime.handleAudioNotification(Notification(name: AVAudioSession.interruptionNotification,
+                userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.ended.rawValue]))
+            XCTAssertTrue(audio.running)
+        }
+        runtime.stop(); runtime.queue.sync {}
+    }
+    func testSystemInterruptionEndAfterExpiredRecovery() throws {
+        let store = try Store(root: root), audio = FakeAudio()
+        var clock: Int64 = 1000
+        let runtime = Runtime(store: store, audio: audio, location: FakeLocation(), now: { clock })
+        runtime.start(); runtime.queue.sync {}
+        runtime.queue.sync {
+            runtime.handleAudioNotification(Notification(name: AVAudioSession.interruptionNotification,
+                userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue]))
+            audio.activationDenied = true
+            clock += 20_000; runtime.tick()
+            if let token = runtime.recoveryID { runtime.expireRecovery(token) }
+            XCTAssertNil(runtime.recoveryID)
+            audio.activationDenied = false
+            runtime.handleAudioNotification(Notification(name: AVAudioSession.interruptionNotification,
+                userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.ended.rawValue]))
+            XCTAssertTrue(audio.running)
+        }
+        runtime.stop(); runtime.queue.sync {}
     }
     func testRegionRebuildThresholdAndExistingCenter() {
         let region = CLCircularRegion(center: CLLocationCoordinate2D(latitude: 0, longitude: 0), radius: 150, identifier: "ear-latest")
@@ -341,14 +412,17 @@ final class RecorderTests: XCTestCase {
 private final class FakeAudio: AudioInput {
     var running = false
     var stops = 0
+    var preservedSession = false
     var onFailure: ((Error) -> Void)?
     var activationDenied = false
+    var activations = 0
     func activate(bluetooth: Bool) throws {
+        activations += 1
         if activationDenied { throw RecorderError("activation denied") }
     }
     func start(at url: URL) throws { running = true }
     func rotate(to url: URL) throws -> Int64 { 1000 }
-    func stop() throws -> Int64 { stops += 1; running = false; return 1000 }
+    func stop(preservingSession: Bool) throws -> Int64 { stops += 1; preservedSession = preservingSession; running = false; return 1000 }
 }
 private final class FakeLocation: LocationInput {
     var onDelta: (([String: Any]) -> Void)?
