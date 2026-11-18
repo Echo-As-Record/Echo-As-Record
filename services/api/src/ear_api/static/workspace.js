@@ -3469,7 +3469,11 @@ define('./ws-app.js', function (module, require) {
       }
       if (testNoAuth) {
         badge.textContent = session ? '本地测试 · 已连接' : '本地测试 · 未连接';
-        $('session-info').textContent = '无需登录；使用固定普通用户权限。插件管理不可用。';
+        $('session-info').textContent = !session
+          ? '无需登录；正在核对内部身份。'
+          : (session.role === 'admin'
+            ? '无需登录；管理请求使用管理员，业务数据使用普通用户。授权由①逐次复核。'
+            : '无需登录；使用固定普通用户权限。插件管理不可用。');
       }
       $('connect-form').hidden = discovering || testNoAuth;
       const note = $('auth-note');

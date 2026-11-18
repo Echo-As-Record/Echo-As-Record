@@ -40,6 +40,7 @@ class Settings(BaseModel):
     execution_journal: Path | None = None
     execution_action_v2: bool = Field(default=False, strict=True)
     test_no_auth: bool = Field(default=False, strict=True)
+    test_no_auth_role: Literal["user", "admin"] = "user"
     timeout: float = Field(default=10, strict=True, gt=0, le=60, allow_inf_nan=False)
     max_body_bytes: int = Field(default=65536, strict=True, ge=1024, le=65536)
     body_timeout: float = Field(default=10, strict=True, gt=0, le=30, allow_inf_nan=False)
@@ -75,6 +76,8 @@ class Settings(BaseModel):
         ]
         if len(set(credentials)) != len(credentials):
             raise ValueError("identity bindings must be distinct")
+        if not self.test_no_auth and self.test_no_auth_role != "user":
+            raise ValueError("test_no_auth_role=admin requires test_no_auth")
         if self.test_no_auth:
             if self.public_origin is None or httpx.URL(self.public_origin).host not in {
                 "127.0.0.1",
@@ -82,16 +85,26 @@ class Settings(BaseModel):
                 "::1",
             }:
                 raise ValueError("test_no_auth requires an explicit loopback public_origin")
-            if len([b for b in self.bindings if b.role == "user"]) != 1:
-                raise ValueError("test_no_auth requires exactly one ordinary user binding")
+            roles = ("user", "admin") if self.test_no_auth_role == "admin" else ("user",)
+            for role in roles:
+                if sum(b.role == role for b in self.bindings) != 1:
+                    raise ValueError("test_no_auth requires exactly one binding per selected role")
         if self.static_dir is not None and not self.static_dir.is_dir():
             raise ValueError("static directory unavailable")
         return self
 
-    def authenticate(self, authorization: list[str]) -> Binding | None:
+    def authenticate(
+        self, authorization: list[str], *, admin: bool = False, session: bool = False
+    ) -> Binding | None:
         if self.test_no_auth:
-            # No caller input (including an admin bearer) can select another identity.
-            return next(b for b in self.bindings if b.role == "user")
+            # Operator-configured localhost capabilities, selected BEFORE upstream I/O.
+            # Only /me uses the configured session role. Business always uses user;
+            # management uses admin only in explicit admin mode. Never retry another
+            # binding on denial, union grants, or trust caller headers/parameters.
+            role = "user"
+            if self.test_no_auth_role == "admin" and (admin or session):
+                role = "admin"
+            return next(b for b in self.bindings if b.role == role)
         if len(authorization) != 1:
             return None
         value = authorization[0]

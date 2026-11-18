@@ -701,3 +701,22 @@ test('page: test mode auto-connects ordinary user, hides login and explicitly di
   assert.equal(env.dom.n('admin-area').hidden,true);
   assert.ok(env.dom.n('user-note').textContent.includes('插件管理不可用'));
 });
+
+test('page: explicit admin noauth auto-connects and reads real management routes without bearer or writes', async () => {
+  const env = bootPage(c => {
+    if (c.url === '/v1/session') return {body:{test_no_auth:true}};
+    if (c.url === '/v1/me') return {body:{subject:'fixed-admin',role:'admin'}};
+    if (c.url.startsWith('/v1/plugins')) return {body:PLUGIN_LIST};
+    return {body:{items:[],next_cursor:null}};
+  });
+  await env.page.discovery; await settle();
+  assert.equal(env.dom.n('connect-form').hidden,true);
+  assert.equal(env.dom.n('auth-note').hidden,true);
+  assert.equal(env.dom.n('user-panel').hidden,true);
+  assert.equal(env.dom.n('admin-area').hidden,false);
+  assert.match(env.dom.n('session-info').textContent,/管理请求使用管理员，业务数据使用普通用户/);
+  assert.doesNotMatch(env.dom.n('session-info').textContent,/无管理权限|插件管理不可用/);
+  assert.ok(env.f.calls.some(c=>c.url.startsWith('/v1/plugins')));
+  assert.ok(env.f.calls.some(c=>c.url.startsWith('/v1/management/results')));
+  assert.ok(env.f.calls.every(c=>c.method==='GET' && !c.headers.Authorization));
+});

@@ -487,12 +487,16 @@
       $('connect-form').hidden = discovering || testNoAuth;
       if ($('auth-note')) $('auth-note').hidden = discovering || testNoAuth;
       if (testNoAuth) {
-        $('session-info').textContent = '本地测试模式：无需登录；固定普通用户，无管理权限。';
+        $('session-info').textContent = !me
+          ? '本地测试模式：无需登录；正在核对内部身份。'
+          : (me.role === 'admin'
+            ? '本地测试模式：无需登录；管理请求使用管理员，业务数据使用普通用户；授权由①逐次复核。'
+            : '本地测试模式：无需登录；固定普通用户，无管理权限。');
         if ($('user-note')) $('user-note').textContent = '当前测试身份没有管理权限，插件管理不可用。本页不会发起管理请求，也不会自动授予管理员权限。';
       }
       $('token-input').disabled = !!me;
       show($('connect-btn'), !me);
-      show($('disconnect-btn'), !!me);
+      show($('disconnect-btn'), !!me && !testNoAuth);
       $('disconnect-btn').disabled = state.claiming;
     }
 

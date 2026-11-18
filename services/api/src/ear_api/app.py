@@ -167,8 +167,12 @@ def create_app(
             exc.status_code, "not_found" if exc.status_code == 404 else "request_rejected"
         )
 
-    def authenticated(request: Request, *, admin: bool = False) -> Binding:
-        binding = settings.authenticate(request.headers.getlist("authorization"))
+    def authenticated(request: Request, *, admin: bool = False, session: bool = False) -> Binding:
+        # Endpoint-owned flags, never request-supplied role selectors. The selected
+        # binding flows unchanged into storage and feedback identity/source audit.
+        binding = settings.authenticate(
+            request.headers.getlist("authorization"), admin=admin, session=session
+        )
         if binding is None:
             raise GatewayError(401, "unauthenticated")
         if admin and binding.role != "admin":
@@ -203,7 +207,7 @@ def create_app(
     @app.get("/v1/me")
     def me(request: Request):
         params(request, set())
-        binding = authenticated(request)
+        binding = authenticated(request, session=True)
         with remote.client(binding):
             pass
         return response({"subject": binding.subject, "role": binding.role})

@@ -2391,3 +2391,23 @@ test('test mode discovery is strict: truthy strings do not bypass default token 
   assert.equal(env.n('connect-form').hidden,false);
 });
 }
+
+{
+const test = require('node:test');
+const assert = require('node:assert/strict');
+test('test mode: admin workspace uses verified me role and has no false ordinary-only prompts', async () => {
+  const env = flatEnv.bootWorkspace({handler:c=> {
+    if (c.url === '/v1/session') return {body:{test_no_auth:true}};
+    if (c.url === '/v1/me') return {body:{subject:'fixed-admin',role:'admin'}};
+    if (c.url === '/health/ready') return {body:{status:'ready'}};
+    return {body:{items:[],next_cursor:null,consistency:'live'}};
+  }});
+  await env.page.discovery; await flatEnv.settle();
+  assert.equal(env.page.state().session.role,'admin');
+  assert.equal(env.n('connect-form').hidden,true);
+  assert.match(env.n('session-info').textContent,/管理请求使用管理员，业务数据使用普通用户/);
+  assert.doesNotMatch(env.n('session-info').textContent,/插件管理不可用/);
+  assert.ok(env.f.calls.every(c=>c.method==='GET' && !c.headers.Authorization));
+  env.page.disconnect();
+});
+}

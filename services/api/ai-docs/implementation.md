@@ -33,7 +33,82 @@ based-on: 设计 v1.2；信号补充；插件 MVP；工作分解 v1.2；origin/d
 
 运行项目 `ear-real-sample-20261118` 在vm-remote；Docker internal网络未发布host ports，当前回环18100/18186由私有有界userspace forwarder提供，transient用户单元不跨主机重启。重启后须操作者人工恢复并验证，非自动恢复/完整可复现承诺。**真实链路已通过：3段录音、1007原始、125归属、重入0新增，真实Chromium无mock验证。源专用身份依用户授权临时接受额外写能力，实际只GET；现已撤销且关闭专用连接。** 没有LLM提取，自动人物未质量校准，dependency队列尚有积压。 使用方式与所有证据边界统一见[事实交接](../../../ai-docs/plans/real-sample-web-mcp.md)；只读[MCP提案](../../../docs/proposals/mcp-interface.md)仍待采纳。
 
-## 2026-11-18 本地免登录实现
+## 2026-11-18 修复：管理员测试服务的显式双映射
+
+本轮用户明确要求恢复业务浏览并保留免令牌管理功能，授权仅限test_no_auth管理员模式。
+`Settings`要求唯一user+唯一admin；`authenticate(..., admin=False, session=False)`缺省选user，
+管理端点传admin=True，只有me传session=True使用配置角色。普通免登录与默认Bearer模式不变。
+所有业务路由（含反馈、预览和动作）沿用缺省分支，不根据URL前缀猜测权限、不根据403重试；
+所选绑定原样传给Upstream和submit_feedback，反馈ID/source/dedup_key记录实际普通主体，
+管理请求用真实管理员storage_token由①审计。不伪造wire-v1未提供的principal_id或管理员业务grant。
+
+两个页面在测试管理员会话明确显示“管理请求使用管理员，业务数据使用普通用户”；
+不显示内部令牌。公开session仍仅一个布尔；me仍返回配置角色。插件目录/结果自动读取，
+管理写操作仍须手动确认，本轮真实验收不执行任何写操作。
+
+回归覆盖所有17类列表、业务详情/版本/历史/检索/反馈/预览/动作与全部管理路由，
+缺失/歧义配置、无效/重复/普通/管理员Bearer不能改变映射，普通免登录管理403，
+所选身份撤销或权限拒绝时不回退、另一能力不受牵连，反馈审计使用实际普通主体。
+真实实例已有两个唯一绑定，配置和所有令牌均不改；只构建API的新tag并更新原forwarder的API pin。
+不修改源接口/DB/grant、匹配逻辑或参数、原初始化回执、其他worker或旧ear-dev。
+最终回执独立存于 `/tmp/ear-admin-noauth-final-20261118.json`，持久副本与检查点在实例私有
+`admin-noauth-final-20261118/`；更新回执另存`admin-noauth-final-update-receipt.json`。
+
+**本轮实际结果（范围重叠，不相加）**：
+
+- 定向77 passed、API 866 passed、默认全套3286 passed/862 skipped、Node及合成Chromium 150 passed；
+  全仓ruff、format、pyright、uv lock、docs及docs --base origin/dev通过。默认全套的外部运行时跳过
+  不是新的四开关验收，也不是生产就绪证明。
+- 只重建/替换API：新tag `ear-api:ear-real-sample-20261118-admin-noauth-mapped-v1`；配置文件字节、两个绑定和所有令牌保持不变，
+  forwarder只更新API pin，无新增对外监听，8服务运行/7healthy；其他容器与旧ear-dev未变。
+- 无Bearer的17类业务列表全部200，me/admin、插件目录、管理结果200；畸形/重复/普通/管理员Bearer
+  均不能改变映射，Host/Origin/跨站限制仍403。直接以内部管理员读取业务仍拒绝，说明未扩管理grant。
+- 真实Chromium无mock通过10个入口，包括真实转写、搜索、人物版本历史、插件管理员区域与真实目录/结果；
+  两个页面显示显式双映射说明，桌面/窄屏无登录输入。0 Authorization、0非GET、0外站请求、
+  0运行时/CSP错误；工作台及插件资产哈希与源码一致，不输出真实正文，不执行管理写操作。
+- 3段录音、1007原始、125归属及全部业务计数不变；身份/授权指纹、原初始化/intent、源材料与凭据
+  哈希保持不变。匹配逻辑和参数未动，无LLM、geocoder或外部动作。未stage/commit/push，由主协调方提交。
+- 旧单绑定实现17类403回执原样保留；本轮首个测试夹具缺rule_selection导致1失败（76通过），只修夹具后77通过。
+  pyright前两次因受限V8堆耗尽失败，保留日志；在有足够主机余量时增大有界堆后通过，未停其他服务或改代码规避。
+  初始化冻结保护、更新回执采纳和transient转发器跨主机重启恢复均未改变。
+
+
+## 2026-11-18 前一批：管理员单绑定免登录（历史回归，已由上述双映射替代）
+
+依据用户明确追加授权“管理员模式也取消 api token 鉴权限制”，新增配置
+`test_no_auth_role: user|admin`（默认user）。admin必须同时开启test_no_auth，选定角色的绑定
+必须唯一；不从请求选择角色。公开session结构不变，页面根据me显示实际固定角色，管理员
+自动读取目录和管理结果，普通用户保持原行为。Upstream、①权限与Origin/Host保护不改。
+
+管理员必须复用init-identities已签发的可信凭据，不能重标普通身份；其现有读取授权只有
+plugin_management_feedback/result，不自动扩为业务类型。工作台可自动连接，但业务读取
+实际17类全部403；这是前一批的可用性回归，不是最终允许的产品限制。该批部署只改API镜像与私有配置，
+保留旧镜像、0600配置备份和原初始化材料，新增admin-noauth-update-receipt，不改冻结helper。
+实际验收只做GET，不触发任何插件管理写入、模型、导入、地理编码或外部动作。
+
+回归补充：管理员固定选择、Bearer/自报角色无效、配置歧义拒绝、默认不变、真实权限拒绝与
+撤凭据、写请求Origin及合成status反馈、最小session、UI管理员自动连接与无错误普通身份提示。
+该批原始结果（含业务403失败）记录于 `/tmp/ear-admin-noauth-20261118.json`，私有持久副本位于实例的
+`admin-noauth-update-20261118/final-acceptance.json`，更新回执为`admin-noauth-update-receipt.json`：
+
+- 定向免登录33 passed、API822 passed、默认全套3242 passed/862 skipped/2 warnings、
+  Node含合成Chromium150 passed；范围重叠不相加，未重跑四开关全套。ruff、format、pyright、
+  uv lock、docs及docs --base origin/dev通过，最后文档增补另复查。
+- API-only镜像新tag `ear-api:ear-real-sample-20261118-admin-noauth`，旧镜像与0600配置备份保留；
+  仅现有loopback转发器的API pin更新并重启原单元，有界GET重试确认ready，无新增对外监听。
+- 无Bearer me/admin、插件目录与管理结果200；Host/Origin/跨站限制仍403。①可信管理员仍仅有
+  管理类型读权限，工作台17类业务读取403如实保留，该批未扩权；本轮按用户明确授权增加显式普通业务映射，非失败回退。
+- 真实Chromium无mock：工作台/插件页自动连接，桌面及窄屏无登录控件、无Authorization，
+  管理区与真实目录/结果的空态可见，错误的普通用户/管理不可用提示消失；无非GET请求、
+  外站请求、运行时/CSP错误，不输出真实内容。未触发任何管理写操作。
+- 前后3段录音、1007原始、125归属及全部业务计数不变；所有身份/授权指纹不变，原初始化
+  与intent保留，8服务运行/7healthy、其他容器含旧ear-dev不变。业务计数用原有普通内部身份
+  只读核对，不代表管理员新增了业务读取权限。
+- 历史失败保留：首次构建因可用内存不足2GiB在启动构建前拒绝；改用384MiB硬上限、无swap、
+  半CPU串行构建成功，未停止其他服务。首次浏览器脚本检查空容器过早，改为等待真实空态/卡片
+  渲染后全部断言通过；未修改产品代码或削弱断言。冻结helper恢复与transient重启持久化仍未解决。
+
+## 2026-11-18 前一批：普通用户本地免登录实现
 
 依据本轮用户明确要求取消测试版本面向用户的API令牌检查。`Settings.test_no_auth` 默认false，
 开启必须有回环public_origin及唯一user绑定；authenticate忽略所有入站Authorization并选该绑定。
@@ -97,7 +172,7 @@ based-on: 设计 v1.2；信号补充；插件 MVP；工作分解 v1.2；origin/d
 ## 2. 请求流程与不变量
 
 1. 边界中间件限制体积与时长，统一错误体；`GET`/`POST` 参数只接受各路由声明的名称（`params`），超出即拒。
-2. `authenticated(request, admin=False)`：Bearer 只从请求头取一份；无匹配 → 401 `unauthenticated`；`admin=True` 而绑定不是 admin → 403 `admin_required`。角色来自配置绑定，不来自请求体。
+2. `authenticated(request, admin=False, session=False)`：默认认证模式Bearer只从请求头取一份；无匹配 → 401 `unauthenticated`；`admin=True` 而绑定不是 admin → 403 `admin_required`。角色来自配置绑定，不来自请求体。
 3. 用户读写走 `remote.client(binding)`：先 `_verify`，再用该绑定的 `storage_token` 建①客户端。⑥ 不缓存权限；撤权后下一次调用由①拒绝。管理接口另由①复核“模块为 api 且带可信管理员角色”。
 4. 反馈：`submit_feedback` 写 `feedback` 原始记录（`AppendRaw`，`Context.feedback(fid)`，`request_id=fid`），结果数量或 id 不符 → 503 `acceptance_unknown_replay_identical_request`（用同一请求重放）。非 extraction 命令的 payload 带 `integration: "pending_contract"`。
 5. 反馈状态：只在恰好一个 `extraction_run` 关联该根反馈时投影其状态；从不调用 `is_processed`（受理/入队不是业务完成）。
