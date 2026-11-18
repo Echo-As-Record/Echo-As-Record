@@ -36,7 +36,7 @@ from ear_storage_client import (
 )
 from ear_storage_client.remote import RemoteStorageClient
 from ear_storage_client.remote_errors import CommitUnknown
-from ear_storage_client.testing import ts
+from ear_storage_client.testing import make_raw, ts
 from ear_storage_client.wire import decode_request, encode_result
 
 from .support import CONFIG, append, attr, feedback, present, request, setup, voice
@@ -54,6 +54,40 @@ def test_actual_adapter_conversion_to_extraction_read_and_legacy_compatibility()
         config=AdapterConfig(),
     )
     storage.client("adapter").write([AppendRaw(r) for r in raw], Context.system()).check()
+    [point] = [r for r in raw if r.data_type == "gps_point"]
+    # Offline synthetic map result, written by the actual adapter identity.
+    geocode = make_raw(
+        "gps_geocode",
+        {
+            "gps_point_id": point.id,
+            "status": "ok",
+            "provider": "offline",
+            "language": "en",
+            "formatted_address": "Synthetic fixture address",
+            "country": None,
+            "province": None,
+            "city": None,
+            "district": None,
+            "township": None,
+            "street": None,
+            "building_name": None,
+            "building_type": None,
+            "building_distance_m": None,
+            "query_coordinate": {
+                "latitude": point.payload["latitude"],
+                "longitude": point.payload["longitude"],
+                "crs": "WGS84",
+            },
+        },
+        start=point.event_start,
+        end=point.event_end,
+        device=point.source.device,
+        channel=point.source.channel,
+        user=point.source.user,
+        adapter_version="offline-fixture/1.0",
+        dedup_key=f"{point.id}:geocode:offline",
+    )
+    storage.client("adapter").write([AppendRaw(geocode)], Context.system()).check()
     storage.run_until_idle()
     assert not storage.dead_letters
     assert client.count(Query("voiceprint")) == 2

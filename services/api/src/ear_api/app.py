@@ -15,8 +15,11 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from starlette.exceptions import HTTPException
+from starlette.responses import Response
 from starlette.staticfiles import StaticFiles
+from starlette.types import Scope
 
+from ear_api import evidence
 from ear_api.boundary import Boundary, failure, response
 from ear_api.business import (
     BUSINESS_TYPES,
@@ -44,6 +47,17 @@ from ear_api.execution_http import (
 from ear_api.execution_journal import ExecutionJournal, JournalUnavailable
 from ear_api.models import FeedbackInput, load_json_object
 from ear_api.upstream import GatewayError, Upstream
+
+
+class _WorkspaceFiles(StaticFiles):
+    """Serve only the flat viewer assets, never the legacy workspace/ directory."""
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        if path == ".":
+            path = "workspace.html"
+        if path not in {"workspace.html", "workspace.js", "workspace.css"}:
+            raise HTTPException(status_code=404)
+        return await super().get_response(path, scope)
 
 
 def valid_id(value: str) -> str:
@@ -222,6 +236,23 @@ def create_app(
         )
 
     app.add_api_route("/v1/records/{data_type}", list_records, methods=["GET"])
+
+    @app.get("/v1/evidence/search")
+    def evidence_search(request: Request):
+        binding = authenticated(request)
+        values = params(request, {"start", "end", "q", "limit", "cursor"})
+        time = evidence.validate_window(values.get("start", ""), values.get("end", ""))
+        phrase = values.get("q", "")
+        limit = integer(values.get("limit", "10"), maximum=10)
+        cursor = values.get("cursor")
+        if not 1 <= len(phrase) <= 256 or (
+            cursor is not None and not 1 <= len(cursor) <= evidence.MAX_CURSOR_BYTES
+        ):
+            raise GatewayError(422, "invalid_input")
+        # Live credentials on every request; the cursor confers no authorization.
+        with remote.client(binding) as client:
+            result = evidence.search(client, time, phrase, cursor, limit)
+        return response(result)
 
     @app.get("/v1/timeline")
     def timeline(request: Request):
@@ -502,4 +533,5 @@ def create_app(
 
     if settings.static_dir is not None:
         app.mount("/plugins", StaticFiles(directory=settings.static_dir, html=True), name="plugins")
+        app.mount("/workspace", _WorkspaceFiles(directory=settings.static_dir), name="workspace")
     return app

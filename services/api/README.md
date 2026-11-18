@@ -1,16 +1,21 @@
 ---
 audience: human
 doc-type: reference
-based-on: 设计 v1.2、信号补充、插件 MVP、工作分解 v1.2；origin/dev 376294d 的 contracts 与①代码；api/gateway-mvp 功能分支（待合并）中 services/api 的实际源码（config、cli、app、boundary、business、models、upstream、execution、execution_journal、static）与 deploy 覆盖文件；2026-11-07 本机取证记录（均在 /tmp，不属于仓库）：ear-67-browser-state.json、ear-api-gateway-deploy-state.json、ear-67-postfix-review.json、ear-67-full-acceptance.log、ear-67-acceptance-fixes.json、ear-67-full-v2.log（及 .exit）、ear-67-static-v2.log、ear-67-static-final.log（及 .exit）；用户对⑥⑦实现与文档同步的授权；2026-11-12 增补依据：services/api 工作区未提交的源码（attribution_results.py、business.py、execution.py、execution_journal.py、app.py、config.py、execution_http.py，作者读源码与 git diff，不运行测试）、services/attribution 的 create_place.py 与 feedback.py、services/extraction 的 domain.py 与 suggestions.py（只读核对）、仓库外摘要 /tmp/ear-mvp-api-place.json 与 /tmp/ear-mvp-action-protocol.json（作者读取，其中的测试结果作者未复跑，只用 pytest --collect-only 与文件哈希核对）、git 记录（8750a83 即 #11 是 HEAD 79e8dc3 的祖先）；2026-11-12 action-v2 HTTP 与证据校验增补依据：execution_http.py、execution.py、app.py、config.py、cli.py 源码与仓库外摘要 /tmp/ear-mvp-{action-http,action-evidence-fix,eight-steps}.json（作者读取并核对各自的退出码文件、日志末行与 junit 用例名，测试结果未复跑）；本文不新增用户授权记录，也不增加用户决定；未填写或改动任何 reviewed 字段；2026-11-18恢复增补：697de3b与7f98132合并候选、PR23只读审查及本轮限定文档授权（新说明非功能验收）
+based-on: 设计 v1.2、信号补充、插件 MVP、工作分解 v1.2；origin/dev 376294d 的 contracts 与①代码；api/gateway-mvp 功能分支（待合并）中 services/api 的实际源码（config、cli、app、boundary、business、models、upstream、execution、execution_journal、static）与 deploy 覆盖文件；2026-11-07 本机取证记录（均在 /tmp，不属于仓库）：ear-67-browser-state.json、ear-api-gateway-deploy-state.json、ear-67-postfix-review.json、ear-67-full-acceptance.log、ear-67-acceptance-fixes.json、ear-67-full-v2.log（及 .exit）、ear-67-static-v2.log、ear-67-static-final.log（及 .exit）；用户对⑥⑦实现与文档同步的授权；2026-11-12 增补依据：services/api 工作区未提交的源码（attribution_results.py、business.py、execution.py、execution_journal.py、app.py、config.py、execution_http.py，作者读源码与 git diff，不运行测试）、services/attribution 的 create_place.py 与 feedback.py、services/extraction 的 domain.py 与 suggestions.py（只读核对）、仓库外摘要 /tmp/ear-mvp-api-place.json 与 /tmp/ear-mvp-action-protocol.json（作者读取，其中的测试结果作者未复跑，只用 pytest --collect-only 与文件哈希核对）、git 记录（8750a83 即 #11 是 HEAD 79e8dc3 的祖先）；2026-11-12 action-v2 HTTP 与证据校验增补依据：execution_http.py、execution.py、app.py、config.py、cli.py 源码与仓库外摘要 /tmp/ear-mvp-{action-http,action-evidence-fix,eight-steps}.json（作者读取并核对各自的退出码文件、日志末行与 junit 用例名，测试结果未复跑）；本文不新增用户授权记录，也不增加用户决定；未填写或改动任何 reviewed 字段；2026-11-18事实同步：HEAD84d2d0f已含origin/dev ba36543 / PR20及此前GPS；实际app/evidence/flat workspace、core profile；仓库外ear-real-deployment、ear-real-ui-fix、ear-gps-integration及ear-real-default-final的20261118产物；本轮限定五文档授权（功能测试读取产物而非重跑）
 ---
 
 # ⑥ 客户端与 API
 
-## 2026-11-18 合并候选说明（优先于下文历史状态措辞）
+## 2026-11-18 当前状态（优先于下文历史批次措辞）
 
-HEAD `697de3b` 已含第二批集成功能；本次正在合并 `7f98132`，下文79e8dc3/2026-11-12的“工作区未提交”和旧测试数字是历史观察，不再描述当前Git状态。本次保留③ `attribution_result_query`/可信回执、`create_place`、`rule_selection`、action-v2默认关闭/CLI不注入适配器及未知不自动重试，同时纳入上游`gps_geocode`，核心可浏览类型共17类。并非完整MVP、真实数据链路或生产验收。
+HEAD **`84d2d0f` 已包含 `origin/dev ba36543`（PR #20）及此前GPS**；不再处于697de3b/7f98132合并中。旧79e8dc3/2026-11-12的“第二批工作区未提交”仅是历史观察；本轮新evidence/viewer/runtime及修复仍有未提交工作区文件，不能将其一概说成已提交。保留③可信回执/`create_place`、v1.2、action-v2默认关闭与未知不自动重试；核心业务读取共17类（含rule_selection、gps_geocode），profile已增加extraction的gps_geocode读取授权，不自动修改已有库grant。
 
-PR #23 的MCP/证据查询代码已存在于 `origin/api/mcp`（a7baf9e），但未合入本候选；主 agent正在整合的未跟踪 `evidence.py` 不是原PR文件，存在不等于⑥路由或页面已接通。本轮只起草[只读优先MCP提案](../../docs/proposals/mcp-interface.md)（proposed），不启用写工具、不覆盖源码。完整只读Web、最小真实小样本运行时、远端dev已前进到ba36543的差距及验收分工见[恢复交接](../../ai-docs/plans/real-sample-web-mcp.md)；静态页由Web agent、backend由主 agent负责。
+- **已有真实入口**：`GET /v1/evidence/search` 与 flat只读 `/workspace/`；**`/v1/evidence` 和 `/v1/persons` 不是当前路径**，人物用 `/v1/records/person`，没有专用精确姓名API。浏览页不提供纠正、审核、执行或恢复操作；普通API令牌本身不是新增的只读scope。
+- **已有独立空部署**：vm-remote项目 `ear-real-sample-20261118`，8服务运行、7healthy，relay无健康探针。初始部署报告已用真实Chromium、无mock验证普通用户鉴权、17类空结果和空页面。旧ear-dev未动。Docker内网未实际发布host ports，回环可达性依赖私有有界用户态转发；临时用户单元不跨重启持久化，重启后须操作者人工恢复并复验，**不宣称完整可复现或自动恢复**。
+- **没有真实数据导入**：源系统专用Evidence与embedding读授权未证明，不借admin；未调用真实LLM/geocoder/外部动作，④/⑦及相关执行器未启动。
+- **最新已读验证**：默认全套exit0，**3209 passed/862 skipped/2 warnings**；GPS定向真实PG/NATS **10 passed**（两个八步均通过，但输入/模型/效果合成），另有347内存与926契约/API，范围重叠不相加。**没有最新四开关全量重跑**。
+- **UI复审**：两个P2已修，Node144通过、Chromium5个合成检查通过（mock fetch，非线上验收）。最终API-only重部署报告 `/tmp/ear-real-ui-deployment-final-20261118.json` 已核对完成，83项HTTP/镜像检查和真实Chromium无mock验证通过，修复资产已在线。初始化材料保留；启动helper仍拒绝变化后的冻结镜像，更新回执采纳与重启恢复尚未完成，见恢复交接。
+- **MCP仅proposed，未安装/接线代码或启用客户端配置**。见[只读优先MCP提案](../../docs/proposals/mcp-interface.md)；实际证据、旧失败、重部署终态、访问及重启边界统一见[事实与恢复交接](../../ai-docs/plans/real-sample-web-mcp.md)。不是完整MVP或生产验收。
 
 用户与管理员进入系统的服务端入口：读取时间线、活动、Markdown 产物、人物、地点、规则和建议；把用户操作写成结构化反馈（`feedback`）；把管理员操作写成插件管理反馈（`plugin_management_feedback`）并查询①写出的管理结果；执行已批准的外部动作并回写反馈；提供轻量插件管理页面/API。⑥只写反馈，不做推断，不直接改③④的业务数据，也不写插件登记和权限（那是①的单写职责）。
 
@@ -18,9 +23,11 @@ PR #23 的MCP/证据查询代码已存在于 `origin/api/mcp`（a7baf9e），但
 - [动态插件 MVP](../../docs/design/plugins-mvp.md)（管理页与异步反馈）、[工作分解 v1.2](../../docs/design/work-breakdown-v1.2.md)（⑥一节，含验收标准）
 - [实现说明与验证记录](ai-docs/implementation.md)；[全局实施计划](../../ai-docs/plans/mvp-implementation.md)；[①当前状态](../storage/ai-docs/progress.md)；[⑦大模型入口](../llm_gateway/README.md)
 
-## 1. 状态
+## 1. 历史批次状态（2026-11-07/12）
 
-**部分交付，待审。这不是完整的 ⑥ MVP，也不是生产就绪。** 首批代码已在 dev 的历史中（git 记录里 8750a83，即 #11，是 HEAD 79e8dc3 的祖先；早先“功能分支 `api/gateway-mvp` 待合并”的说法已过时）。第二批在工作区，未提交、未提 PR、未部署。
+本节保留当时的交付与未测边界；“未提交/未部署/浏览器只对假①”等仅描述对应批次，不覆盖上面的2026-11-18空库真实浏览与工作区状态。
+
+**部分交付，待审。这不是完整的 ⑥ MVP，也不是生产就绪。** 首批代码已在 dev 的历史中（git 记录里 8750a83，即 #11，是 HEAD 79e8dc3 的祖先；早先“功能分支 `api/gateway-mvp` 待合并”的说法已过时）。第二批已于 `697de3b` 提交至 PR #16（未合并）；以下旧“工作区”措辞保留为当时记录，不代表当前Git状态。
 
 - 已有（79e8dc3）：只读 API、结构化反馈入口、管理员的插件管理接口与轻量页面、插件目录、受保护配置与命令行、容器镜像与可选 Compose 覆盖文件、一个离线的外部动作执行/核对切片。
 - 第二批（工作区，未提交）：（1）**③ 命令的结果投影，`create_place` 已接**：79e8dc3 对所有非 extraction 命令都只返回 `pending_contract`；现在 ⑥ 受理 `attribution` 命令后返回 `integration: attribution_result_query`，并把 ③ 写的 `attribution_feedback_result` 只读投影为反馈状态，支持集为 `correct_attribution`、`confirm_attribution`、`add_reference`、`remove_reference`、`rename`、`create_place`；范围重新归属 `reattribute_range` **未做**（见第 3.4 节）；（2）**外部动作 action-v2**（`ExecutionPump`）：与旧的离线切片不是一回事。协议与可选的 HTTP 接线都在工作区：HTTP 由 `Settings.execution_action_v2`（默认 `false`）加私有 journal 加宿主显式注入的可信适配器启用，**`ear-api serve` 不注入适配器，所以默认与命令行服务上仍是旧的 501**，仓库里没有真实适配器（见第 3.6 节）。
@@ -38,7 +45,7 @@ PR #23 的MCP/证据查询代码已存在于 `origin/api/mcp`（a7baf9e），但
 | 外部动作执行（日历、提醒事项） | 只执行已批准且查过当前状态的建议；稳定动作标识；结果未知时停止自动重试并提示用户核对；结果写反馈，由④更新建议 | 只有离线切片；默认配置与命令行服务上 HTTP 仅“只读查证”可用（需代码注入可信适配器），执行/确认/风险重试 501。action-v2 在工作区有协议和可选的 HTTP 接线（默认关闭、宿主注入适配器），见第 3.6 节；无真实适配器 |
 | 历史补处理与恢复选择 | 用户显式选择范围或补/跳，经管理反馈交①；读历史不等于批量生成授权 | 页面已实现；①侧执行与⑤调度未联调 |
 
-不做：完整时间线/地图/移动端客户端、通用插件结果页、插件市场及自动安装启动。
+不承诺完整时间线/地图/移动端客户端；当前已有轻量只读 `/workspace/` viewer。通用插件结果页、插件市场及自动安装启动仍未做。
 
 ## 3. 实际用法
 
@@ -64,9 +71,9 @@ JSON 文件，必须是当前用户拥有的普通文件、权限不含 group/ot
 ```
 
 - `public_origin`：浏览器地址栏的来源必须与它完全一致，否则带 `Origin` 的请求得到 `cross_origin_denied`。
-- `static_dir`：默认使用随包的 `static/`（即 `/plugins/` 页面）；显式写 `null` 可关闭页面。
+- `static_dir`：默认使用随包的 `static/`（含 `/plugins/` 与 flat `/workspace/` 页面）；显式写 `null` 可关闭页面。
 - `execution_journal`：外部动作的私有恢复日志路径；不设则外部动作状态显示 `disabled`。
-- `execution_action_v2`（工作区，严格布尔，默认 `false`）：只有同时设了 `execution_journal`、且宿主在代码里把可信适配器传给 `create_app(settings, adapter=…)` 才启用 action-v2 的 HTTP；配置文件里写 `true` 并不会让 `ear-api serve` 获得适配器，推进类路径仍是 501。见第 3.6 节。
+- `execution_action_v2`（严格布尔，默认 `false`）：只有同时设了 `execution_journal`、且宿主在代码里把可信适配器传给 `create_app(settings, adapter=…)` 才启用 action-v2 的 HTTP；配置文件里写 `true` 并不会让 `ear-api serve` 获得适配器，推进类路径仍是 501。见第 3.6 节。
 - 可选：`timeout`（默认 10 秒，≤60）、`max_body_bytes`（默认 65536，上限 65536）、`body_timeout`（默认 10 秒，≤30）。
 - 最多 64 个绑定，`subject` 不得重复。
 
@@ -96,6 +103,7 @@ JSON 文件，必须是当前用户拥有的普通文件、权限不含 group/ot
 | `GET /health/live`、`GET /health/ready` | 无需认证 | 存活；就绪（范围仅为 ⑥ 到 ① 的连通） |
 | `GET /v1/me` | 任一绑定 | 当前主体与角色（会先向①复核身份） |
 | `GET /v1/records/{type}` | 任一绑定 | 分页列出（`limit`、`cursor`、`start`、`end`、`include_superseded`）；类型按下述核心登记表规则推导，集合外返回 404 `not_found` |
+| `GET /v1/evidence/search` | 任一绑定 | 有界字面证据查询：`start`、`end`、`q`、`limit`、`cursor`；UTC Z非空≤24h，q长1–256，limit默认10且1–10；当前授权、live_best_effort与截断可见；不是硬deadline或完整搜索保证 |
 | `GET /v1/timeline` | 任一绑定 | 等同 activity 列表 |
 | `GET /v1/records/{type}/{id}`（可加 `?version=`） | 任一绑定 | 单条 |
 | `GET /v1/records/{type}/{id}/history` | 任一绑定 | 版本历史（`after_version`、`limit`） |
@@ -103,12 +111,13 @@ JSON 文件，必须是当前用户拥有的普通文件、权限不含 group/ot
 | `GET /v1/feedback/{id}/status` | 任一绑定 | 反馈处理状态 |
 | `POST /v1/previews/reextract`、`GET /v1/previews/person/{id}` | 任一绑定 | 只读预览，不写任何数据 |
 | `GET /v1/actions/{suggestion_id}/execution`、`POST .../recovery` | 任一绑定（读权限由①判定） | 外部动作状态与恢复操作；默认走旧切片，启用 action-v2 后的行为见第 3.6 节 |
-| `POST /v1/actions/{suggestion_id}/prepare`、`POST .../pump`（工作区） | 任一绑定（读权限由①判定） | 只在 action-v2 已启用时可用，否则（含命令行服务）501；见第 3.6 节 |
+| `POST /v1/actions/{suggestion_id}/prepare`、`POST .../pump`（可选action-v2） | 任一绑定（读权限由①判定） | 只在 action-v2 已启用时可用，否则（含命令行服务）501；见第 3.6 节 |
 | `GET /v1/plugins` | 仅 admin | 插件目录（①只读元数据；`online` 恒为 `null`，不是“在线”） |
 | `POST /v1/management/requests` | 仅 admin | 提交管理反馈，返回 202 与 `feedback_id`、`result_id`（已受理 ≠ 已生效）；请求体由①的 `ManagementInput` 校验 |
 | `POST /v1/management/credentials/{feedback_id}/claim` | 仅 admin | 一次性领取凭据，空请求体；第二次被拒 |
 | `GET /v1/management/results`、`/results/{id}`、`/history/jobs/{id}` | 仅 admin | 管理结果与历史补处理任务状态 |
 | `/plugins/` | 页面本身无需认证 | 插件管理页；必须带结尾斜杠，`/plugins` 返回 404 |
+| `/workspace/` | 页面本身无需认证，业务读取须普通API令牌 | flat三文件只读viewer；不加载旧workspace目录prototype；不提供写反馈或外部动作按钮 |
 
 可浏览业务类型从 `ear_contracts.DEFAULT_REGISTRY`（随代码发布的核心登记表，也是 `MemoryStorage` 的默认登记表）推导：仅纳入 `kind` 为 `raw_record`、`semantic`、`rule` 的核心类型，并排除 `plugin_management_feedback`。登记表暂无管理类型标志，⑥ 用 `MANAGEMENT_TYPES` 显式排除该类型，因为插件管理反馈走管理接口；所有 `system_record` 都不纳入。当前结果在原有15类基础上增加两类：静态核心补充 `rule_selection`（`CORE_MVP_BUSINESS_ADDITIONS`，不在随代码发布的登记表里，见 `business.py`）和 `gps_geocode`（见[已采纳 GPS 提案](../../docs/proposals/gps-reverse-geocoding.md)），共17类，列表、单条及历史接口共用此集合，权限仍由①检查。
 
@@ -139,7 +148,7 @@ JSON 文件，必须是当前用户拥有的普通文件、权限不含 group/ot
 
 - `module` 为 `extraction` 时，`command` 沿用 ④ 既有的 `Command`，返回 `integration: "existing_command"`，状态来自对应的 `extraction_run`。
 - `module` 为 `attribution` 或 `dependency` 时，只接受 `correct_attribution`、`confirm_attribution`、`add_reference`、`remove_reference`、`rename`、`create_place`、`reattribute_range`（属 attribution）和 `reevaluate_related`（属 dependency）。
-  - **`attribution` 命令（第二批，工作区）**：受理时返回 `integration: "attribution_result_query"`，业务状态恒为 `pending`；它只表示 ⑥ 有结果投影能力，**不表示 ③ 的 worker 在线或已经部署上线**。状态查询读 ③ 写的 `attribution_feedback_result`（可信 core 单写类型）：没有回执仍是 `pending`；受理（`MarkProcessed`、原始反馈被领取）不等于成功；成功或拒绝来自该回执，拒绝只回显白名单内的错误码，其余统一为 `attribution_rejected`；回执畸形或有歧义返回 503，没有该类型的读授权返回 403（授权被撤销后也是，旧登记表上的受理与重放仍可用）。⑥ 不自授权，不改部署。
+  - **`attribution` 命令（第二批集成能力）**：受理时返回 `integration: "attribution_result_query"`，业务状态恒为 `pending`；它只表示 ⑥ 有结果投影能力，**不表示 ③ 的 worker 在线或已经部署上线**。状态查询读 ③ 写的 `attribution_feedback_result`（可信 core 单写类型）：没有回执仍是 `pending`；受理（`MarkProcessed`、原始反馈被领取）不等于成功；成功或拒绝来自该回执，拒绝只回显白名单内的错误码，其余统一为 `attribution_rejected`；回执畸形或有歧义返回 503，没有该类型的读授权返回 403（授权被撤销后也是，旧登记表上的受理与重放仍可用）。⑥ 不自授权，不改部署。
   - **`create_place`**：请求体为 `name`（1–256 字符）与 `gps_ids`（非空、至多 100 个、无重复、UUIDv7）；③ 在一个受围栏的批次里新建地点，并把这些 GPS 点归属到它（沿用已有归属对象的 ID，移除旧参考，新版本带完整依赖字段），`expected_version` 须为空，受保护的归属拒绝。成功回执的元数据只含 `new_target_id`、`subject_ids`、`attribution_ids`，三者各 1–100 个唯一 UUIDv7、等长，且 `subject_ids` 与存储的 `gps_ids` 顺序一致；不透传名字、提示词或令牌。
   - **`reattribute_range` 未做**：⑥ 仍按请求模型受理，但不在投影支持集内；③ 写 `unsupported_command` 拒绝回执，⑥ 不把它说成成功。
   - 历史请求信封不变：受理写入的原始反馈里 `integration` 仍是 `pending_contract`（为了不改变请求指纹与已受理请求的重放），对外的 `attribution_result_query` 是响应与状态里的字段；真实 PostgreSQL 的重放测试把实际批次信封与手写的 79e8dc3 信封逐一对比过。
@@ -159,7 +168,7 @@ JSON 文件，必须是当前用户拥有的普通文件、权限不含 group/ot
 - `ear-api serve` 不注入适配器，所以命令行起的服务上 `verify` 也是 501。真正执行动作的 worker、真实日历适配器都没有接线。
 - 离线切片内部：先写本地日志意图再调用适配器；结果未知或崩溃后只查证、不重发；日志必须保留，不可为恢复而清空。细节见[实现说明](ai-docs/implementation.md)。
 
-**action-v2 协议（工作区，未提交）**：`ear_api.execution.ExecutionPump` 与 ④ 侧的状态流转（[④ README](../extraction/README.md)）配套，是模块内的附加 payload，没有改公共契约。HTTP 接线见下一段。
+**action-v2 协议（已集成，默认关闭）**：`ear_api.execution.ExecutionPump` 与 ④ 侧的状态流转（[④ README](../extraction/README.md)）配套，是模块内的附加 payload，没有改公共契约。HTTP 接线见下一段。
 
 - 流程：审核仍走 `POST /v1/feedback`，等到真正 `approved`（“已受理”不算）；`prepare(suggestion_id, expected_version)` 冻结动作并暂存意图与 start 反馈；④ 的 consumer 把建议改为 `executing`；`pump` 观察到这个确切的版本、状态与回执后，先把意图持久化进私有 journal，再查证、至多执行一次适配器；适配器结果经反馈回 ④，`pump` 在确切的所有方状态下才把投递标为已应用。`unknown` 不自动重试、不换标识；`reconcile` 只查证，查不到也保持 `unknown`；`confirm_executed` 需 `acknowledge_executed=True`，来源记为用户、不接受外部标识；`retry` 需 `acknowledge_duplicate_risk=True` 并带两个版本号，沿用同一 `action_key`、attempt 加一，并重做一次所有方握手。
 - 适配器必须由宿主显式注入，`client.module == "api"`，声明可靠的幂等，稳定命名，返回绑定同一 `action_key` 与哈希的类型化结果。**仓库里没有真实适配器。**适配器的返回值逐字段严格校验（对实例字段做 `ExternalResult.model_validate(…, strict=True)`）：非 `ExternalResult`、带额外字段、枚举或字段类型非法、键或哈希不符、`succeeded` 缺真实外部标识，以及借 `model_construct`、`model_copy(update=…)` 绕过校验得到的实例，加上任何异常，都记为 `unknown`，不当作成功或确定失败（审查项 EAR-ACTION-REVIEW-001，已修，2026-11-12T06:37Z 复测）；只有明确的 `not_executed`，或带 `retry_acknowledged` 的规范化 `unknown` 且已通过确切的所有方握手，才允许执行。
@@ -167,7 +176,7 @@ JSON 文件，必须是当前用户拥有的普通文件、权限不含 group/ot
 - 与旧切片的关系：旧的 `ExecutionService` 拒绝 v2 的 journal 与建议状态，`ExecutionPump` 拒绝旧行，**不要把旧的 `process()` 接到外部 worker**。
 - 单所有者、仅限本地文件系统；没有通用的外部恰好一次承诺；没有后台 worker（HTTP 回合是显式、有界的），没有对 `extraction_run` 拒绝原因的轮询。
 
-**action-v2 的 HTTP 接线（可选，默认关闭；工作区）**：启用要同时满足三点：`Settings.execution_action_v2=true`（默认 `false`）、已设的 `execution_journal`（私有绝对路径，不自动创建，重启间保留）、宿主在代码里调用 `create_app(settings, adapter=<可信适配器>)`。缺一则不启用，推进类路径仍 501。`ear-api serve` 只调 `create_app(settings)`，**不注入适配器，命令行服务不会进入 v2**；不起后台线程、没有自动执行 worker，操作者或客户端显式调用，并另行运行真实的 ④ consumer 推进状态。
+**action-v2 的 HTTP 接线（可选，默认关闭）**：启用要同时满足三点：`Settings.execution_action_v2=true`（默认 `false`）、已设的 `execution_journal`（私有绝对路径，不自动创建，重启间保留）、宿主在代码里调用 `create_app(settings, adapter=<可信适配器>)`。缺一则不启用，推进类路径仍 501。`ear-api serve` 只调 `create_app(settings)`，**不注入适配器，命令行服务不会进入 v2**；不起后台线程、没有自动执行 worker，操作者或客户端显式调用，并另行运行真实的 ④ consumer 推进状态。
 
 | 路由 | 作用 |
 |---|---|
@@ -181,6 +190,18 @@ JSON 文件，必须是当前用户拥有的普通文件、权限不含 group/ot
 - **授权**：每个合法请求都用该请求绑定的凭据重新向 ① 认证，并复核对建议的当前读访问（不使用宿主注入的服务客户端）；无读授权返回 404 `not_found`（① 的 id 读取隐藏，不是 403），令牌无效或已撤销返回 401；查证期间被撤权，核心在查证后会重新读取。
 - **并发**：并行 pump 只有一个推进，其余版本冲突；两个版本号不符返回 409，绝不变基重执行。
 - **验证口径**：合成适配器；真实 ①/⑥ 回环 HTTP 与临时 PostgreSQL/NATS 加真实的 ④ consumer，见第 4 节；没有真实日历、真实 provider 或真实模型。适配器须自己保证可靠幂等并设有限的 I/O 超时，HTTP 回合有界，但不会强制取消正在执行的适配器。
+
+### 3.7 已部署空库的只读查看
+
+本机建立并保持SSH隧道（只转发API，不增加权限）：
+
+```bash
+ssh -N -L18186:127.0.0.1:18186 vm-remote
+```
+
+在本机打开 `http://127.0.0.1:18186/workspace/`。由操作者在受信任本地环境私下取部署私有 `clients.json` 的 **`api_user_token`** 输入页面；原文件在vm-remote的 `/home/aytony/.local/state/ear-real-sample-20261118/`。不打印/上传文件或令牌，不写URL/聊天/日志/截图，不用storage、adapter或admin凭据。本任务未读取令牌内容。页面令牌只存内存，刷新/断开清空；当前应看到真实空状态，不是模拟数据。
+
+远端回环18186依赖transient用户态转发，不是Docker已发布端口；主机重启后不会自动保留，须操作者人工重建所需运行/转发状态再验证，不能通过重跑初始化、删卷或借管理员令牌解决。具体边界见[交接§3](../../ai-docs/plans/real-sample-web-mcp.md#3-独立空运行时已部署但没有真实数据)。只读查看不启动导入、LLM、geocoder或动作。
 
 ## 4. 验证（第一部分为 2026-11-07 功能分支的取证记录，第二部分为第二批的来源记录；均不得当作完成证明）
 
@@ -208,7 +229,9 @@ JSON 文件，必须是当前用户拥有的普通文件、权限不含 group/ot
 - 作者 04:31Z 的 `--collect-only`：`services/api/tests` 385 项，`services/storage/tests/test_api_attribution_runtime.py` 177 项（只收集）。
 - 无开关（外部开关全关）的整仓快照里 PG/NATS 测试被跳过，不是真实服务证据。新的四开关全量验收由主 agent 委派，运行中，**结果未出，不预填**，补入[交接第 7 节](../../ai-docs/plans/mvp-runtime-handoff.md)。
 
-## 5. 未完成与待跨模块契约
+## 5. 未完成与待跨模块契约（历史记录与当前边界）
+
+下面真实浏览器联调欠项指当时的插件管理/处理链路；2026-11-18新增的真实空库只读workspace浏览已通过，不等于管理页、⑤处理或真实数据链路全部验证。
 
 - **外部动作执行/确认/风险重试经 HTTP（默认与命令行服务上仍是 501）**：action-v2 协议和可选的 HTTP 接线已在工作区，见第 3.6 节；它只在宿主显式启用并注入可信适配器时可用，仓库里没有真实适配器、真实 provider 和执行 worker。该协议是模块内的附加 payload，**没有冻结为公共契约**。没有轮询 `extraction_run` 拒绝原因，没有通用的外部恰好一次，没有强杀、断电或多主机验证。
 - **③⑤ 反馈契约**：`attribution` 命令的结果投影按 ③ 现有回执的形状在 ⑥ 的边界上校验，在共享契约发布之前这是临时做法，内容仍需 ③ 负责人与 ① 负责人、I 一起定；`dependency` 命令（`reevaluate_related`）的结构化内容与处理反馈尚无契约，也没有消费方；契约只增不删。

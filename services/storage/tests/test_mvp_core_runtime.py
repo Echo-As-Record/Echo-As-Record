@@ -31,6 +31,7 @@ from ear_attribution import CommitJournal as AttributionJournal
 from ear_contracts import (
     Cause,
     LLMCallRecord,
+    RawRecord,
     ReevaluationRequested,
     SemanticRecord,
     TracedCause,
@@ -52,8 +53,9 @@ from ear_storage.core_deployment import bootstrap_core, core_mvp_registry, init_
 from ear_storage.http import create_app as storage_app
 from ear_storage.relay import RelayConfig, RelayStore, run_relay
 from ear_storage.service import StorageService
-from ear_storage_client import Context, PublishReevaluation, Query
+from ear_storage_client import AppendRaw, Context, PublishReevaluation, Query
 from ear_storage_client.remote import RemoteStorageClient
+from ear_storage_client.testing import make_raw
 from nats.js.errors import NotFoundError
 
 from .test_api_gateway_integration import Harness
@@ -465,6 +467,55 @@ def verify_round(rt, root, expected, *, requests=None):
     return outcomes, requests
 
 
+def append_synthetic_geocode(rt):
+    """Complete the fixture's GPS input via authenticated adapter HTTP, offline."""
+    [point] = rt.clients["adapter"].query(Query("gps_point")).items
+    assert isinstance(point, RawRecord)
+    # Offline synthetic map result, written by the actual adapter identity.
+    geocode = make_raw(
+        "gps_geocode",
+        {
+            "gps_point_id": point.id,
+            "status": "ok",
+            "provider": "offline",
+            "language": "en",
+            "formatted_address": "Synthetic fixture address",
+            "country": None,
+            "province": None,
+            "city": None,
+            "district": None,
+            "township": None,
+            "street": None,
+            "building_name": None,
+            "building_type": None,
+            "building_distance_m": None,
+            "query_coordinate": {
+                "latitude": point.payload["latitude"],
+                "longitude": point.payload["longitude"],
+                "crs": "WGS84",
+            },
+        },
+        start=point.event_start,
+        end=point.event_end,
+        device=point.source.device,
+        channel=point.source.channel,
+        user=point.source.user,
+        adapter_version="offline-fixture/1.0",
+        dedup_key=f"{point.id}:geocode:offline",
+    )
+    rt.clients["adapter"].write([AppendRaw(geocode)], Context.system()).check()
+    stored = rt.clients["extraction"].get(geocode.id)
+    assert isinstance(stored, RawRecord) and stored.data_type == "gps_geocode"
+    assert stored.payload == geocode.payload
+    assert (stored.event_start, stored.event_end) == (point.event_start, point.event_end)
+    assert (
+        rt.clients["extraction"].count(
+            Query("gps_point", unreferenced_by=("gps_geocode", "gps_point_id"))
+        )
+        == 0
+    )
+
+
 @pytest.mark.parametrize("restart", [False, True], ids=["main", "restart-and-duplicate"])
 def test_d1_core_loop_real_http_gateway_and_finish(core_runtime, restart):
     rt = core_runtime
@@ -477,6 +528,7 @@ def test_d1_core_loop_real_http_gateway_and_finish(core_runtime, restart):
         source=source, storage=rt.clients["adapter"], locator=FakeLocator(), config=AdapterConfig()
     )
     assert isinstance(importer.run_once(capture_ids=["cap-1"]).outcomes[0], Ingested)
+    append_synthetic_geocode(rt)
     pump(rt)
     raw_counts = {name: rt.clients["adapter"].count(Query(name)) for name in RAW_TYPES}
     assert raw_counts == {

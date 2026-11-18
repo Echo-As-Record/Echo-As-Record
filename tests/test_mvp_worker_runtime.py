@@ -270,6 +270,7 @@ def test_public_initialization_and_three_real_worker_processes(core_http_runtime
             config=AdapterConfig(),
         )
         assert isinstance(importer.run_once(capture_ids=["cap-1"]).outcomes[0], Ingested)
+        core.append_synthetic_geocode(rt)
         wait_for(
             rt, workers, lambda: len(rows(rt, "attribution")) == 3, "synthetic raw attribution"
         )

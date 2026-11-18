@@ -1,25 +1,44 @@
 ---
 audience: ai
 doc-type: guide
-based-on: 设计 v1.2；信号补充；插件 MVP；工作分解 v1.2；origin/dev 376294d 的 contracts、ear_storage_client 与 ear_storage 代码；services/api 的实际源码与测试（逐文件阅读；2026-11-07 取自功能分支 api/gateway-mvp，其后 #11 已合入 dev，2026-11-12 对照 HEAD 79e8dc3 与工作区）及 deploy/Dockerfile.api、deploy/compose.api-gateway.yaml；2026-11-07 本机取证记录（/tmp，非仓库文件）：ear-67-browser-state.json、ear-api-gateway-deploy-state.json、ear-67-postfix-review.json、ear-67-final-fixes.json、ear-67-full-acceptance.log、ear-67-acceptance-fixes.json、ear-67-full-v2.log（及 .exit）、ear-67-static-v2.log、ear-67-static-final.log（及 .exit）；用户对⑥⑦实现与文档同步的授权；2026-11-12 增补依据：execution_http.py、execution.py、app.py、config.py、cli.py 源码，仓库外摘要 /tmp/ear-mvp-{action-http,action-evidence-fix,eight-steps}.json（作者读取并核对各自的退出码文件、日志末行与 junit 用例名，测试结果未复跑），git 记录（8750a83 即 #11 是 HEAD 79e8dc3 的祖先）；本文不新增用户授权记录，也不增加用户决定；2026-11-18恢复增补：697de3b与7f98132合并候选、PR23只读审查及本轮限定文档授权（新说明非功能验收）
+based-on: 设计 v1.2；信号补充；插件 MVP；工作分解 v1.2；origin/dev 376294d 的 contracts、ear_storage_client 与 ear_storage 代码；services/api 的实际源码与测试（逐文件阅读；2026-11-07 取自功能分支 api/gateway-mvp，其后 #11 已合入 dev，2026-11-12 对照 HEAD 79e8dc3 与工作区）及 deploy/Dockerfile.api、deploy/compose.api-gateway.yaml；2026-11-07 本机取证记录（/tmp，非仓库文件）：ear-67-browser-state.json、ear-api-gateway-deploy-state.json、ear-67-postfix-review.json、ear-67-final-fixes.json、ear-67-full-acceptance.log、ear-67-acceptance-fixes.json、ear-67-full-v2.log（及 .exit）、ear-67-static-v2.log、ear-67-static-final.log（及 .exit）；用户对⑥⑦实现与文档同步的授权；2026-11-12 增补依据：execution_http.py、execution.py、app.py、config.py、cli.py 源码，仓库外摘要 /tmp/ear-mvp-{action-http,action-evidence-fix,eight-steps}.json（作者读取并核对各自的退出码文件、日志末行与 junit 用例名，测试结果未复跑），git 记录（8750a83 即 #11 是 HEAD 79e8dc3 的祖先）；本文不新增用户授权记录，也不增加用户决定；2026-11-18事实同步：HEAD84d2d0f已含origin/dev ba36543/PR20与此前GPS；app/evidence/flat workspace与core_deployment实际源码；ear-real-deployment、ear-real-ui-fix、ear-gps-integration、ear-real-default-final的20261118磁盘产物；限定五文档授权
 ---
 
 # ⑥ 实现说明与验证记录（api/gateway-mvp）
 
-## 2026-11-18 恢复入口（历史段落不等于当前完成状态）
+## 2026-11-18 当前入口与验证（旧批次不代替本轮）
 
-当前HEAD为 `697de3b`，第二批已在其历史中，本次正合并 `7f98132`；第0–9节的79e8dc3、“第二批工作区未提交”及历史验收数字保持为时点记录，不当作本次候选测试。合并保留action-v2、execution_http、③结果投影与`CORE_MVP_BUSINESS_ADDITIONS`，叠加`gps_geocode`，可浏览核心业务类型共17类。
+只读核对HEAD `84d2d0f`，`origin/dev ba36543`是其祖先，含PR #20与此前GPS；合并已完成。第0–9节的79e8dc3、“第二批工作区未提交”及2026-11-07/12数字保留为历史记录；本轮新增工作区evidence/Web/runtime不能因HEAD已含上游就称已提交。原reviewed字段与proposed状态不改变。
 
-PR #23（a7baf9e，OPEN）的`mcp.py`/stdio配置与依赖没有因文档任务自动合入。当前未跟踪`evidence.py`由主 agent加固：无snapshot的有界live查询、封闭摘录、查询绑定短期cursor、明确截断与偏移/人物可用性；同步Reader的10秒cooperative检查不是端到端硬deadline，未完成独立验证或MCP接线。不要整文件覆盖app/config/business以迁就PR旧pending_contract测试。
+### 当前代码与路由
 
-具体源码观察、九项审查缺口、前端静态/主 agent后端边界与轻量验证见[恢复交接](../../../ai-docs/plans/real-sample-web-mcp.md)；产品/安全边界与官方协议核对见[proposed MCP提案](../../../docs/proposals/mcp-interface.md)。本轮不运行服务/模型、不补授权、不宣称Web或MCP已交付。
+- `app.py:evidence_search` 已挂 `GET /v1/evidence/search`，仅接受start/end/q/limit/cursor；时间UTC Z非空≤24h、q长1–256、limit默认10且≤10、每次当前身份经①授权。**没有 `/v1/evidence` 或 `/v1/persons` 当前路由**；人物用 `/v1/records/person`，精确姓名专用查询未实现。
+- `evidence.py` 用Reader.query/get而非全库snapshot；候选/页/Reader/返回对象计账及响应限额、短期查询绑定cursor、明确truncated/continuation、`live_best_effort`。10秒是同步调用之间的cooperative检查，不是硬deadline/严格取消/底层IO内存上限；cursor不授权、不绑定主体，重启/换worker失效。
+- `app.py:_WorkspaceFiles` 只服务flat的 `workspace.html`、`workspace.js`、`workspace.css`，挂载 `/workspace`；入口 `/workspace/`。旧 `static/workspace/` prototype不是运行时依赖，`/plugins/`保留。通用records完整获权payload与UI显示裁剪不同，不声称字段级服务端保护。
+- `business.py` 17类含静态rule_selection与gps_geocode；`core_deployment.RAW_TYPES`已加gps_geocode，extraction读策略引用它。新库profile缺权阻塞已修，不修改旧库grant，不等于源Evidence/embedding已授权。
+- 保留action-v2默认关闭、CLI不注入adapter、未知停自动重试、③可信回执投影及旧信封重放；只读viewer不提供审核/执行/恢复/纠正按钮。**MCP仅proposed，代码/stdio/客户端配置未安装接线**，不照PR #23整文件覆盖app/config/business或锁文件。
 
-## 0. 状态与使用
+### 本轮实际证据与未证明事项
 
-- **部分交付，待审。** 首批代码在 dev 的历史里（8750a83，即 #11，是 HEAD 79e8dc3 的祖先；“功能分支待合并”的旧说法已过期）；第二批（action-v2 的 HTTP 接线、③ 命令结果投影等）在工作区，未提交、未提 PR、未部署，见第 3A 节。第 1–8 节的 2026-11-07 内容描述首批；本页不是完成报告，不得据此宣称 ⑥ 是完整 MVP。面向人的用法见[⑥入口](../README.md)。
+| 证据 | 核实结果 | 限制 |
+|---|---|---|
+| `/tmp/ear-real-default-final-20261118.{exit,xml,log}` | exit0；3209 passed、862 skipped、2 warnings，109.06秒；JUnit4071项且0 failures/errors | 默认全套，非最新四开关；此套件早于UI最终修复 |
+| `/tmp/ear-gps-integration-20261118.json`及各套exit/JUnit | PG/NATS runtime10通过，normal/lookup-recovery两个八步均通过；memory347、contracts-api926分别通过 | 平台真实临时服务，输入/模型/效果合成；各范围及默认全套重叠，不相加 |
+| `/tmp/ear-real-ui-fix-20261118.json` | EAR-REAL-INDEPENDENT-001/002两项P2已修；Node144通过（全UI集合另1跳过）；Chromium5个合成检查通过 | file fixture、mock fetch、隔离网络；不是线上HTTP/CSP/重部署验证。错误态保持、节点计账与详情异常边界修复；额外SCAN_DROPPED_ROW_COMPLETENESS未关闭 |
+| `/tmp/ear-real-deployment-20261118.json` | 独立8服务空库、7healthy+relay无探针；真实Chromium无mock，普通用户鉴权与17类0行通过 | 初始部署、UI修复前；没有真实数据、LLM/geocoder/动作；旧ear-dev未动 |
+
+历史默认 **7 failed/3197 passed/861 skipped** 保留为失败快照：GPS合成夹具4、旧prototype断言2、umask私有journal夹具1，均已修并由上述默认最终结果取代。未跑最新四开关全量，不能用历史四开关数字覆盖本轮未测项。
+
+**API-only最终重部署已核对完成**：`/tmp/ear-real-ui-deployment-final-20261118.json`记录83项HTTP/镜像检查与真实Chromium无mock验证通过，修复后flat资产已在线。原始初始化回执保留，私有更新回执另存；helper `up`仍拒绝 `frozen_source_or_images_changed`，尚无已审核的回执采纳/重启恢复流程。此前building状态属于中间观察，不能替代最终记录。
+
+运行项目 `ear-real-sample-20261118` 在vm-remote；Docker internal网络未发布host ports，当前回环18100/18186由私有有界userspace forwarder提供，transient用户单元不跨主机重启。重启后须操作者人工恢复并验证，非自动恢复/完整可复现承诺。**真实源专用Evidence及embedding读grant未证明，NO REAL DATA IMPORTED；不借admin。** 使用方式与所有证据边界统一见[事实交接](../../../ai-docs/plans/real-sample-web-mcp.md)；只读[MCP提案](../../../docs/proposals/mcp-interface.md)仍待采纳。
+
+## 0. 历史状态与使用（2026-11-07/12）
+
+- **部分交付，待审。** 首批代码在 dev 的历史里（8750a83，即 #11，是 HEAD 79e8dc3 的祖先；“功能分支待合并”的旧说法已过期）；第二批（action-v2 的 HTTP 接线、③ 命令结果投影等）已在 `697de3b` 提交至未合并 PR #16，见第 3A 节；其中“工作区”是历史时点描述。第 1–8 节的 2026-11-07 内容描述首批；本页不是完成报告，不得据此宣称 ⑥ 是完整 MVP。面向人的用法见[⑥入口](../README.md)。
 - 基线 HEAD 79e8dc3（含 #11）；根 `pyproject.toml` 的 uv workspace 已包含 `services/api` 和 `services/llm_gateway`。2026-11-07 的取证文件取自功能分支 `api/gateway-mvp`，不是当前基线的结果。
 - 取证文件在 `/tmp`，不属于仓库，可能丢失；本页把数字和范围抄录在第 5 节并标明出处。重新运行得到的新结果优先于本页。
-- **当前验收（第 5 节）**：修复后的最终全套（四个开关全开，`/tmp/ear-67-full-v2.log`）退出 0，2067 passed、11 skipped、2 warnings，用时 1001.65 秒；最终静态检查（`/tmp/ear-67-static-final.log`）退出 0。**历史失败保留在第 5 节**：12:35 全套 3 failed，14:26 静态检查因 `ruff format` 失败；均已修复并重跑。仍是合成/隔离环境，不是生产验收。
+- **2026-11-07最终验收（第 5 节；历史）**：修复后的最终全套（四个开关全开，`/tmp/ear-67-full-v2.log`）退出 0，2067 passed、11 skipped、2 warnings，用时 1001.65 秒；最终静态检查（`/tmp/ear-67-static-final.log`）退出 0。**历史失败保留在第 5 节**：12:35 全套 3 failed，14:26 静态检查因 `ruff format` 失败；均已修复并重跑。仍是合成/隔离环境，不是生产验收。
 - 不改 accepted 的语义；不碰③④分支；契约增补须①负责人与 I 审核（只增不删）。
 
 ## 1. 代码导航（`services/api/src/ear_api/`）
@@ -28,7 +47,7 @@ PR #23（a7baf9e，OPEN）的`mcp.py`/stdio配置与依赖没有因文档任务�
 |---|---|
 | `config.py` | `Binding`（subject、role=user/admin、`token`、`storage_token`，均 43 位 base64url）；`Settings`（storage_url、bindings、public_origin、static_dir 默认随包 `static/`、execution_journal、`execution_action_v2`（严格布尔，默认 false，第二批）、timeout、max_body_bytes、body_timeout）；`authenticate`（sha256 摘要 + `hmac.compare_digest` 遍历全部绑定）；令牌两两不同 |
 | `cli.py` | `ear-api serve|check|health`；`load_settings` 只读受保护配置（`O_NOFOLLOW`、普通文件、无 group/other 权限、属主为当前用户、单链接、≤64 KiB、读前后元数据不变、重复键拒绝）；`serve` 固定 `workers=1`、`access_log=False`；失败只输出 `{"code":"api_startup_or_health_failed"}` |
-| `app.py` | `create_app(settings, *, upstream, execution, adapter)`；全部路由；`redirect_slashes=False`；`settings.static_dir` 非空时挂载 `/plugins`；`execution_journal` 由 lifespan 拥有并关闭；`execution` 与 `adapter`/`execution_journal` 不能同时给（`ambiguous_execution_configuration`），`adapter` 必须配 `execution_journal`（`execution_journal_required`）；第二批：`settings.execution_action_v2` 且传入了 `adapter` 才启用 v2 的 HTTP（`app.state.execution_http_enabled`），`execution_action_v2` 与注入的 `execution` 同给、或把 `ExecutionPump` 当作 `execution` 传入都会失败（`action_v2_requires_explicit_adapter_and_journal`）；`ear-api serve` 只调 `create_app(settings)`，不注入适配器 |
+| `app.py` | `create_app(settings, *, upstream, execution, adapter)`；全部路由；`redirect_slashes=False`；`settings.static_dir` 非空时挂载 `/plugins` 与 flat `/workspace`；`execution_journal` 由 lifespan 拥有并关闭；`execution` 与 `adapter`/`execution_journal` 不能同时给（`ambiguous_execution_configuration`），`adapter` 必须配 `execution_journal`（`execution_journal_required`）；第二批：`settings.execution_action_v2` 且传入了 `adapter` 才启用 v2 的 HTTP（`app.state.execution_http_enabled`），`execution_action_v2` 与注入的 `execution` 同给、或把 `ExecutionPump` 当作 `execution` 传入都会失败（`action_v2_requires_explicit_adapter_and_journal`）；`ear-api serve` 只调 `create_app(settings)`，不注入适配器 |
 | `boundary.py` | ASGI 中间件：请求体大小与截止时间、不含密钥的错误体（含框架层错误）、`Origin` 与 `public_origin` 校验（`cross_origin_denied`） |
 | `upstream.py` | `Upstream`：每次使用前 `_verify`（配置存在 → 向①取当前身份 → 拒绝两个绑定解析到同一①主体）；`client(binding)` 返回用该绑定 `storage_token` 的 `RemoteStorageClient`；`plugin_directory`（仅 admin，只调 `list_plugin_directory`，不回退业务登记表）；`management`；`ready`；`GatewayError(status, code)` |
 | `business.py` | `BUSINESS_TYPES`（从随代码发布的核心 `DEFAULT_REGISTRY` 推导，当前 17 类（原 15 类加静态补充 `rule_selection` 与 `gps_geocode`）；筛选规则见[读取 API](../README.md#34-接口一览)）；`feedback_identity`（由主体与 `request_id` 确定性推出反馈 id 和时间）；`submit_feedback`；`feedback_status`；`preview_reextract`；`management_result` |
@@ -37,9 +56,10 @@ PR #23（a7baf9e，OPEN）的`mcp.py`/stdio配置与依赖没有因文档任务�
 | `execution_http.py`（第二批） | action-v2 的 HTTP 辅助：`PrepareInput`、`PumpInput`、`VerifyInput`/`ConfirmInput`/`RetryInput`（`operation` 判别联合，封闭模型、严格整数与布尔）、`projection`（只读 GET 投影）、`pump_once`、`recover`；路由本身在 `app.py` |
 | `attribution_results.py`（第二批） | ⑥ 对 ③ 命令的结果投影：`INTEGRATION = "attribution_result_query"`，`SUPPORTED` 为 `correct_attribution`、`confirm_attribution`、`add_reference`、`remove_reference`、`rename`、`create_place`；只读 ③ 写的 `attribution_feedback_result`，回执畸形或有歧义返回 503，读授权缺失 403 |
 | `execution_journal.py` | `ExecutionJournal`：私有 SQLite 恢复事实，仅 Linux 本地文件系统，持有 OS 文件锁，不是④的权威业务状态 |
-| `static/` | `index.html`、`app.js`、`core.js`（无 DOM 的纯逻辑）、`styles.css` |
+| `evidence.py` | 当前有界live字面证据查询；路由 `/v1/evidence/search`；合作式截止、签名查询游标与受限摘录，不是MCP实现 |
+| `static/` | 插件页 `index.html`、`app.js`、`core.js`、`styles.css`；当前只读viewer为flat的 `workspace.html`、`workspace.js`、`workspace.css`，不依赖旧workspace目录 |
 
-测试在 `services/api/tests/`：`conftest.py`（回环 TCP 假存储）、`test_api.py`、`test_execution.py`、`test_hardening.py`；第二批新增 `test_execution_protocol.py`（`ExecutionPump` 与证据校验）、`test_execution_http_v2.py`（HTTP 接线）；`tests/ui/core.test.js`、`tests/ui/page.test.js`（Node 纯逻辑与假 DOM）。动作的真实运行测试在 `services/storage/tests/test_action_protocol_runtime.py`（需 `EAR_RUN_POSTGRES_TESTS=1` 与 `EAR_RUN_NATS_TESTS=1`，临时容器、回环 HTTP、真实 ④ consumer、合成适配器），④ 侧在 `services/extraction/tests/test_execution_protocol.py`；合成八步在仓库根 `tests/test_mvp_eight_steps_runtime.py`。部署烟测在仓库根 `tests/test_api_gateway_deployment.py`。
+测试在 `services/api/tests/`：`conftest.py`（回环 TCP 假存储）、`test_api.py`、`test_execution.py`、`test_hardening.py`；第二批新增 `test_execution_protocol.py`（`ExecutionPump` 与证据校验）、`test_execution_http_v2.py`（HTTP 接线）；`tests/ui/core.test.js`、`tests/ui/page.test.js`（Node 纯逻辑与假 DOM）。动作的真实运行测试在 `services/storage/tests/test_action_protocol_runtime.py`（需 `EAR_RUN_POSTGRES_TESTS=1` 与 `EAR_RUN_NATS_TESTS=1`，临时容器、回环 HTTP、真实 ④ consumer、合成适配器），④ 侧在 `services/extraction/tests/test_execution_protocol.py`；合成八步在仓库根 `tests/test_mvp_eight_steps_runtime.py`。部署烟测在仓库根 `tests/test_api_gateway_deployment.py`。当前evidence/flat viewer测试另见 `test_evidence.py`、`test_workspace.py`、`tests/ui/workspace-flat.test.js`、`tests/ui/workspace-flat-browser.test.js`；后者opt-in被跳过不等于已跑真实浏览器验收。
 
 依赖（`pyproject.toml`，均为 workspace 源）：`ear-contracts`、`ear-storage-client`、`ear-storage`（取 `ManagementInput`）、`ear-extraction`（取 `Command`、`Action`、`Interval`）、`fastapi`、`httpx`、`uvicorn`。
 
@@ -101,8 +121,8 @@ EAR_RUN_API_GATEWAY_DEPLOY_TESTS=1 EAR_API_TEST_IMAGE=… EAR_GATEWAY_TEST_IMAGE
 
 | 记录 | 结果 | 范围与限制 |
 |---|---|---|
-| **当前**：全套四开关（`ear-67-full-v2.{sh,log,exit}`，14:09 起、14:26 结束） | **通过**，退出 0：2067 passed，11 skipped，2 warnings，1001.65 秒（0:16:41）；`uv run pytest -q -rs`，`timeout` 3000 秒 | `EAR_RUN_POSTGRES_TESTS`、`EAR_RUN_NATS_TESTS`、`EAR_RUN_BACKUP_TESTS`、`EAR_RUN_API_GATEWAY_DEPLOY_TESTS` 均为 1；镜像 `ear-{storage,api,gateway}:ear-67-acceptance-fixes-20261107`，Compose 用 `/tmp/ear-deploy-cli/docker-compose`。11 个跳过：`test_causality_context_guard.py` 5 个、`test_llm_preflight.py` 6 个，原因均为需要认证 PostgreSQL（`-rs` 汇总）。2 个 warning：starlette 的 httpx 弃用，和 `test_auth_is_header_only_and_no_admin_fallback` 里的逐请求 cookies 弃用。合成/隔离环境，不是生产验收；不含真实浏览器↔真实①、真实模型、真实日历 |
-| **当前**：静态检查（`ear-67-static-final.{sh,log,exit}`，14:36） | 退出 0：`ruff check .`、`ruff format --check .`（169 files already formatted）、`pyright`（0 errors）、`uv lock --check`、`tools/check_docs.py`、`tools/check_docs.py --base origin/dev`（均为 36 个 Markdown 文件）、`git diff --check`、`node --test`（`core.test.js` + `page.test.js`：37 tests，37 pass，0 fail） | 只是静态检查与页面纯逻辑测试 |
+| **2026-11-07最终**：全套四开关（`ear-67-full-v2.{sh,log,exit}`，14:09 起、14:26 结束） | **通过**，退出 0：2067 passed，11 skipped，2 warnings，1001.65 秒（0:16:41）；`uv run pytest -q -rs`，`timeout` 3000 秒 | `EAR_RUN_POSTGRES_TESTS`、`EAR_RUN_NATS_TESTS`、`EAR_RUN_BACKUP_TESTS`、`EAR_RUN_API_GATEWAY_DEPLOY_TESTS` 均为 1；镜像 `ear-{storage,api,gateway}:ear-67-acceptance-fixes-20261107`，Compose 用 `/tmp/ear-deploy-cli/docker-compose`。11 个跳过：`test_causality_context_guard.py` 5 个、`test_llm_preflight.py` 6 个，原因均为需要认证 PostgreSQL（`-rs` 汇总）。2 个 warning：starlette 的 httpx 弃用，和 `test_auth_is_header_only_and_no_admin_fallback` 里的逐请求 cookies 弃用。合成/隔离环境，不是生产验收；不含真实浏览器↔真实①、真实模型、真实日历 |
+| **2026-11-07最终**：静态检查（`ear-67-static-final.{sh,log,exit}`，14:36） | 退出 0：`ruff check .`、`ruff format --check .`（169 files already formatted）、`pyright`（0 errors）、`uv lock --check`、`tools/check_docs.py`、`tools/check_docs.py --base origin/dev`（均为 36 个 Markdown 文件）、`git diff --check`、`node --test`（`core.test.js` + `page.test.js`：37 tests，37 pass，0 fail） | 只是静态检查与页面纯逻辑测试 |
 | **历史失败（保留）**：全套四开关（`ear-67-full-acceptance.log`，12:35） | **3 failed**，2058 passed，11 skipped，2 warnings，879.49 秒 | **未通过**。失败：部署烟测 `[custom]`、`[builtin-octopus]` 因运行脚本漏设 `EAR_STORAGE_TEST_IMAGE` 在断言处失败；`test_real_offline_roundtrip` 因旧 storage 镜像里 root 拥有、权限 0600 的 `/app/runtime.py` 对 UID 10001 不可读，迁移退出、`init-identities` 未执行。11 个跳过均为需要认证 PostgreSQL 的 `memory` 参数化用例。2 个 warning 是 starlette 的 httpx 弃用和 `test_auth_is_header_only_and_no_admin_fallback` 里的逐请求 cookies 弃用 |
 | **历史失败（保留）**：静态检查（`ear-67-static-v2.{log,exit}`，14:26） | 退出 1：`ruff check` 通过，`ruff format --check` 判定 `services/llm_gateway/README.md` 的 Python 示例代码块需要重排（`1 file would be reformatted, 168 files already formatted`）；链上其后各项当次未运行 | 仅格式；已按 ruff 格式重排该代码块（只改 Markdown），14:36 整条链重跑退出 0 |
 | 失败的定向修复（`ear-67-acceptance-fixes.json`，13:53，phase=verified） | 修复前 4 failed/2 passed → 修复后部署目标 3 passed（140 秒），回归 24 passed，静态检查退出 0；镜像源码校验 storage 51、api 40、gateway 36 个文件无差异 | 修复：storage 的非密钥运行代码显式 `COPY --chmod=0444`，缺镜像变量的诊断指明变量名；未移除任何安全检查。记录原文：全套“未在此重跑，由主会话重跑四开关验收”——重跑结果见本表“当前”行（14:26，退出 0） |

@@ -62,6 +62,7 @@ RAW_TYPES = frozenset(
         "voiceprint",
         "ambient_sound",
         "gps_point",
+        "gps_geocode",
         "phone_info",
     }
 )

@@ -1,7 +1,7 @@
 ---
 audience: ai
 doc-type: guide
-based-on: README.md；docs/README.md；本轮已确认设计v1.2；代码基线origin/dev 48d3c51（原有条目）；2026-11-11增补跑通计划入口时origin/dev为c5c31f8，只核对了新增条目与本文件的本地链接，未逐条复核其余条目；2026-11-12增补运行时交接入口行，同样只核对新增条目与本文件的本地链接
+based-on: README.md；docs/README.md；本轮已确认设计v1.2；代码基线origin/dev 48d3c51（原有条目）；2026-11-11增补跑通计划入口时origin/dev为c5c31f8，只核对了新增条目与本文件的本地链接，未逐条复核其余条目；2026-11-12增补运行时交接入口行；2026-11-18限定同步：HEAD84d2d0f已含origin/dev ba36543/PR20及GPS，新evidence/flat workspace与独立空部署的磁盘证据；仅新增/更正相关导航，其余条目仍为历史基线
 ---
 
 # AI 工程上下文索引
@@ -27,7 +27,9 @@ based-on: README.md；docs/README.md；本轮已确认设计v1.2；代码基线o
 | ⑤ 依赖分析入口与实现设计 | [模块入口](../services/dependency/README.md)、[实现设计草案](../services/dependency/ai-docs/design.md)、[接口提案](../docs/proposals/dependency-scheduler-interfaces.md) |
 | 全局契约/实施顺序 | [实施计划](plans/mvp-implementation.md) |
 | MVP 跑通：阶段门槛、首批任务、演练维度（输入/模型/外部适配器/平台）、真实数据边界与授权范围 | [跑通计划](plans/mvp-runnable.md) |
-| MVP 第二批工作区切片的运行时交接：切片边界、初始化与 worker 说明、最终验收证据、提交与门槛状态（待主 agent） | [运行时交接](plans/mvp-runtime-handoff.md)（工程交接，不是完成报告；第二批未提交，PR 16 的 CI 不含它） |
+| MVP 第二批切片的历史运行时交接：初始化、worker与各时点验收 | [运行时交接](plans/mvp-runtime-handoff.md)（历史快照；“第二批未提交/PR16 CI不含”不描述当前HEAD） |
+| 2026-11-18 当前事实：HEAD84d2d0f含ba36543/PR20与GPS；真实evidence API、flat只读Web、独立空运行时及验证/重启边界 | [事实与恢复交接](plans/real-sample-web-mcp.md)（默认3209通过/862跳过；GPS定向10通过但输入/模型/效果合成，范围不相加；无最新四开关；无真实数据导入，源Evidence/embedding授权未证明；最终API重部署已核对完成；helper更新回执采纳/重启恢复未完） |
+| MCP只读优先、权限/外发/确认与启用门槛 | [MCP提案](../docs/proposals/mcp-interface.md)（proposed；未安装/接线，不因Web/API已部署而视为MCP交付） |
 | 原结构提案 | [历史参考](proposals/module-internal-structure.md)，已superseded，不照搬旧API与职责 |
 | 原依赖提案 | [历史来源](../docs/proposals/dependency-refinement.md)，最终以设计及确认索引为准 |
 

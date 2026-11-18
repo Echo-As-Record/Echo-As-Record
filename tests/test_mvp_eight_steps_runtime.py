@@ -312,6 +312,7 @@ def test_eight_steps_real_workers_and_http_actions(eight_runtime, lost_reply):
             config=AdapterConfig(),
         )
         assert isinstance(importer.run_once(capture_ids=["cap-1"]).outcomes[0], Ingested)
+        core.append_synthetic_geocode(rt)
         w.wait_for(rt, workers, lambda: len(core.rows(rt, "attribution")) == 3, "raw attribution")
         raw_counts = {kind: rt.clients["adapter"].count(Query(kind)) for kind in core.RAW_TYPES}
         assert raw_counts == {

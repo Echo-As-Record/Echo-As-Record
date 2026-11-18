@@ -80,6 +80,9 @@ def test_profile_is_fresh_strict_and_does_not_mutate_public_defaults():
         assert p.subscriptions <= p.reads <= registry.data_types.keys()
         assert not p.reads & {"plugin_management_feedback", "plugin_management_result"}
         assert not p.document()["admin"]
+    assert "gps_geocode" in policies["extraction"].reads
+    assert "gps_geocode" in policies["adapter"].reads
+    assert "gps_geocode" not in policies["attribution"].reads
     assert policies["adapter"].reads == core.RAW_TYPES
     assert not policies["adapter"].subscriptions
     assert policies["llm_gateway"].reads - {"llm_call"} == policies["dependency"].subscriptions

@@ -5,9 +5,10 @@ from typing import Literal
 import pytest
 from ear_contracts import DEFAULT_REGISTRY, Cause, SemanticRecord, TracedCause, new_id
 from ear_extraction.demo import DemoGateway, fixture, fixture_registry, submit
-from ear_extraction.domain import Command, Interval, Rule
+from ear_extraction.domain import Command, Interval, Rule, Waiting
 from ear_extraction.orchestration import COMPLETION_CONSUMER, ExtractionService, reevaluation_run_id
 from ear_extraction.persistence import records
+from ear_extraction.segmentation import raw_inputs
 from ear_storage_client import (
     AppendRaw,
     Context,
@@ -195,15 +196,49 @@ def test_missing_name_is_depended_on_for_first_naming(env):
     assert any(d.dependent.id == artifact.id for d in env.client.stale_dependencies([person.id]))
 
 
+def offline_geocode(point, status="ok"):
+    # Offline synthetic map result, written by the actual adapter identity.
+    geocode = make_raw(
+        "gps_geocode",
+        {
+            "gps_point_id": point.id,
+            "status": status,
+            "provider": "offline",
+            "language": "en",
+            "formatted_address": "Synthetic fixture address" if status == "ok" else None,
+            "country": None,
+            "province": None,
+            "city": None,
+            "district": None,
+            "township": None,
+            "street": None,
+            "building_name": None,
+            "building_type": None,
+            "building_distance_m": None,
+            "query_coordinate": {
+                "latitude": point.payload["latitude"],
+                "longitude": point.payload["longitude"],
+                "crs": "WGS84",
+            },
+        },
+        start=point.event_start,
+        end=point.event_end,
+        device=point.source.device,
+        channel=point.source.channel,
+        user=point.source.user,
+        adapter_version="offline-fixture/1.0",
+        dedup_key=f"{point.id}:geocode:offline",
+    )
+    return geocode
+
+
 def test_all_interval_attributions_even_uncited_are_registered(env):
     gps, place, attr = new_id(), new_id(), new_id()
+    point = make_raw(
+        "gps_point", {"latitude": 0.0, "longitude": 0.0}, id=gps, start="2026-11-05T09:30:00Z"
+    )
     env.store.client("adapter").write(
-        [
-            AppendRaw(
-                make_raw("gps_point", {"lat": 0, "lon": 0}, id=gps, start="2026-11-05T09:30:00Z")
-            )
-        ],
-        Context.system(),
+        [AppendRaw(point), AppendRaw(offline_geocode(point))], Context.system()
     ).check()
     env.store.client("attribution").write(
         [
@@ -223,6 +258,38 @@ def test_all_interval_attributions_even_uncited_are_registered(env):
         env.ids["attribution"],
     }
     assert next(d for d in deps if d.depends_on.id == place).fields == ("name",)
+
+
+@pytest.mark.parametrize("status", ["ok", "no_result", "failed"])
+def test_geocode_gate_waits_for_record_and_accepts_terminal_offline_results(env, status):
+    point = make_raw("gps_point", {"latitude": 0.0, "longitude": 0.0}, start="2026-11-05T09:30:00Z")
+    env.store.client("adapter").write([AppendRaw(point)], Context.system()).check()
+    with pytest.raises(Waiting, match="attributions_pending"):
+        raw_inputs(env.client, RANGE)
+    place = new_id()
+    env.store.client("attribution").write(
+        [
+            Create("place", place, {"name": "Synthetic place", "references": []}),
+            Create(
+                "attribution",
+                new_id(),
+                {"subject_id": point.id, "target_type": "place", "target_id": place},
+            ),
+        ],
+        Context.system(),
+    ).check()
+    with pytest.raises(Waiting, match="geocode_pending"):
+        raw_inputs(env.client, RANGE)
+    assert not env.model.calls
+    geocode = offline_geocode(point, status)
+    env.store.client("adapter").write([AppendRaw(geocode)], Context.system()).check()
+    env.extract()
+    segment = next(c for c in env.model.calls if c.purpose == "segmentation")
+    evidence = next(r for r in segment.data["evidence"] if r["id"] == geocode.id)
+    assert evidence["data_type"] == "gps_geocode"
+    assert evidence["payload"] == geocode.payload
+    assert evidence["event_start"] == point.model_dump(mode="json")["event_start"]
+    assert evidence["event_end"] == point.model_dump(mode="json")["event_end"]
 
 
 def test_zero_rules_still_saves_selection_and_new_rule_does_not_scan_history(env):

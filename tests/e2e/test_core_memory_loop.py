@@ -19,6 +19,7 @@ from ear_attribution.feedback import feedback_result_id
 from ear_contracts import (
     DEFAULT_REGISTRY,
     DataTypeSpec,
+    RawRecord,
     ReevaluationRequested,
     Registry,
     SemanticRecord,
@@ -132,6 +133,41 @@ def test_import_correction_and_real_owners_finish_in_memory(rebuild_scheduler):
         )
 
     assert isinstance(importer().run_once(capture_ids=["cap-1"]).outcomes[0], Ingested)
+    [point] = storage.client("adapter").query(Query("gps_point")).items
+    assert isinstance(point, RawRecord)
+    # Offline synthetic map result, written by the actual adapter identity.
+    geocode = make_raw(
+        "gps_geocode",
+        {
+            "gps_point_id": point.id,
+            "status": "ok",
+            "provider": "offline",
+            "language": "en",
+            "formatted_address": "Synthetic fixture address",
+            "country": None,
+            "province": None,
+            "city": None,
+            "district": None,
+            "township": None,
+            "street": None,
+            "building_name": None,
+            "building_type": None,
+            "building_distance_m": None,
+            "query_coordinate": {
+                "latitude": point.payload["latitude"],
+                "longitude": point.payload["longitude"],
+                "crs": "WGS84",
+            },
+        },
+        start=point.event_start,
+        end=point.event_end,
+        device=point.source.device,
+        channel=point.source.channel,
+        user=point.source.user,
+        adapter_version="offline-fixture/1.0",
+        dedup_key=f"{point.id}:geocode:offline",
+    )
+    storage.client("adapter").write([AppendRaw(geocode)], Context.system()).check()
     storage.run_until_idle()
     assert not storage.dead_letters
     assert len(rows(storage, "person")) == 2
