@@ -11,6 +11,7 @@ dev = [
     "ear-storage-client",
     "ear-storage",
     "ear-adapter",
+    "ear-ingest",
     "ear-extraction",
     "ear-api",
     "ear-llm-gateway",
@@ -27,13 +28,14 @@ package = false
 
 [tool.uv.workspace]
 # 新建模块包时加到这里。
-members = ["libs/ear_contracts", "libs/ear_storage_client", "services/storage", "services/adapters", "services/extraction", "services/api", "services/llm_gateway"]
+members = ["libs/ear_contracts", "libs/ear_storage_client", "services/storage", "services/adapters", "services/ingest", "services/extraction", "services/api", "services/llm_gateway"]
 
 [tool.uv.sources]
 ear-contracts = { workspace = true }
 ear-storage-client = { workspace = true }
 ear-storage = { workspace = true }
 ear-adapter = { workspace = true }
+ear-ingest = { workspace = true }
 ear-extraction = { workspace = true }
 ear-api = { workspace = true }
 ear-llm-gateway = { workspace = true }
@@ -54,7 +56,7 @@ venv = ".venv"
 extraPaths = ["tools"]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
-include = ["tools", "tests", "libs", "services/storage", "services/adapters", "services/extraction", "services/api", "services/llm_gateway", "services/dependency"]
+include = ["tools", "tests", "libs", "services/storage", "services/adapters", "services/ingest", "services/extraction", "services/api", "services/llm_gateway", "services/dependency"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "libs", "services/storage/tests", "services/adapters/tests", "services/extraction/tests", "services/api/tests", "services/llm_gateway/tests"]
