@@ -1,10 +1,16 @@
 ---
 audience: human
 doc-type: guide
-based-on: 设计 v1.2；c5c31f8 的④实现；本轮负责人授权④直接依赖⑦ GatewayClient；79e8dc3 中的④首片（orchestration.py、call_safety.py、domain.py、model_io.py、planning.py、worker.py、demo.py 与相应测试，作者读 git diff 与源码核对）；任务状态文件 /tmp/ear-mvp-extraction-followup.json 与 /tmp/ear-mvp-extraction-state.json（非仓库文件，其中的测试作者未复跑，只用 pytest --collect-only 核对项数）；2026-11-12 增补依据：工作区未提交的 services/extraction 源码（selection.py、reevaluation.py、artifacts.py、orchestration.py、planning.py、segmentation.py、suggestions.py、domain.py、demo.py、model_io.py，作者读源码与 git diff，不运行测试）、仓库外摘要 /tmp/ear-mvp-extraction-v12.json 与 /tmp/ear-mvp-action-protocol.json（作者读取，其中的测试结果作者未复跑，只用 pytest --collect-only 与文件哈希核对）、services/storage 的 core_deployment.py（只读核对）；代码基线 integration/mvp-runnable = 79e8dc3；用户在本任务中的授权仅为开始 MVP 实施、可用 vm-octopus 音频、在常驻分支实现提交并提 PR 由用户审核，本文不新增授权记录；未填写或改动任何 reviewed 字段
+based-on: 设计 v1.2；c5c31f8 的④实现；本轮负责人授权④直接依赖⑦ GatewayClient；79e8dc3 中的④首片（orchestration.py、call_safety.py、domain.py、model_io.py、planning.py、worker.py、demo.py 与相应测试，作者读 git diff 与源码核对）；任务状态文件 /tmp/ear-mvp-extraction-followup.json 与 /tmp/ear-mvp-extraction-state.json（非仓库文件，其中的测试作者未复跑，只用 pytest --collect-only 核对项数）；2026-11-12 增补依据：工作区未提交的 services/extraction 源码（selection.py、reevaluation.py、artifacts.py、orchestration.py、planning.py、segmentation.py、suggestions.py、domain.py、demo.py、model_io.py，作者读源码与 git diff，不运行测试）、仓库外摘要 /tmp/ear-mvp-extraction-v12.json 与 /tmp/ear-mvp-action-protocol.json（作者读取，其中的测试结果作者未复跑，只用 pytest --collect-only 与文件哈希核对）、services/storage 的 core_deployment.py（只读核对）；代码基线 integration/mvp-runnable = 79e8dc3；用户在本任务中的授权仅为开始 MVP 实施、可用 vm-octopus 音频、在常驻分支实现提交并提 PR 由用户审核，本文不新增授权记录；未填写或改动任何 reviewed 字段；2026-11-18恢复增补：697de3b与7f98132合并候选、PR23只读审查及本轮限定文档授权（新说明非功能验收）
 ---
 
 # ④ 活动提取
+
+## 2026-11-18 合并候选说明
+
+本页下文79e8dc3/2026-11-12的“第二批工作区未提交”与验证限制保留为历史；第二批v1.2/Finish/action-v2已在当前HEAD `697de3b` 历史中，本次正在合并 `7f98132`，尚无本次统一验收结论。合并保留这些集成功能，并保留`gps_geocode`等待、地名/楼宇作为原始证据的上游说明，不把它改成③推断地点。
+
+当前core profile的extraction读授权仍未覆盖`gps_geocode`，缺权不能伪装无GPS/无结果；需主 agent与①/I显式处理和验证，不在文档任务中补grant或绕过等待。最小真实样本候选默认不启④/⑦，查看已有记录不触发提取；见[恢复交接](../../ai-docs/plans/real-sample-web-mcp.md)。⑥的[只读MCP设计](../../docs/proposals/mcp-interface.md)仍proposed，不授权模型调用或外部动作。
 
 负责活动、规则、Markdown 产物及外部动作建议。**79e8dc3 含调用安全与重判完成首片；v1.2 对齐（纯 Markdown、`rule_selection`、按当前规则重判与完整 Finish）以及外部动作 action-v2 的 ④ 侧状态流转是第二批，只在工作区：未提交、未提 PR、未部署。仍不是完整的 ④，也不是 MVP 完成。**
 
@@ -46,3 +52,5 @@ based-on: 设计 v1.2；c5c31f8 的④实现；本轮负责人授权④直接依
 - 79e8dc3 的首批记录（真实 PostgreSQL/NATS 17 项一次连续运行等）见[跑通计划第 2.2 节](../../ai-docs/plans/mvp-runnable.md)；完整的最终数字由主 agent 在统一验证后补入[交接第 7 节](../../ai-docs/plans/mvp-runtime-handoff.md)。
 
 **没做**：网关输出恢复与业务计划重放；用户确认重复风险后的新逻辑调用；模型已返回有效输出、业务提交被拒或结果未知时，停为 `gateway_result_not_committed`，不算 failed、不自动重发；规则级并发保护偏保守，模型返回后可能因无关的并发规则编辑而阻塞；v1.2 的 PostgreSQL 测试没有经 NATS 与真实网关传输；真实模型联调；对网关、数据库、消息总线做操作系统级强杀的恢复验证；外部动作的 HTTP 执行与真实日历适配器（在 ⑥，且未接）。详见[接入限制](ai-docs/implementation.md)。
+
+GPS 输入按[已采纳逆地理编码提案](../../docs/proposals/gps-reverse-geocoding.md)等待②写完 `gps_geocode`；未完成时为 `geocode_pending`，终态结果作为原始证据进入模型。宿主需增加 `gps_geocode` 读授权，详见[接入说明](ai-docs/implementation.md#gps-地名等待)。

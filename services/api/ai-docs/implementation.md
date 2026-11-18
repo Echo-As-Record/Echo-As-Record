@@ -1,10 +1,18 @@
 ---
 audience: ai
 doc-type: guide
-based-on: 设计 v1.2；信号补充；插件 MVP；工作分解 v1.2；origin/dev 376294d 的 contracts、ear_storage_client 与 ear_storage 代码；services/api 的实际源码与测试（逐文件阅读；2026-11-07 取自功能分支 api/gateway-mvp，其后 #11 已合入 dev，2026-11-12 对照 HEAD 79e8dc3 与工作区）及 deploy/Dockerfile.api、deploy/compose.api-gateway.yaml；2026-11-07 本机取证记录（/tmp，非仓库文件）：ear-67-browser-state.json、ear-api-gateway-deploy-state.json、ear-67-postfix-review.json、ear-67-final-fixes.json、ear-67-full-acceptance.log、ear-67-acceptance-fixes.json、ear-67-full-v2.log（及 .exit）、ear-67-static-v2.log、ear-67-static-final.log（及 .exit）；用户对⑥⑦实现与文档同步的授权；2026-11-12 增补依据：execution_http.py、execution.py、app.py、config.py、cli.py 源码，仓库外摘要 /tmp/ear-mvp-{action-http,action-evidence-fix,eight-steps}.json（作者读取并核对各自的退出码文件、日志末行与 junit 用例名，测试结果未复跑），git 记录（8750a83 即 #11 是 HEAD 79e8dc3 的祖先）；本文不新增用户授权记录，也不增加用户决定
+based-on: 设计 v1.2；信号补充；插件 MVP；工作分解 v1.2；origin/dev 376294d 的 contracts、ear_storage_client 与 ear_storage 代码；services/api 的实际源码与测试（逐文件阅读；2026-11-07 取自功能分支 api/gateway-mvp，其后 #11 已合入 dev，2026-11-12 对照 HEAD 79e8dc3 与工作区）及 deploy/Dockerfile.api、deploy/compose.api-gateway.yaml；2026-11-07 本机取证记录（/tmp，非仓库文件）：ear-67-browser-state.json、ear-api-gateway-deploy-state.json、ear-67-postfix-review.json、ear-67-final-fixes.json、ear-67-full-acceptance.log、ear-67-acceptance-fixes.json、ear-67-full-v2.log（及 .exit）、ear-67-static-v2.log、ear-67-static-final.log（及 .exit）；用户对⑥⑦实现与文档同步的授权；2026-11-12 增补依据：execution_http.py、execution.py、app.py、config.py、cli.py 源码，仓库外摘要 /tmp/ear-mvp-{action-http,action-evidence-fix,eight-steps}.json（作者读取并核对各自的退出码文件、日志末行与 junit 用例名，测试结果未复跑），git 记录（8750a83 即 #11 是 HEAD 79e8dc3 的祖先）；本文不新增用户授权记录，也不增加用户决定；2026-11-18恢复增补：697de3b与7f98132合并候选、PR23只读审查及本轮限定文档授权（新说明非功能验收）
 ---
 
 # ⑥ 实现说明与验证记录（api/gateway-mvp）
+
+## 2026-11-18 恢复入口（历史段落不等于当前完成状态）
+
+当前HEAD为 `697de3b`，第二批已在其历史中，本次正合并 `7f98132`；第0–9节的79e8dc3、“第二批工作区未提交”及历史验收数字保持为时点记录，不当作本次候选测试。合并保留action-v2、execution_http、③结果投影与`CORE_MVP_BUSINESS_ADDITIONS`，叠加`gps_geocode`，可浏览核心业务类型共17类。
+
+PR #23（a7baf9e，OPEN）的`mcp.py`/stdio配置与依赖没有因文档任务自动合入。当前未跟踪`evidence.py`由主 agent加固：无snapshot的有界live查询、封闭摘录、查询绑定短期cursor、明确截断与偏移/人物可用性；同步Reader的10秒cooperative检查不是端到端硬deadline，未完成独立验证或MCP接线。不要整文件覆盖app/config/business以迁就PR旧pending_contract测试。
+
+具体源码观察、九项审查缺口、前端静态/主 agent后端边界与轻量验证见[恢复交接](../../../ai-docs/plans/real-sample-web-mcp.md)；产品/安全边界与官方协议核对见[proposed MCP提案](../../../docs/proposals/mcp-interface.md)。本轮不运行服务/模型、不补授权、不宣称Web或MCP已交付。
 
 ## 0. 状态与使用
 
@@ -23,7 +31,7 @@ based-on: 设计 v1.2；信号补充；插件 MVP；工作分解 v1.2；origin/d
 | `app.py` | `create_app(settings, *, upstream, execution, adapter)`；全部路由；`redirect_slashes=False`；`settings.static_dir` 非空时挂载 `/plugins`；`execution_journal` 由 lifespan 拥有并关闭；`execution` 与 `adapter`/`execution_journal` 不能同时给（`ambiguous_execution_configuration`），`adapter` 必须配 `execution_journal`（`execution_journal_required`）；第二批：`settings.execution_action_v2` 且传入了 `adapter` 才启用 v2 的 HTTP（`app.state.execution_http_enabled`），`execution_action_v2` 与注入的 `execution` 同给、或把 `ExecutionPump` 当作 `execution` 传入都会失败（`action_v2_requires_explicit_adapter_and_journal`）；`ear-api serve` 只调 `create_app(settings)`，不注入适配器 |
 | `boundary.py` | ASGI 中间件：请求体大小与截止时间、不含密钥的错误体（含框架层错误）、`Origin` 与 `public_origin` 校验（`cross_origin_denied`） |
 | `upstream.py` | `Upstream`：每次使用前 `_verify`（配置存在 → 向①取当前身份 → 拒绝两个绑定解析到同一①主体）；`client(binding)` 返回用该绑定 `storage_token` 的 `RemoteStorageClient`；`plugin_directory`（仅 admin，只调 `list_plugin_directory`，不回退业务登记表）；`management`；`ready`；`GatewayError(status, code)` |
-| `business.py` | `BUSINESS_TYPES`（从随代码发布的核心 `DEFAULT_REGISTRY` 推导，当前 15 类；筛选规则见[读取 API](../README.md#34-接口一览)）；`feedback_identity`（由主体与 `request_id` 确定性推出反馈 id 和时间）；`submit_feedback`；`feedback_status`；`preview_reextract`；`management_result` |
+| `business.py` | `BUSINESS_TYPES`（从随代码发布的核心 `DEFAULT_REGISTRY` 推导，当前 17 类（原 15 类加静态补充 `rule_selection` 与 `gps_geocode`）；筛选规则见[读取 API](../README.md#34-接口一览)）；`feedback_identity`（由主体与 `request_id` 确定性推出反馈 id 和时间）；`submit_feedback`；`feedback_status`；`preview_reextract`；`management_result` |
 | `models.py` | `FeedbackInput`、`PendingCommand`（8 种 kind，本地记录约定，不声称③⑤消费）；`load_json_object`（有界、拒绝重复键和非有限数）、`bound_json` |
 | `execution.py` | 离线 `ExecutionService`（`handle_event`、`process`、`verify`、`status`）、`ActionAdapter` 协议（`lookup`、`execute`，`reliable_idempotency`）、`ExternalResult`（`succeeded`/`not_executed`/`unknown`）、`PROTOCOL_BLOCKER = "extraction_execution_recovery_protocol_pending"`；第二批：`ExecutionPump`（v2 的 `prepare`、`pump`、`reconcile`、`confirm_executed`、`retry`、`recovery_request`，见第 3A 节）。**源码的模块 docstring 仍写“HTTP is NOT wired to it”，已与 `execution_http.py` 不符**（注释，未改） |
 | `execution_http.py`（第二批） | action-v2 的 HTTP 辅助：`PrepareInput`、`PumpInput`、`VerifyInput`/`ConfirmInput`/`RetryInput`（`operation` 判别联合，封闭模型、严格整数与布尔）、`projection`（只读 GET 投影）、`pump_once`、`recover`；路由本身在 `app.py` |
@@ -71,7 +79,7 @@ based-on: 设计 v1.2；信号补充；插件 MVP；工作分解 v1.2；origin/d
 | 切片 | 状态 | 说明 |
 |---|---|---|
 | A 骨架与身份 | 已实现 | 包已入 workspace；FastAPI；绑定认证；不读 `.env`；不自报模块身份；不直连数据库 |
-| B 读取 API | 已实现 | 15 个业务类型，经①读取，`consistency: "live"` |
+| B 读取 API | 已实现 | 17 个业务类型，经①读取，`consistency: "live"` |
 | C 用户反馈 | 部分 | ④ 命令接通；③ 命令（含 `create_place`，不含 `reattribute_range`）经 `attribution_feedback_result` 投影结果（第二批，工作区）；⑤ 命令（`reevaluate_related`）只记录（`pending_contract`），等契约 |
 | D 管理反馈与轻量页 | 已实现，联调有限 | 页面 + 管理接口；真实浏览器 34 项只对假①；API 层对真实①+隔离 PostgreSQL/NATS 另有 26 项集成测试通过；无真实浏览器↔真实①的页面联调 |
 | E 外部动作执行 | 离线切片，默认与命令行服务上 HTTP 仍 501；action-v2 协议与可选 HTTP 在工作区（第 3A 节） | 无真实适配器；命令行不注入适配器；不是完成 |

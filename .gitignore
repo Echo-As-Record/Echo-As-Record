@@ -32,3 +32,6 @@ dist/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Reverse-geocoding cache (contains location data)
+geo-cache.sqlite3*

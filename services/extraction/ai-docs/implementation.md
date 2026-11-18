@@ -3,10 +3,16 @@ audience: ai
 doc-type: reference
 generated-by: Codex (AI)
 generated-at: 2026-11-05
-based-on: services/extraction/ai-docs/mvp-design.md, docs/design/design-v1.1.md, docs/design/signals-supplement.md, dev 48d3c51；④ 直接依赖 ⑦ GatewayClient 的改动由 #13（c5c31f8）合入 dev（原写“本轮负责人授权”在仓库里没有可核对的出处，本文不当作用户授权记录），依据当前 client.py/models.py/orchestration.py；2026-11-11 增补：工作区未提交的④首片（call_safety.py、orchestration.py、domain.py、model_io.py、planning.py、worker.py、demo.py 与相应测试，作者读 git diff 与源码核对）；任务状态文件 /tmp/ear-mvp-extraction-followup.json 与 /tmp/ear-mvp-extraction-state.json（非仓库文件，其中的测试作者未复跑，只用 pytest --collect-only 核对项数）；2026-11-12 第二批增补依据：selection.py、reevaluation.py、artifacts.py、orchestration.py、segmentation.py、suggestions.py、domain.py 源码（作者读源码与 grep 核对，不运行测试），仓库外摘要 /tmp/ear-mvp-{action-http,eight-steps,action-evidence-fix}.json（作者读取并核对各自的退出码文件与 junit 用例名，测试结果未复跑）；本文不新增用户授权记录，也不增加用户决定；未填写或改动任何 reviewed 字段
+based-on: services/extraction/ai-docs/mvp-design.md, docs/design/design-v1.1.md, docs/design/signals-supplement.md, dev 48d3c51；④ 直接依赖 ⑦ GatewayClient 的改动由 #13（c5c31f8）合入 dev（原写“本轮负责人授权”在仓库里没有可核对的出处，本文不当作用户授权记录），依据当前 client.py/models.py/orchestration.py；2026-11-11 增补：工作区未提交的④首片（call_safety.py、orchestration.py、domain.py、model_io.py、planning.py、worker.py、demo.py 与相应测试，作者读 git diff 与源码核对）；任务状态文件 /tmp/ear-mvp-extraction-followup.json 与 /tmp/ear-mvp-extraction-state.json（非仓库文件，其中的测试作者未复跑，只用 pytest --collect-only 核对项数）；2026-11-12 第二批增补依据：selection.py、reevaluation.py、artifacts.py、orchestration.py、segmentation.py、suggestions.py、domain.py 源码（作者读源码与 grep 核对，不运行测试），仓库外摘要 /tmp/ear-mvp-{action-http,eight-steps,action-evidence-fix}.json（作者读取并核对各自的退出码文件与 junit 用例名，测试结果未复跑）；本文不新增用户授权记录，也不增加用户决定；未填写或改动任何 reviewed 字段；2026-11-18恢复增补：697de3b与7f98132合并候选、PR23只读审查及本轮限定文档授权（新说明非功能验收）
 ---
 
 # ④ MVP 使用与接入
+
+## 2026-11-18 合并候选导航
+
+下文初版/首片/第二批的Git及测试措辞按各自日期保留；当前HEAD `697de3b` 已含第二批，正合并 `7f98132`，本任务未重跑它们。合并同时保留纯Markdown、`rule_selection`与规则集合守护、当前规则重判、全类Finish、调用未知阻塞和action-v2所有方握手，以及文末上游GPS地名等待。
+
+`gps_geocode`包含`building_name`/`building_type`/`building_distance_m`，属于②原始地理证据，不是③place。当前`core_deployment.RAW_TYPES`七类与extraction读授权未含它，④即使无GPS也可能因查询缺权而拒绝；这项profile兼容由主 agent/①/I显式处理，不能在本文自动扩权、移除等待或改失败为成功。Web仅浏览已有状态，MCP不隐式调用④/⑦；实现观察与验证门槛见[恢复交接](../../../ai-docs/plans/real-sample-web-mcp.md)，MCP边界见[proposed提案](../../../docs/proposals/mcp-interface.md)。
 
 > 本文记录已恢复的初版 MVP（`f3c28db`），用于演示，不代表已完成当前 v1.2 设计。
 >
@@ -206,3 +212,9 @@ Command 的确切字段和校验见 `domain.py`；反馈根源采用该反馈自
 测试覆盖真实共享存储接口上的事件重复投递、原子回滚、归属版本冲突、重判不变/改变、审核回执、旧规则阻塞、任务重试/恢复、定时区间、模型输出校验与 HTTP 适配边界。模型回复为合成测试数据。
 
 真实⑦模型调用、真实②③数据和手机执行尚未验证；本版可作为这些模块的接入基线。首片另用测试夹具起的真实 PostgreSQL/NATS 与回环 ⑦ 网关做过分组验证（来源与限制见“首片”一节），第二批的合成验证见“第二批”一节（含真实 CLI worker、`GatewayClient` 与合成 provider 的八步用例，不是 Compose 部署，也没有真实模型），都不是持久化 ① 的部署验收。
+
+## GPS 地名等待
+
+按[已采纳提案](../../../docs/proposals/gps-reverse-geocoding.md)，`segmentation.inputs()` 在原有归属检查之后，使用同一半开时间范围查询 `gps_point` 的 `unreferenced_by=("gps_geocode", "gps_point_id")`；未完成抛 `Waiting("geocode_pending")`。`RAW_TYPES` 增加 `gps_geocode`，连同坐标进入模型 evidence；ok、no_result、failed 都表示编码已结束，不把原始地名当作③的 place。
+
+宿主授予 extraction 身份 `gps_geocode` 读权限（原有 gps_point/attribution 权限仍需保留）。无需新增订阅或依赖类型：活动仍按现有流程保存 evidence_ids，未启用新的强制依赖能力。等待期限与重试流程保持原样，不额外改变④调度语义。相关回归在② `tests/test_geo.py`，涵盖半开范围、等待和三种终态进入证据。

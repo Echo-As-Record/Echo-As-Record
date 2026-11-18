@@ -131,14 +131,21 @@ class _StateReader:
         excluded: set[str] = set()
         if query.unreferenced_by is not None:
             ref_type, ref_field = query.unreferenced_by
-            if not self._spec(ref_type).versioned:
-                raise InvalidRequest("unreferenced_by 只能引用有版本的数据类型")
-            for versions in self._s.versions.values():
-                last = versions[-1]
-                if last.data_type == ref_type and not last.superseded:
-                    value = last.payload.get(ref_field)
-                    if isinstance(value, str):
-                        excluded.add(value)
+            ref_spec = self._spec(ref_type)
+            if not ref_spec.versioned and ref_spec.kind != "raw_record":
+                raise InvalidRequest("unreferenced_by requires raw or versioned records")
+            if ref_spec.kind == "raw_record":
+                references = (r for r in self._s.raw.values() if r.data_type == ref_type)
+            else:
+                references = (
+                    vs[-1]
+                    for vs in self._s.versions.values()
+                    if vs[-1].data_type == ref_type and not vs[-1].superseded
+                )
+            for reference in references:
+                value = reference.payload.get(ref_field)
+                if isinstance(value, str):
+                    excluded.add(value)
 
         items: list[QueryItem]
         if spec.kind == "raw_record":

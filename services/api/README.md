@@ -1,10 +1,16 @@
 ---
 audience: human
 doc-type: reference
-based-on: 设计 v1.2、信号补充、插件 MVP、工作分解 v1.2；origin/dev 376294d 的 contracts 与①代码；api/gateway-mvp 功能分支（待合并）中 services/api 的实际源码（config、cli、app、boundary、business、models、upstream、execution、execution_journal、static）与 deploy 覆盖文件；2026-11-07 本机取证记录（均在 /tmp，不属于仓库）：ear-67-browser-state.json、ear-api-gateway-deploy-state.json、ear-67-postfix-review.json、ear-67-full-acceptance.log、ear-67-acceptance-fixes.json、ear-67-full-v2.log（及 .exit）、ear-67-static-v2.log、ear-67-static-final.log（及 .exit）；用户对⑥⑦实现与文档同步的授权；2026-11-12 增补依据：services/api 工作区未提交的源码（attribution_results.py、business.py、execution.py、execution_journal.py、app.py、config.py、execution_http.py，作者读源码与 git diff，不运行测试）、services/attribution 的 create_place.py 与 feedback.py、services/extraction 的 domain.py 与 suggestions.py（只读核对）、仓库外摘要 /tmp/ear-mvp-api-place.json 与 /tmp/ear-mvp-action-protocol.json（作者读取，其中的测试结果作者未复跑，只用 pytest --collect-only 与文件哈希核对）、git 记录（8750a83 即 #11 是 HEAD 79e8dc3 的祖先）；2026-11-12 action-v2 HTTP 与证据校验增补依据：execution_http.py、execution.py、app.py、config.py、cli.py 源码与仓库外摘要 /tmp/ear-mvp-{action-http,action-evidence-fix,eight-steps}.json（作者读取并核对各自的退出码文件、日志末行与 junit 用例名，测试结果未复跑）；本文不新增用户授权记录，也不增加用户决定；未填写或改动任何 reviewed 字段
+based-on: 设计 v1.2、信号补充、插件 MVP、工作分解 v1.2；origin/dev 376294d 的 contracts 与①代码；api/gateway-mvp 功能分支（待合并）中 services/api 的实际源码（config、cli、app、boundary、business、models、upstream、execution、execution_journal、static）与 deploy 覆盖文件；2026-11-07 本机取证记录（均在 /tmp，不属于仓库）：ear-67-browser-state.json、ear-api-gateway-deploy-state.json、ear-67-postfix-review.json、ear-67-full-acceptance.log、ear-67-acceptance-fixes.json、ear-67-full-v2.log（及 .exit）、ear-67-static-v2.log、ear-67-static-final.log（及 .exit）；用户对⑥⑦实现与文档同步的授权；2026-11-12 增补依据：services/api 工作区未提交的源码（attribution_results.py、business.py、execution.py、execution_journal.py、app.py、config.py、execution_http.py，作者读源码与 git diff，不运行测试）、services/attribution 的 create_place.py 与 feedback.py、services/extraction 的 domain.py 与 suggestions.py（只读核对）、仓库外摘要 /tmp/ear-mvp-api-place.json 与 /tmp/ear-mvp-action-protocol.json（作者读取，其中的测试结果作者未复跑，只用 pytest --collect-only 与文件哈希核对）、git 记录（8750a83 即 #11 是 HEAD 79e8dc3 的祖先）；2026-11-12 action-v2 HTTP 与证据校验增补依据：execution_http.py、execution.py、app.py、config.py、cli.py 源码与仓库外摘要 /tmp/ear-mvp-{action-http,action-evidence-fix,eight-steps}.json（作者读取并核对各自的退出码文件、日志末行与 junit 用例名，测试结果未复跑）；本文不新增用户授权记录，也不增加用户决定；未填写或改动任何 reviewed 字段；2026-11-18恢复增补：697de3b与7f98132合并候选、PR23只读审查及本轮限定文档授权（新说明非功能验收）
 ---
 
 # ⑥ 客户端与 API
+
+## 2026-11-18 合并候选说明（优先于下文历史状态措辞）
+
+HEAD `697de3b` 已含第二批集成功能；本次正在合并 `7f98132`，下文79e8dc3/2026-11-12的“工作区未提交”和旧测试数字是历史观察，不再描述当前Git状态。本次保留③ `attribution_result_query`/可信回执、`create_place`、`rule_selection`、action-v2默认关闭/CLI不注入适配器及未知不自动重试，同时纳入上游`gps_geocode`，核心可浏览类型共17类。并非完整MVP、真实数据链路或生产验收。
+
+PR #23 的MCP/证据查询代码已存在于 `origin/api/mcp`（a7baf9e），但未合入本候选；主 agent正在整合的未跟踪 `evidence.py` 不是原PR文件，存在不等于⑥路由或页面已接通。本轮只起草[只读优先MCP提案](../../docs/proposals/mcp-interface.md)（proposed），不启用写工具、不覆盖源码。完整只读Web、最小真实小样本运行时、远端dev已前进到ba36543的差距及验收分工见[恢复交接](../../ai-docs/plans/real-sample-web-mcp.md)；静态页由Web agent、backend由主 agent负责。
 
 用户与管理员进入系统的服务端入口：读取时间线、活动、Markdown 产物、人物、地点、规则和建议；把用户操作写成结构化反馈（`feedback`）；把管理员操作写成插件管理反馈（`plugin_management_feedback`）并查询①写出的管理结果；执行已批准的外部动作并回写反馈；提供轻量插件管理页面/API。⑥只写反馈，不做推断，不直接改③④的业务数据，也不写插件登记和权限（那是①的单写职责）。
 
@@ -26,7 +32,7 @@ based-on: 设计 v1.2、信号补充、插件 MVP、工作分解 v1.2；origin/d
 
 | 能力 | 边界 | 当前 |
 |---|---|---|
-| 读取：时间线、活动、md 产物、人物、地点、规则、建议 | 经①读取并服从其授权；不做推断；Markdown 按纯文本展示 | 已实现（15 个业务类型），见第 3.4 节 |
+| 读取：时间线、活动、md 产物、人物、地点、规则、建议 | 经①读取并服从其授权；不做推断；Markdown 按纯文本展示 | 已实现（17 个业务类型，含 `rule_selection` 与 `gps_geocode`），见第 3.4 节 |
 | 用户反馈：纠正/确认、参考、命名、规则、手动提取、建议审核等 | 写 `feedback`（⑥单写）；由③④⑤按所属方执行；⑥只展示“处理中”与最终结果 | ④ 命令已接通；③ 的六种命令（含 `create_place`）经 `attribution_feedback_result` 投影结果（第二批，工作区）；`reattribute_range` 未做；⑤ 命令只记录，等契约 |
 | 管理反馈与轻量插件管理页/API | ⑥验证管理员后写管理反馈，①异步处理并写结果；区分已受理/已生效、已启用/进程在线；凭据只经一次性领取交付 | 已实现；真实浏览器 34 项检查**只对内存假①**通过；API 层另有对真实回环①+隔离 PostgreSQL/NATS 的 26 项集成测试通过（管理处理步骤由测试显式驱动，合成 provider）；没有真实浏览器↔真实①的页面联调 |
 | 外部动作执行（日历、提醒事项） | 只执行已批准且查过当前状态的建议；稳定动作标识；结果未知时停止自动重试并提示用户核对；结果写反馈，由④更新建议 | 只有离线切片；默认配置与命令行服务上 HTTP 仅“只读查证”可用（需代码注入可信适配器），执行/确认/风险重试 501。action-v2 在工作区有协议和可选的 HTTP 接线（默认关闭、宿主注入适配器），见第 3.6 节；无真实适配器 |
@@ -104,7 +110,7 @@ JSON 文件，必须是当前用户拥有的普通文件、权限不含 group/ot
 | `GET /v1/management/results`、`/results/{id}`、`/history/jobs/{id}` | 仅 admin | 管理结果与历史补处理任务状态 |
 | `/plugins/` | 页面本身无需认证 | 插件管理页；必须带结尾斜杠，`/plugins` 返回 404 |
 
-可浏览业务类型从 `ear_contracts.DEFAULT_REGISTRY`（随代码发布的核心登记表，也是 `MemoryStorage` 的默认登记表）推导：仅纳入 `kind` 为 `raw_record`、`semantic`、`rule` 的核心类型，并排除 `plugin_management_feedback`。登记表暂无管理类型标志，⑥ 用 `MANAGEMENT_TYPES` 显式排除该类型，因为插件管理反馈走管理接口；所有 `system_record` 都不纳入。当前结果与原有 15 类完全相同，列表、单条及历史接口共用此集合，权限仍由①检查。
+可浏览业务类型从 `ear_contracts.DEFAULT_REGISTRY`（随代码发布的核心登记表，也是 `MemoryStorage` 的默认登记表）推导：仅纳入 `kind` 为 `raw_record`、`semantic`、`rule` 的核心类型，并排除 `plugin_management_feedback`。登记表暂无管理类型标志，⑥ 用 `MANAGEMENT_TYPES` 显式排除该类型，因为插件管理反馈走管理接口；所有 `system_record` 都不纳入。当前结果在原有15类基础上增加两类：静态核心补充 `rule_selection`（`CORE_MVP_BUSINESS_ADDITIONS`，不在随代码发布的登记表里，见 `business.py`）和 `gps_geocode`（见[已采纳 GPS 提案](../../docs/proposals/gps-reverse-geocoding.md)），共17类，列表、单条及历史接口共用此集合，权限仍由①检查。
 
 此处不在运行时请求①的 `/v1/registry`，也不自动纳入动态插件类型；这两项仅为未来可选方向，须另行作出产品决策。
 

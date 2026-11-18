@@ -274,16 +274,19 @@ class PostgresReader:
                 other = registry.get(dtype)
             except LookupError as exc:
                 raise InvalidRequest(str(exc)) from None
-            if not other.versioned:
-                raise InvalidRequest("unreferenced_by requires a versioned type")
+            if not other.versioned and other.kind != "raw_record":
+                raise InvalidRequest("unreferenced_by requires raw or versioned records")
             predicates.append(
                 sql.SQL(
                     "NOT EXISTS (SELECT 1 FROM {} u JOIN storage.identity j "
                     "ON j.id=u.id AND j.current_seq=u.seq "
-                    "WHERE u.data_type=%s AND NOT u.superseded "
+                    "WHERE u.data_type=%s {} "
                     "AND json_typeof(u.payload_text::json -> %s::text)='string' "
                     "AND u.payload_text::json ->> %s::text=r.id)"
-                ).format(table(other.writer, "versions"))
+                ).format(
+                    table(other.writer, table_name(other.kind)),
+                    sql.SQL("AND NOT u.superseded" if other.versioned else ""),
+                )
             )
             params.extend([dtype, key, key])
         statement = sql.SQL(
