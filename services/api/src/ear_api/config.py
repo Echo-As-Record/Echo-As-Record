@@ -18,13 +18,16 @@ class Binding(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
     subject: str = Field(strict=True, pattern=r"^[a-zA-Z0-9_-]{1,64}$")
     role: Literal["user", "admin"]
-    token: Token
+    token: Token | None = None
     storage_token: Token
 
     @model_validator(mode="after")
     def tokens_valid(self) -> Self:
         for value in (self.token, self.storage_token):
-            if re.fullmatch(r"[A-Za-z0-9_-]{43}", value.get_secret_value()) is None:
+            if (
+                value is not None
+                and re.fullmatch(r"[A-Za-z0-9_-]{43}", value.get_secret_value()) is None
+            ):
                 raise ValueError("invalid credential configuration")
         if re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", self.subject) is None:
             raise ValueError("invalid subject configuration")
@@ -42,6 +45,7 @@ class Settings(BaseModel):
     execution_action_v2: bool = Field(default=False, strict=True)
     test_no_auth: bool = Field(default=False, strict=True)
     test_no_auth_role: Literal["user", "admin"] = "user"
+    test_no_auth_model_settings: bool = Field(default=False, strict=True)
     timeout: float = Field(default=10, strict=True, gt=0, le=60, allow_inf_nan=False)
     max_body_bytes: int = Field(default=65536, strict=True, ge=1024, le=65536)
     body_timeout: float = Field(default=10, strict=True, gt=0, le=30, allow_inf_nan=False)
@@ -74,11 +78,22 @@ class Settings(BaseModel):
             secret.get_secret_value()
             for binding in self.bindings
             for secret in (binding.token, binding.storage_token)
+            if secret is not None
         ]
         if len(set(credentials)) != len(credentials):
             raise ValueError("identity bindings must be distinct")
         if not self.test_no_auth and self.test_no_auth_role != "user":
             raise ValueError("test_no_auth_role=admin requires test_no_auth")
+        if not self.test_no_auth and any(b.token is None for b in self.bindings):
+            raise ValueError("authenticated bindings require an API token")
+        if self.test_no_auth_model_settings and (
+            not self.test_no_auth
+            or self.test_no_auth_role != "admin"
+            or self.model_settings_file is None
+        ):
+            raise ValueError(
+                "no-auth model settings require explicit loopback admin and settings file"
+            )
         if self.test_no_auth:
             if self.public_origin is None or httpx.URL(self.public_origin).host not in {
                 "127.0.0.1",
@@ -114,6 +129,8 @@ class Settings(BaseModel):
         digest = hashlib.sha256(value[7:].encode("ascii")).digest()
         found = None
         for binding in self.bindings:
+            if binding.token is None:
+                continue
             expected = hashlib.sha256(binding.token.get_secret_value().encode("ascii")).digest()
             if hmac.compare_digest(digest, expected):
                 found = binding

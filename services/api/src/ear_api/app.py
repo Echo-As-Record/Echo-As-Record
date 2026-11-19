@@ -128,7 +128,8 @@ def create_app(
     remote = upstream or Upstream(settings)
     selection = (
         ModelSettings(settings.model_settings_file)
-        if not settings.test_no_auth and settings.model_settings_file is not None
+        if settings.model_settings_file is not None
+        and (not settings.test_no_auth or settings.test_no_auth_model_settings)
         else None
     )
     if settings.execution_action_v2 and execution is not None:
@@ -218,7 +219,11 @@ def create_app(
     def session(request: Request):
         params(request, set())
         # Public capability discovery only; never expose bindings or credentials.
-        return response({"test_no_auth": settings.test_no_auth})
+        return response(
+            {"test_no_auth": True, "test_no_auth_model_settings": True}
+            if settings.test_no_auth_model_settings
+            else {"test_no_auth": settings.test_no_auth}
+        )
 
     @app.get("/v1/me")
     def me(request: Request):

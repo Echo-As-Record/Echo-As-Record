@@ -12,9 +12,11 @@ from pathlib import Path
 import httpx
 import pytest
 from ear_api.app import create_app
+from ear_api.config import Settings
 from ear_api.model_settings import ModelSelection, ModelSettings, ModelSettingsUnavailable
 from ear_api.upstream import Upstream
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from .conftest import ADMIN, STORAGE_ADMIN, headers, settings
 
@@ -152,6 +154,64 @@ def test_disabled_without_configuration_or_under_either_noauth_role(selection_pa
         assert client.get("/v1/session").json() == {"test_no_auth": mode is not None}
     assert wire.calls == []
     assert json.loads(selection_path.read_bytes()) == INITIAL
+
+
+def test_loopback_admin_opt_in_without_api_tokens(selection_path):
+    origin = "http://127.0.0.1:18186"
+    raw = settings("http://upstream.invalid", public_origin=origin).model_dump()
+    for binding in raw["bindings"]:
+        del binding["token"]
+    with pytest.raises(ValidationError, match="require an API token"):
+        Settings.model_validate(raw)
+    raw.update(
+        test_no_auth=True,
+        test_no_auth_role="admin",
+        test_no_auth_model_settings=True,
+        model_settings_file=selection_path,
+    )
+    for invalid in (
+        {"test_no_auth": False, "test_no_auth_role": "user"},
+        {"test_no_auth_role": "user"},
+        {"model_settings_file": None},
+        {"public_origin": "http://192.0.2.1:18186"},
+        {"test_no_auth_model_settings": "true"},
+    ):
+        with pytest.raises(ValidationError):
+            Settings.model_validate({**raw, **invalid})
+    config = Settings.model_validate(raw)
+    assert all(b.token is None for b in config.bindings)
+    wire = AdminWire()
+    with TestClient(
+        create_app(config, upstream=Upstream(config, httpx.MockTransport(wire.reply))),
+        base_url=origin,
+    ) as client:
+        assert client.get("/v1/session").json() == {
+            "test_no_auth": True,
+            "test_no_auth_model_settings": True,
+        }
+        assert client.put(ROUTE, json=INITIAL).json() == {"code": "origin_required"}
+        for bad in (
+            {"Origin": "https://elsewhere.invalid"},
+            {"Origin": origin, "Host": "bad.invalid:18186"},
+            {"Origin": origin, "Sec-Fetch-Site": "cross-site"},
+        ):
+            assert client.put(ROUTE, headers=bad, json=INITIAL).status_code == 403
+        assert not wire.calls
+        assert client.get(ROUTE).json() == INITIAL
+        saved = client.put(
+            ROUTE,
+            headers={"Origin": origin},
+            json={
+                "model": UPDATED["model"],
+                "revision": 1,
+            },
+        )
+        assert saved.status_code == 200 and saved.json() == UPDATED
+        assert client.put(ROUTE, headers={"Origin": origin}, json=INITIAL).status_code == 409
+        wire.revoked = True
+        assert client.get(ROUTE).status_code == 401
+        assert client.put(ROUTE, headers={"Origin": origin}, json=UPDATED).status_code == 401
+        assert json.loads(selection_path.read_bytes()) == UPDATED
 
 
 @pytest.mark.parametrize(

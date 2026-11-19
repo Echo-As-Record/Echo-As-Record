@@ -10,6 +10,7 @@
   const status = (message) => { $('status').textContent = message; };
   const endpoint = '/v1/settings/model';
   let token = null;
+  let loopbackAdmin = false;
   let revision = null;
   let pending = null;
 
@@ -33,8 +34,8 @@
     token = null;
     tokenInput.value = '';
     clearSelection();
-    editArea.hidden = true;
-    connectForm.hidden = false;
+    editArea.hidden = !loopbackAdmin;
+    connectForm.hidden = loopbackAdmin;
     status(message);
   }
 
@@ -50,10 +51,16 @@
     try {
       const res = await fetch('/v1/session', options('GET', signal));
       if (!res.ok) throw new Error();
-      const { test_no_auth: noAuth } = await res.json();
+      const { test_no_auth: noAuth, test_no_auth_model_settings: settingsNoAuth } = await res.json();
       if (noAuth === false) {
         connectForm.hidden = false;
         status('请使用管理员 API 令牌连接。');
+      } else if (noAuth === true && settingsNoAuth === true) {
+        loopbackAdmin = true;
+        connectForm.hidden = true;
+        editArea.hidden = false;
+        $('disconnect-btn').hidden = true;
+        request('GET');
       } else if (noAuth === true) {
         status('免登录测试模式不开放大模型设置。');
       } else {
@@ -65,12 +72,12 @@
   }
 
   async function request(method, model) {
-    if (token === null || pending !== null) return;
+    if ((!loopbackAdmin && token === null) || pending !== null) return;
     const controller = new AbortController();
     pending = controller;
     const timeout = setTimeout(() => controller.abort(), 15000);
     const init = options(method, controller.signal);
-    init.headers.Authorization = 'Bearer ' + token;
+    if (!loopbackAdmin) init.headers.Authorization = 'Bearer ' + token;
     if (method === 'PUT') {
       init.headers['Content-Type'] = 'application/json';
       // The server's revision is an integer, possibly beyond JS's safe number range.
@@ -83,7 +90,7 @@
       const res = await fetch(endpoint, init);
       if (pending !== controller) return;
       if (res.status === 401 || res.status === 403) {
-        disconnect(res.status === 401 ? '令牌无效或已撤销。' : '没有当前管理员权限，或请求未获允许。');
+        disconnect(res.status === 401 && !loopbackAdmin ? '令牌无效或已撤销。' : '没有当前管理员权限，或请求未获允许。');
       } else if (res.status === 404) {
         disconnect('此部署未启用大模型设置。');
       } else if (res.status === 409) {
@@ -120,7 +127,7 @@
 
   connectForm.addEventListener('submit', (event) => {
     event.preventDefault();
-    if (connectForm.hidden || pending !== null) return;
+    if (loopbackAdmin || connectForm.hidden || pending !== null) return;
     const candidate = tokenInput.value;
     tokenInput.value = '';
     if (!/^[A-Za-z0-9_-]{43}$/.test(candidate) || candidate.length !== 43) {
@@ -147,8 +154,11 @@
   $('disconnect-btn').addEventListener('click', () => disconnect('已断开。'));
   window.addEventListener('pagehide', () => {
     // Without this, back/forward cache could restore an already authenticated page.
-    if (token !== null) disconnect('已断开。');
+    if (token !== null || loopbackAdmin) disconnect('已断开。');
     tokenInput.value = '';
+  });
+  window.addEventListener('pageshow', (event) => {
+    if (event.persisted && loopbackAdmin) request('GET');
   });
   start();
 })();

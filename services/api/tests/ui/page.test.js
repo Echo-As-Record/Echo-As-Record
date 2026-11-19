@@ -772,6 +772,31 @@ test('model settings: disabled in no-auth mode, including admin-style session', 
   assert.equal(page.fetch.calls[0].headers.Authorization, undefined);
 });
 
+test('model settings: explicit loopback admin opens and saves with no token', async () => {
+  let denied = false;
+  const page = modelSettingsPage(c => {
+    if (c.url === '/v1/session') return { body: { test_no_auth: true, test_no_auth_model_settings: true } };
+    if (denied) return { status: 401 };
+    return { body: c.method === 'GET' ? initialModel : { model: c.body.model, revision: 2 } };
+  });
+  await settle(2);
+  assert.equal(page.n('connect-form').hidden, true);
+  assert.equal(page.n('disconnect-btn').hidden, true);
+  assert.equal(page.n('saved-model').textContent, initialModel.model);
+  assert.equal(page.fetch.calls.filter(c => c.method === 'PUT').length, 0);
+  page.save('replacement-model');
+  await settle(2);
+  assert.equal(page.n('saved-model').textContent, 'replacement-model');
+  assert.equal(page.fetch.calls.filter(c => c.method === 'PUT').length, 1);
+  assert.ok(page.fetch.calls.every(c => c.headers.Authorization === undefined));
+  denied = true;
+  page.n('reload-btn').dispatch('click');
+  await settle(2);
+  assert.equal(page.n('connect-form').hidden, true);
+  assert.equal(page.n('model-form').hidden, true);
+  assert.doesNotMatch(page.n('status').textContent, /令牌/);
+});
+
 test('model settings: bearer is memory only; same-origin CAS saves and does not retry', async () => {
   let stored = initialModel;
   let forceConflict = false;
