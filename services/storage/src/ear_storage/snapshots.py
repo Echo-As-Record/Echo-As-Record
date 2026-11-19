@@ -376,6 +376,9 @@ def load_reader(
     blocked: set[tuple[str, int]] = set()
     groups: list[Sequence[Any]] = []
     edges: dict[tuple[str, int], list[DependencyRecord]] = {}
+    # The caller holds the writer gate throughout this hydration. Check current
+    # ownership once per consumer, including denials, never across reads or leases.
+    consumer_access: dict[str, bool] = {}
     for kind, key, dtype, text in conn.execute(
         "SELECT kind,item_key,data_type,record_text FROM storage.snapshot_items "
         "WHERE snapshot_id=%s ORDER BY kind,item_key",
@@ -435,7 +438,9 @@ def load_reader(
             ) | {group_key}
         elif kind == "processed":
             consumer, event = json.loads(text)
-            if can_use_consumer(conn, principal, consumer):
+            if consumer not in consumer_access:
+                consumer_access[consumer] = can_use_consumer(conn, principal, consumer)
+            if consumer_access[consumer]:
                 state.processed[(consumer, event)] = None
     state.versions = {
         id: tuple(sorted(vs, key=lambda r: r.version))

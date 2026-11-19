@@ -19,7 +19,9 @@ from ear_storage import (
     bootstrap,
     migrate,
     schema,
+    snapshots,
 )
+from ear_storage.auth import can_use_consumer
 from ear_storage.codec import encode_result, fingerprint
 from ear_storage.repository import persist
 from ear_storage.schema import DDL, DDL_V2, connection, writer
@@ -174,6 +176,39 @@ def test_all_reader_results_frozen_restart_and_no_transaction_while_paused(seede
     assert counts(dsn) == (0, 0)
     with pytest.raises(SnapshotUnavailable, match=r"^snapshot unavailable$"):
         snap.get(target)
+
+
+def test_hydration_checks_each_consumer_once_but_refetches_authority_per_read(env, monkeypatch):
+    dsn, store, service, operator = env
+    issued = operator.issue_principal("extraction", read_types=["activity"])
+    replacement = operator.issue_principal("extraction", read_types=["activity"])
+    names = ("extraction.worker", "extraction.other")
+    markers = {name: [new_id() for _ in range(40)] for name in names}
+    store.client("extraction").write(
+        [MarkProcessed(name, event) for name, events in markers.items() for event in events], SYS
+    ).check()
+    checked = []
+
+    def check(conn, principal, name):
+        allowed = can_use_consumer(conn, principal, name)
+        checked.append((name, allowed))
+        return allowed
+
+    monkeypatch.setattr(snapshots, "can_use_consumer", check)
+    client = service.client(issued.token)
+    with client.snapshot() as view:
+        assert view.is_processed(names[0], markers[names[0]][-1])
+        assert sorted(checked) == sorted((name, True) for name in names)
+        checked.clear()
+        # An adoption after capture hides old progress from the original principal.
+        # It must not reuse a previous request's positive ownership decision.
+        operator.adopt_consumer_markers(names[0], replacement.principal_id)
+        assert not view.is_processed(names[0], markers[names[0]][-1])
+        assert sorted(checked) == sorted([(names[0], False), (names[1], True)])
+        checked.clear()
+        assert view.is_processed(names[1], markers[names[1]][-1])
+        assert sorted(checked) == sorted([(names[0], False), (names[1], True)])
+    assert counts(dsn) == (0, 0)
 
 
 @pytest.mark.parametrize(

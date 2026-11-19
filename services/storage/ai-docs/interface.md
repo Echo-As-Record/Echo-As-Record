@@ -18,7 +18,7 @@ based-on: docs/modules/storage.md；contracts/；libs/ear_storage_client 与 lib
 
 - 模块身份只来自部署签发的 token；不读环境变量，没有隐藏重试。token 由部署内 `AuthOperator` 签发，不要在业务代码里签发或保存明文。
 - `write(ops, context, request_id=None)` 默认生成 UUIDv7。遇到 `CommitUnknown` 时**不要重新计算**，用 `e.request_id` 与相同 ops、context 重放；`write_with_retry` 不会替你重放。冲突仍按第 3 节处理。
-- `snapshot()` 创建有界持久租约（默认 TTL 300 s，上限见指南），超限报 `ResourceLimit`，过期/不可用报 `SnapshotUnavailable`；不要依赖长时间持有。
+- `snapshot()` 创建有界持久租约（默认 TTL 300 s，上限见指南），超限报 `ResourceLimit`，过期/不可用报 `SnapshotUnavailable`；不要依赖长时间持有。 快照每次读取仍复核当前授权；同一次、持写闸的快照还原中，同一消费者的历史处理标记共用一次当前归属查询，不跨请求缓存权限。
 - 远程 `subscribe`（P2，d0d8875；签名以 `remote.py` 为准）向服务注册持久 consumer；事件只在调用 `poll_once()` 或 `run_until_idle(max_deliveries=100)`（1–10 000，也限制轮询轮数）时投递，是调用方驱动的有界泵，没有后台线程替你拉取。
 - 只投递有读权限且带 `can_subscribe` 的类型的 `data_changed`；`reevaluation_requested` 只投给该类型的 writer 且类型 `supports_reevaluation`。注册默认**只收未来事件**；模块重新注册不能改变已有订阅配置，扩大或收缩订阅须经①管理反馈做完整重配置（P3，schema revision 8：新增类型只收切换后的事件，原有积压保留）。
 - 语义是有限去重的**至少一次**：同一事件可能重投，handler 必须把业务写入与 `MarkProcessed` 放同一批；consumer 名必须属于本 principal。租约过期的确认得到确定的 `DeliveryExpired`（HTTP 410），之后会重投同一事件；超过最大尝试次数入死信，`replay` 只放回同一 consumer。
