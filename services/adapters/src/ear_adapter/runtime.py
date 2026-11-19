@@ -10,7 +10,7 @@ from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
-from ear_contracts import SYSTEM, new_id
+from ear_contracts import SYSTEM, NewRawRecord, new_id
 from ear_storage_client import AppendRaw, Context, PermissionDenied, Query, StorageClient
 from ear_storage_client.remote import RemoteStorageClient
 from ear_storage_client.remote_errors import CommitUnknown, ResourceLimit, ServiceUnavailable
@@ -122,6 +122,22 @@ def _ingest_capture(
         return Pending(capture_id, "① 暂时不可用")
 
     records = capture_records(evidence, audio_file=audio_file, embeddings=embeddings, config=config)
+    return append_capture_batch(capture_id, records, storage=storage)
+
+
+def append_capture_batch(
+    capture_id: str,
+    records: Sequence[NewRawRecord],
+    *,
+    storage: StorageClient,
+    can_retry: Callable[[], bool] | None = None,
+    include_conflict_reason: bool = True,
+) -> Outcome:
+    """Submit one atomic batch; replay the same remote request on uncertain commit.
+
+    A replay can still cause the first commit. A supplied retry check must succeed
+    before resubmission; a failed check leaves the first commit's outcome unknown.
+    """
     ops = [AppendRaw(r) for r in records]
     context = Context.system()
     request_id = new_id()
@@ -138,6 +154,8 @@ def _ingest_capture(
             if attempt == 2:
                 return Pending(capture_id, "① 提交结果仍未知；下一轮检查 audio_ref")
             time.sleep(0.25 * 2**attempt)
+            if can_retry is not None and not can_retry():
+                return Pending(capture_id, "① 提交结果未知；输入验证失败，未重放")
         except ServiceUnavailable:
             return Pending(capture_id, "① 暂时不可用")
         except ResourceLimit:
@@ -150,7 +168,10 @@ def _ingest_capture(
     else:
         raise AssertionError("unreachable")
     if result.conflict is not None:
-        return Failed(capture_id, f"① 拒绝写入：{result.conflict.reason}")
+        reason = (
+            f"① 拒绝写入：{result.conflict.reason}" if include_conflict_reason else "① 拒绝写入"
+        )
+        return Failed(capture_id, reason)
     written = Counter(
         r.data_type for r in result.results if r.outcome == "written" and r.data_type is not None
     )
