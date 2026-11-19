@@ -204,6 +204,53 @@ def test_clean_environment_ignores_runtime_injection(monkeypatch):
     assert env["COMPOSE_DISABLE_ENV_FILE"] == "1"
 
 
+def test_explicit_rootless_plan_without_daemon(tmp_path, capsys):
+    assert runtime.main(["plan", "--rootless", "--state", str(tmp_path)]) == 0
+    assert "--rootless" in json.loads(capsys.readouterr().out)["commands"]["prepare"]
+    assert not runtime._ROOTLESS.get()
+
+
+def test_rootless_refusal_does_not_fall_back_or_prepare(tmp_path, monkeypatch, capsys):
+    def not_rootless(argv, **kwargs):
+        assert runtime._ROOTLESS.get()
+        assert argv[:2] == ["docker", "info"]
+        return '["name=seccomp"]'
+
+    monkeypatch.setattr(runtime, "command", not_rootless)
+    state = tmp_path / "new"
+    assert runtime.main(["prepare", "--rootless", "--state", str(state)]) == 1
+    assert capsys.readouterr().err.strip() == runtime.ERROR
+    assert not state.exists() and not runtime._ROOTLESS.get()
+
+
+def test_rootless_runtime_only_uses_validated_private_socket(monkeypatch):
+    monkeypatch.setenv("DOCKER_HOST", "tcp://invalid.example:2375")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/incorrect")
+    monkeypatch.setattr(runtime.os, "geteuid", lambda: 1000)
+
+    @contextmanager
+    def own_runtime(path, *, private):
+        assert path == Path("/run/user/1000") and private
+        yield 252
+
+    def checked_socket(path, *, dir_fd, follow_symlinks):
+        assert path == "docker.sock" and dir_fd == 252 and not follow_symlinks
+        return SimpleNamespace(st_uid=1000, st_mode=0o140600)
+
+    monkeypatch.setattr(runtime, "directory", own_runtime)
+    monkeypatch.setattr(runtime.os, "stat", checked_socket)
+    selection = runtime._ROOTLESS.set(True)
+    try:
+        env = runtime.clean_environment()
+        assert env["DOCKER_HOST"] == "unix:///run/user/1000/docker.sock"
+        assert env["XDG_RUNTIME_DIR"] == "/run/user/1000"
+        monkeypatch.setattr(runtime.os, "geteuid", lambda: 0)
+        with pytest.raises(runtime.Refused, match="rootless_user_required"):
+            runtime.clean_environment()
+    finally:
+        runtime._ROOTLESS.reset(selection)
+
+
 def test_command_captures_failures_and_uses_explicit_cwd(monkeypatch, capsys):
     # Access original function through the module reloaded without the autouse stub.
     assert spec and spec.loader

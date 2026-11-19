@@ -11,6 +11,13 @@ based-on: README.md、AGENTS.md、docs/README.md；设计v1.2/信号/插件/确�
 
 > **MCP/后续工程计划保持 proposed；下面已观察事实不等于提案采纳。** 本文记录真实最小证据链路，不是完整MVP、LLM提取或生产验收。行为定义见[人读MCP提案](../../docs/proposals/mcp-interface.md)与已采纳设计；旧[跑通计划](mvp-runnable.md)、[运行时交接](mvp-runtime-handoff.md)保留各时点证据，不能当作本候选的新结果。
 
+## vm-octopus 并行候选与替代路径
+
+用户批准在 `vm-octopus` 独立并行部署，最终由新版从上传原文件开始处理而非长期依赖旧 Evidence。②原生单条入口、受限解码和桥接的边界见[②入口](../../services/adapters/README.md#原始录音接入新版替代路径)；⑦直连接线和⑥模型设置见[⑦入口](../../services/llm_gateway/README.md#直连-new-api可选)。不以此前3段旧 Evidence 结果证明新模型流水线。
+
+- `real_sample_runtime.py ... --rootless` 显式选当前登录用户标准运行目录的 Docker Unix socket，先检验属主和 daemon 标识；忽略继承的 Docker 目标，不回退到系统 daemon。旧入口默认行为和冻结回执规则不变。此开关只通过合成检查；**目标主机没有 Rootless Docker 和 UID/GID 映射工具，尚无新实例**。不能把上一台的容器/卷/旧源凭据、回环转发实现或初始化回执移过去当作可启动署名。需要在新主机重新核对 UID 映射、密钥文件可读边界及实际回环访问；源码应从受验证的 Git 工作区运行，只有 archive 的目录不够支持源码冻结检查。
+- 现有录音接收、旧 Ear 和 `vm-remote` 实例保持不变。部署验收后用固定目标、鉴权入口、手动短时间窗和合成文字先测 `gpt-6-luna`；只有收到完整活动及关联 Markdown 才记录成功。关掉定时、动作和无 token 的付费写入口。不把授权的小样本原始录音导入扩大解释为上送历史声纹、音频、位置或全量录音。测试前不读取/删除用户临时密钥；实际测试完成后按用户要求只移除该临时文件。
+
 ## 当前访问方式更新：本地测试免登录
 
 2026-11-18 用户明确要求取消测试版用户侧API token检查，现已在独立样本实例启用 `test_no_auth`。`/workspace/` 打开自动连接，无需从clients.json取令牌；下文取token的说明仅适用于此前认证模式。仍用127.0.0.1:18186及SSH回环隧道，不扩大LAN暴露。内部身份/权限保留，普通测试身份不具有插件管理权；源身份仍已撤销。本次无Bearer HTTP、真实Chromium全部页面及数据保留验证通过，具体实现与测试见[⑥实现说明](../../services/api/ai-docs/implementation.md)。重启恢复限制未因免登录而解决。

@@ -36,9 +36,11 @@ import stat
 import subprocess
 import sys
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
+_ROOTLESS = ContextVar("rootless_docker", default=False)
 PROJECT = "ear-real-sample-20261118"
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_STATE = Path.home() / ".local/state" / PROJECT
@@ -172,12 +174,33 @@ def publish_json(path: Path, value: Any, *, owner: int | None = None) -> None:
     publish(path, (json.dumps(value, sort_keys=True, allow_nan=False) + "\n").encode(), owner=owner)
 
 
+def rootless_environment() -> dict[str, str]:
+    uid = os.geteuid()
+    if uid == 0:
+        raise Refused("rootless_user_required")
+    runtime = Path("/run/user") / str(uid)
+    with directory(runtime, private=True) as parent:
+        sock = os.stat("docker.sock", dir_fd=parent, follow_symlinks=False)
+        if not stat.S_ISSOCK(sock.st_mode) or sock.st_uid != uid:
+            raise Refused("private_rootless_socket_required")
+    return {"DOCKER_HOST": f"unix://{runtime}/docker.sock", "XDG_RUNTIME_DIR": str(runtime)}
+
+
 def clean_environment() -> dict[str, str]:
     # No inherited EAR_*, COMPOSE_*, DOCKER_*, proxies, or dotenv discovery.
-    return {k: os.environ[k] for k in ("PATH", "HOME", "XDG_RUNTIME_DIR") if k in os.environ} | {
-        "COMPOSE_DISABLE_ENV_FILE": "1",
-        "DOCKER_HOST": "unix:///var/run/docker.sock",
-    }
+    env = {k: os.environ[k] for k in ("PATH", "HOME", "XDG_RUNTIME_DIR") if k in os.environ}
+    env.update(COMPOSE_DISABLE_ENV_FILE="1", DOCKER_HOST="unix:///var/run/docker.sock")
+    if _ROOTLESS.get():
+        env.update(rootless_environment())
+    return env
+
+
+def require_rootless_daemon() -> None:
+    value = json.loads(
+        command(["docker", "info", "--format", "{{json .SecurityOptions}}"], timeout=10)
+    )
+    if not isinstance(value, list) or "name=rootless" not in value:
+        raise Refused("rootless_daemon_required")
 
 
 def command(argv: list[str], *, timeout: int = 120) -> str:
@@ -771,6 +794,8 @@ def plan(state: Path, compose: str) -> dict:
 
     script = [str(ROOT / ".venv/bin/python"), str(ROOT / "tools/real_sample_runtime.py")]
     common = ["--state", str(state)] + (["--compose-bin", compose] if compose else [])
+    if _ROOTLESS.get():
+        common += ["--rootless"]
     return {
         "project": PROJECT,
         "state": str(state),
@@ -839,6 +864,7 @@ class Parser(argparse.ArgumentParser):
 
 
 def main(argv: list[str] | None = None) -> int:
+    selection = _ROOTLESS.set(False)
     try:
         parser = Parser(description=__doc__, allow_abbrev=False)
         parser.add_argument(
@@ -856,10 +882,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         parser.add_argument("--state", default=str(DEFAULT_STATE))
         parser.add_argument("--compose-bin", default="")
+        parser.add_argument("--rootless", action="store_true", help="use only own runtime socket")
         parser.add_argument("--integration-ready", action="store_true")
         parser.add_argument("--cosine-threshold", type=float)
         parser.add_argument("--gps-threshold-m", type=float)
         args = parser.parse_args(argv)
+        _ROOTLESS.set(args.rootless)
+        if args.rootless and args.action != "plan":
+            if args.action in {"container-config", "container-export"}:
+                raise Refused("rootless_operator_flag_only")
+            require_rootless_daemon()
         if args.action == "container-config":
             if os.geteuid() != 0 or not Path("/.dockerenv").exists():
                 raise Refused("container_only")
@@ -911,6 +943,8 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         print(ERROR, file=sys.stderr)
         return 1
+    finally:
+        _ROOTLESS.reset(selection)
 
 
 if __name__ == "__main__":
