@@ -1,7 +1,7 @@
 ---
 audience: human
 doc-type: reference
-based-on: clients/ios-recorder 278a205c2593ecae670c56bc64c4713e66a00bd8；services/ingest/src/ear_ingest/{app,record,store,pairing,relay,__main__}.py；clients/ios/EarRecorder/EarRecorder/{Audio,Context,Runtime,Store,Upload,Pairing,Relay}.swift；本次获授权的现状整理
+based-on: clients/ios-recorder 278a205c2593ecae670c56bc64c4713e66a00bd8（iOS 代码 2026-11-19 起在独立仓库 EarRecorder 的 ios/ 下）；services/ingest/src/ear_ingest/{app,record,store,pairing,relay,__main__}.py；clients/ios/EarRecorder/EarRecorder/{Audio,Context,Runtime,Store,Upload,Pairing,Relay}.swift；本次获授权的现状整理
 ---
 
 # 手机客户端协议：当前实现参考
@@ -12,7 +12,7 @@ based-on: clients/ios-recorder 278a205c2593ecae670c56bc64c4713e66a00bd8；servic
 
 ## 1. 录音、分段和标识
 
-源码：[Audio.swift](../../clients/ios/EarRecorder/EarRecorder/Audio.swift)、[Runtime.swift](../../clients/ios/EarRecorder/EarRecorder/Runtime.swift)、[Store.swift](../../clients/ios/EarRecorder/EarRecorder/Store.swift)、[record.py](../../services/ingest/src/ear_ingest/record.py)。
+源码：[Audio.swift](https://github.com/Echo-As-Record/EarRecorder/blob/main/ios/EarRecorder/EarRecorder/Audio.swift)、[Runtime.swift](https://github.com/Echo-As-Record/EarRecorder/blob/main/ios/EarRecorder/EarRecorder/Runtime.swift)、[Store.swift](https://github.com/Echo-As-Record/EarRecorder/blob/main/ios/EarRecorder/EarRecorder/Store.swift)、[record.py](../../services/ingest/src/ear_ingest/record.py)。
 
 | 项目 | 兼容客户端行为 |
 |---|---|
@@ -31,7 +31,7 @@ based-on: clients/ios-recorder 278a205c2593ecae670c56bc64c4713e66a00bd8；servic
 
 ## 2. Context：gzip 中的 UTF-8 JSON Lines
 
-源码：[Context.swift](../../clients/ios/EarRecorder/EarRecorder/Context.swift)、[Runtime.swift](../../clients/ios/EarRecorder/EarRecorder/Runtime.swift)、[Upload.swift](../../clients/ios/EarRecorder/EarRecorder/Upload.swift)。
+源码：[Context.swift](https://github.com/Echo-As-Record/EarRecorder/blob/main/ios/EarRecorder/EarRecorder/Context.swift)、[Runtime.swift](https://github.com/Echo-As-Record/EarRecorder/blob/main/ios/EarRecorder/EarRecorder/Runtime.swift)、[Upload.swift](https://github.com/Echo-As-Record/EarRecorder/blob/main/ios/EarRecorder/EarRecorder/Upload.swift)。
 
 一个 Context 文件对应同 group、同 `segmentIndex` 的音频。解 gzip 后每行一个 JSON 对象，以 LF（`0a`）结束；不写 JSON 数组。正常封口为完整 gzip 流。JSON 键顺序不是协议，iOS 常规行按键排序；gzip 压缩字节也不要求一致。接收端将其作为附件保存，不校验行 schema。
 
@@ -71,7 +71,7 @@ based-on: clients/ios-recorder 278a205c2593ecae670c56bc64c4713e66a00bd8；servic
 
 ## 3. 上传接口与重传
 
-源码：[app.py](../../services/ingest/src/ear_ingest/app.py)、[record.py](../../services/ingest/src/ear_ingest/record.py)、[store.py](../../services/ingest/src/ear_ingest/store.py)、[Upload.swift](../../clients/ios/EarRecorder/EarRecorder/Upload.swift)。
+源码：[app.py](../../services/ingest/src/ear_ingest/app.py)、[record.py](../../services/ingest/src/ear_ingest/record.py)、[store.py](../../services/ingest/src/ear_ingest/store.py)、[Upload.swift](https://github.com/Echo-As-Record/EarRecorder/blob/main/ios/EarRecorder/EarRecorder/Upload.swift)。
 
 `POST /api/v1/record`，HTTP body 为标准 multipart/form-data。每个 part 以 CRLF 分隔，文件为原始字节。`Content-Type` 必须带实际 boundary；边界不可出现在内容中。Content-Length 由 HTTP 客户端正确计算。兼容旧路径 `/api/v1/instances/{instance}/service/api/v1/record` 只在 instance 与 `brain___<device>` 大小写无关一致时可用；新客户端使用短路径。
 
@@ -108,7 +108,7 @@ based-on: clients/ios-recorder 278a205c2593ecae670c56bc64c4713e66a00bd8；servic
 
 ## 4. 健康探测与接收端身份
 
-源码：[app.py](../../services/ingest/src/ear_ingest/app.py)、[relay.py](../../services/ingest/src/ear_ingest/relay.py)、[Upload.swift](../../clients/ios/EarRecorder/EarRecorder/Upload.swift)。
+源码：[app.py](../../services/ingest/src/ear_ingest/app.py)、[relay.py](../../services/ingest/src/ear_ingest/relay.py)、[Upload.swift](https://github.com/Echo-As-Record/EarRecorder/blob/main/ios/EarRecorder/EarRecorder/Upload.swift)。
 
 直连接收服务 `GET /health` 无鉴权返回 `{"ok":true}`，仅说明此进程可达。验证接收端时必须生成新的 32 位小写十六进制 challenge（iOS 用随机 UUID 去连字符），调用 `/health?challenge=<challenge>`；配对模式加 `&device=<小写设备ID>`。不发 Authorization、不把 token 放 URL。
 
@@ -118,7 +118,7 @@ based-on: clients/ios-recorder 278a205c2593ecae670c56bc64c4713e66a00bd8；servic
 
 ## 5. 二维码、发现、证书和凭据
 
-源码：[pairing.py](../../services/ingest/src/ear_ingest/pairing.py)、[__main__.py](../../services/ingest/src/ear_ingest/__main__.py)、[Pairing.swift](../../clients/ios/EarRecorder/EarRecorder/Pairing.swift)。
+源码：[pairing.py](../../services/ingest/src/ear_ingest/pairing.py)、[__main__.py](../../services/ingest/src/ear_ingest/__main__.py)、[Pairing.swift](https://github.com/Echo-As-Record/EarRecorder/blob/main/ios/EarRecorder/EarRecorder/Pairing.swift)。
 
 二维码完整语法：`earrecorder://pair?receiver=<UUID>&pin=<64小写hex>&code=<64小写hex>&relay=<URL编码根地址或空>`。四字段各恰好一个，relay 即使空也必须存在；未知额外 query 在 iOS 被忽略。receiver 能解析为 UUID，连接时规范为小写；pin/code 必须 `[0-9a-f]{64}`。可逐字节测试的完整字符串见 [pairing.json](../../services/ingest/tests/vectors/pairing.json)。生成端采用 URL query 编码，不能把整个 relay URL 直接拼接进查询串。
 
@@ -136,7 +136,7 @@ HTTPS 配对和后续已配对通信必须校验 **叶证书 DER 字节的 SHA-2
 
 ## 6. 加密 HTTP 中继：逐字节定义
 
-源码：[relay.py](../../services/ingest/src/ear_ingest/relay.py)、[Relay.swift](../../clients/ios/EarRecorder/EarRecorder/Relay.swift)、[Pairing.swift](../../clients/ios/EarRecorder/EarRecorder/Pairing.swift)。
+源码：[relay.py](../../services/ingest/src/ear_ingest/relay.py)、[Relay.swift](https://github.com/Echo-As-Record/EarRecorder/blob/main/ios/EarRecorder/EarRecorder/Relay.swift)、[Pairing.swift](https://github.com/Echo-As-Record/EarRecorder/blob/main/ios/EarRecorder/EarRecorder/Pairing.swift)。
 
 外层 `POST /api/v1/relay`，`Content-Type: application/octet-stream`，头 `X-Device-Id`、`X-Ear-Request: <ticket>`；不发送 bearer。ticket 是每次新请求生成的 32 位小写 hex 随机标识（iOS UUIDv4 去连字符）。邀请兑换另发 `X-Ear-Invite-Id = lowercase_hex(SHA256(UTF8(code)))`，服务从仍有效邀请中查找秘密。上传不发此头，按 device 查 token。
 
@@ -188,7 +188,7 @@ Cache-Control: no-store
 
 ## 7. 路径选择与本地队列
 
-源码：[Upload.swift](../../clients/ios/EarRecorder/EarRecorder/Upload.swift)、[Store.swift](../../clients/ios/EarRecorder/EarRecorder/Store.swift)、[Pairing.swift](../../clients/ios/EarRecorder/EarRecorder/Pairing.swift)。
+源码：[Upload.swift](https://github.com/Echo-As-Record/EarRecorder/blob/main/ios/EarRecorder/EarRecorder/Upload.swift)、[Store.swift](https://github.com/Echo-As-Record/EarRecorder/blob/main/ios/EarRecorder/EarRecorder/Store.swift)、[Pairing.swift](https://github.com/Echo-As-Record/EarRecorder/blob/main/ios/EarRecorder/EarRecorder/Pairing.swift)。
 
 当前配置只有 primary 和一个 fallback，并非直连、HTTPS、中继三条同时竞速。配对模式 primary 来自 Bonjour 缓存的 HTTPS 地址；fallback 来自邀请，可为 HTTPS 透传或 HTTP 加密中继。未配对 primary 为手填地址，fallback 仅允许 HTTPS。
 
@@ -200,7 +200,7 @@ iOS 最多两项在途；已开始发送但尚有剩余字节且连续 5 分钟�
 
 ## 8. 已知不一致 / 待定
 
-依据为上文逐节链接的源码，并对照 [iOS README](../../clients/ios/README.md) 与 [ingest README](../../services/ingest/README.md)；本次不修改业务行为，也不自行裁决以下差异。
+依据为上文逐节链接的源码，并对照 [iOS README](https://github.com/Echo-As-Record/EarRecorder/blob/main/ios/README.md) 与 [ingest README](../../services/ingest/README.md)；本次不修改业务行为，也不自行裁决以下差异。
 
 1. **手填 HTTP 直连（已修复）。** 基线提交里 iOS 把所有 HTTP 地址都当成加密中继，未配对时报“请先扫码配对中继”，与 README 描述的手填 HTTP 直连不符。现已改为：仅在已配对时把 HTTP 地址封装为 `/api/v1/relay`；未配对时按普通 multipart 直连上传；响应按请求是否带 `X-Ear-Request` 判断是否校验中继回执。Android 应采用同样的判断，不按 URL scheme 推断中继。
 2. **状态和正文确认不同。** 接收端明确返回成功 JSON，iOS 直连只看 2xx；中继上传只验回执不验响应 GCM，配对才验二者。本文区分实际最小行为与更完整的客户端校验建议。
@@ -213,7 +213,7 @@ iOS 最多两项在途；已开始发送但尚有剩余字节且连续 5 分钟�
 
 ## 9. 不属于跨平台协议的 iOS 细节
 
-源码：[Audio.swift](../../clients/ios/EarRecorder/EarRecorder/Audio.swift)、[Runtime.swift](../../clients/ios/EarRecorder/EarRecorder/Runtime.swift)、[Pairing.swift](../../clients/ios/EarRecorder/EarRecorder/Pairing.swift)、[Info.plist](../../clients/ios/EarRecorder/EarRecorder/Info.plist)。
+源码：[Audio.swift](https://github.com/Echo-As-Record/EarRecorder/blob/main/ios/EarRecorder/EarRecorder/Audio.swift)、[Runtime.swift](https://github.com/Echo-As-Record/EarRecorder/blob/main/ios/EarRecorder/EarRecorder/Runtime.swift)、[Pairing.swift](https://github.com/Echo-As-Record/EarRecorder/blob/main/ios/EarRecorder/EarRecorder/Pairing.swift)、[Info.plist](https://github.com/Echo-As-Record/EarRecorder/blob/main/ios/EarRecorder/EarRecorder/Info.plist)。
 
 ATS 域名例外、后台音频会话类别、AVAudioEngine、蓝牙 HFP/A2DP 选项、CallKit、来电后后台执行时间、Core Location 权限/围栏/到访回调、App Intents、URLSession 后台标识、UserDefaults/Keychain API、签名与安装都不是线上协议。Android 要用自身系统机制实现持续采集和持久队列，不复制 Apple 配置。`.part`、PCM 备份、manifest 文件结构与保留任务也是本地实现方案；跨平台必须保持的是文件封口、同段标识、可靠保存和确认语义。
 

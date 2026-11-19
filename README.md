@@ -29,14 +29,13 @@ reviewed-at: 2026-10-30
 | `ai-docs/` | 面向 AI 开发的代码导航、实现细节、测试与排障；入口见 [ai-docs/README.md](ai-docs/README.md) |
 | `contracts/` | 模块间约定的 JSON Schema 与示例 |
 | `services/` | ①～⑦ 各模块：`storage`、`adapters`、`attribution`、`extraction`、`dependency`、`api`、`llm_gateway`；另有手机上传接收服务 `ingest` |
-| `clients/` | 手机采集端：`ios/`（原生 iOS 录音 app），之后加 `android/`；见[提案](docs/proposals/phone-recorder-extraction.md) |
 | `libs/` | 共享库（SDK 等） |
 | `fixtures/` | 合成的假数据 |
 | `tests/` | 仓库级测试；`tests/e2e/` 为端到端 8 步流程 |
 | `deploy/` | docker compose 与环境变量模板 |
 | `tools/` | 仓库工具（如文档结构与链接检查） |
 
-基础处理模块和 Octopus 在各自的仓库中维护，Ear 按固定版本引用。
+基础处理模块和 Octopus 在各自的仓库中维护，Ear 按固定版本引用。手机采集端（iOS，之后加 Android）在独立仓库 [EarRecorder](https://github.com/Echo-As-Record/EarRecorder)；手机与接收服务之间的协议仍在本仓库的[手机客户端协议](docs/modules/phone-client-protocol.md)。
 
 ## 3. 开发环境
 
