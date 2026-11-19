@@ -9,6 +9,8 @@ doc-type: reference
 
 本次实现依据负责人直接授权的接收服务任务；[抽取提案](../../docs/proposals/phone-recorder-extraction.md)已采纳。这里的旧格式、覆盖重传和本机时间目录属于外部 inbox 兼容边界，不改变①的只追加及 UTC 数据契约。
 
+跨平台实现请先读[手机客户端协议与固定测试向量](../../docs/modules/phone-client-protocol.md)；其中单列当前 iOS 与接收端的不一致和待定项。
+
 ## 启动
 
 在仓库根执行；环境变量由部署环境注入，凭据保存在被忽略的 `deploy/.env`，服务不会自动读取 dotenv：
