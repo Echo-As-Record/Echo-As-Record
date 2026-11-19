@@ -1,0 +1,71 @@
+# Opt-in overlay; do NOT replace/recreate the existing ear-dev project in this task.
+# Explicit use: -f deploy/compose.yaml -f deploy/compose.mvp-workers.yaml --profile mvp-workers
+# For ④ also start/configure ⑦ separately (or explicitly add its own overlay/profile).
+# No identity/grant/bootstrap/migrate/replay or model invocation at compose-config time.
+# Each host JSON must be UID 10001, exactly 0600, regular, singly linked; no symlinks.
+# All JSONs set state_dir=/state and their own stable journal_namespace + consumer.
+# Required: module, storage_url (http://storage:8000), storage_token (PRIVATE JSON ONLY),
+# consumer (attribution / extraction.jobs / dependency.changes), journal_namespace, state_dir.
+# ③: explicitly calibrated cosine_threshold and gps_threshold_m; no defaults supplied here.
+# ④: gateway_url (e.g. http://gateway:8087), model; no provider/token environment variables.
+# schedule is absent by default; opt in with start=<explicit UTC RFC3339 Z>, every_seconds.
+# ⑤: server scheduler authority/explicit grants required; no full_visibility escape hatch.
+# Never delete these volumes on restart; preserve them with deployment backups.
+# One worker/consumer/deployment only. Local flock is NOT cross-host fencing.
+# SIGTERM drains current synchronous work only; forced kills rely on durable recovery.
+x-mvp-worker: &mvp-worker
+  profiles: [mvp-workers]
+  image: ${EAR_MVP_WORKER_IMAGE:-ear-mvp-worker:local}
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile.worker
+  user: "10001:10001"
+  restart: "no"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: ['/tmp:size=16m,noexec,nosuid,nodev']
+  mem_limit: 512m
+  cpus: 1.0
+  pids_limit: 128
+  stop_grace_period: 5m
+  networks: [frontend]
+  depends_on:
+    storage:
+      condition: service_healthy
+  deploy:
+    replicas: 1
+
+services:
+  mvp-attribution:
+    <<: *mvp-worker
+    secrets:
+      - source: mvp_attribution_config
+        target: worker-config.json
+    volumes: [mvp_attribution_state:/state]
+  mvp-extraction:
+    <<: *mvp-worker
+    secrets:
+      - source: mvp_extraction_config
+        target: worker-config.json
+    volumes: [mvp_extraction_state:/state]
+  mvp-dependency:
+    <<: *mvp-worker
+    secrets:
+      - source: mvp_dependency_config
+        target: worker-config.json
+    volumes: [mvp_dependency_state:/state]
+
+# These environment variables contain paths only, NEVER secret values.
+# Local Compose preserves host ownership/mode instead of enforcing secret.uid/mode.
+secrets:
+  mvp_attribution_config:
+    file: ${EAR_MVP_ATTRIBUTION_CONFIG_FILE:?Explicit private attribution JSON required}
+  mvp_extraction_config:
+    file: ${EAR_MVP_EXTRACTION_CONFIG_FILE:?Explicit private extraction JSON required}
+  mvp_dependency_config:
+    file: ${EAR_MVP_DEPENDENCY_CONFIG_FILE:?Explicit private dependency JSON required}
+volumes:
+  mvp_attribution_state:
+  mvp_extraction_state:
+  mvp_dependency_state:

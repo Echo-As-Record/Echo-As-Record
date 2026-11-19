@@ -1,0 +1,22 @@
+[project]
+name = "ear-attribution"
+version = "0.1.0"
+description = "③ 归属模块：匹配、反馈保护与重判完成切片"
+requires-python = ">=3.12"
+dependencies = ["ear-contracts", "ear-storage-client"]
+
+[tool.uv.sources]
+ear-contracts = { workspace = true }
+ear-storage-client = { workspace = true }
+
+[build-system]
+requires = ["uv_build>=0.8,<0.14"]
+build-backend = "uv_build"
+
+[tool.pyright]
+venvPath = "../.."
+venv = ".venv"
+extraPaths = ["src"]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+include = ["src", "tests"]

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from threading import Event
 
 from ear_extraction.domain import Interval
-from ear_extraction.orchestration import ExtractionService
+from ear_extraction.orchestration import CONSUMER, ExtractionService
 
 
 @dataclass(frozen=True)
@@ -20,7 +20,13 @@ class Schedule:
 
 
 def tick(service: ExtractionService, schedule: Schedule | None = None) -> None:
-    """Schedule completed periods, subtracting successful and admitted coverage."""
+    """Pump one remote delivery, then process jobs and completed timer periods."""
+    # Remote subscribe only registers a handler; it does not run a background pump.
+    # Memory/injected stores keep their host-driven bus. Do not drain unboundedly
+    # or poll other consumers sharing this SDK (completion is a marker, not a job).
+    poll = getattr(service.storage, "poll_once", None)
+    if callable(poll):
+        poll(CONSUMER)
     if schedule and service.clock() > schedule.start:
         periods = (service.clock() - schedule.start) // schedule.every
         if periods:

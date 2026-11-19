@@ -177,6 +177,46 @@ class RemoteStorageClient(RemoteReader):
                 self.close()
                 raise
 
+    def scheduler_state(self) -> dict[str, Any]:
+        """Trusted scheduler only; explicit grants, no cached proof or ACL fallback.
+
+        coverage_revision identifies registration + effective grants, not object
+        freshness. can_receive is owner capability, not authorization of causes.
+        """
+        response = self._request("GET", "/v1/scheduler/state")
+        try:
+            value = load_json(response.text)
+            if (
+                not isinstance(value, dict)
+                or set(value) != {"codec", "coverage_complete", "coverage_revision", "owners"}
+                or type(value["codec"]) is not int
+                or value["codec"] != 1
+                or value["coverage_complete"] is not True
+                or not isinstance(value["coverage_revision"], str)
+                or not 1 <= len(value["coverage_revision"]) <= 256
+                or not isinstance(value["owners"], dict)
+            ):
+                raise ValueError
+            for module, owner in value["owners"].items():
+                if (
+                    not isinstance(module, str)
+                    or re.fullmatch(r"[a-z][a-z0-9_]{0,54}", module) is None
+                    or not isinstance(owner, dict)
+                    or set(owner) != {"enabled", "can_receive", "revision", "online"}
+                    or type(owner["enabled"]) is not bool
+                    or type(owner["can_receive"]) is not bool
+                    or owner["online"] is not None
+                    or (owner["can_receive"] and not owner["enabled"])
+                    or (
+                        owner["revision"] is not None
+                        and (type(owner["revision"]) is not int or owner["revision"] < 1)
+                    )
+                ):
+                    raise ValueError
+            return value
+        except (InvalidRequest, ValueError, KeyError, TypeError):
+            raise ProtocolError("invalid scheduler state response") from None
+
     def call_id_occupied(self, call_id: str) -> bool:
         """Gateway-only authoritative occupancy; old servers fail closed, no fallback."""
         import json
@@ -490,7 +530,9 @@ class RemoteStorageClient(RemoteReader):
         finally:
             # Expired/revoked leases are swept by deployment maintenance. A release
             # transport failure must not mask a primary error or trigger re-planning.
-            with suppress(SnapshotUnavailable, AuthenticationError, ServiceUnavailable):
+            with suppress(
+                SnapshotUnavailable, AuthenticationError, ServiceUnavailable, PermissionDenied
+            ):
                 self.release_snapshot(lease["snapshot_id"])
 
     def _consumer(self, operation: str, consumer: str, **values: Any) -> dict[str, Any]:

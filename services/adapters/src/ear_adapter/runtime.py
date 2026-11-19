@@ -7,10 +7,10 @@ import logging
 import sys
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
-from ear_contracts import SYSTEM, new_id
+from ear_contracts import SYSTEM, NewRawRecord, new_id
 from ear_storage_client import AppendRaw, Context, PermissionDenied, Query, StorageClient
 from ear_storage_client.remote import RemoteStorageClient
 from ear_storage_client.remote_errors import CommitUnknown, ResourceLimit, ServiceUnavailable
@@ -18,8 +18,9 @@ from ear_storage_client.wire import encode_request
 
 from ear_adapter.config import AdapterConfig
 from ear_adapter.convert import Blocked, Waiting, audio_ref_id, capture_records, readiness
-from ear_adapter.ear_api import SpeakerResolution
-from ear_adapter.source import AudioLocator, EarSource, SourceUnavailable
+from ear_adapter.ear_api import Capture, SpeakerResolution
+from ear_adapter.selection import capture_selection, validate_capture_id
+from ear_adapter.source import AudioLocator, EarSource, SourceProtocolError, SourceUnavailable
 
 logger = logging.getLogger("ear_adapter")
 # 旧 Ear 的固定输入类型；新增独立适配器不扩大本进程的权限要求。
@@ -74,8 +75,30 @@ def ingest_capture(
     locator: AudioLocator,
     config: AdapterConfig,
 ) -> Outcome:
+    validate_capture_id(capture_id)
+    try:
+        return _ingest_capture(
+            capture_id, source=source, storage=storage, locator=locator, config=config
+        )
+    except ValueError:
+        # 包括外层/内层 Pydantic 及转换校验；绝不输出 input_value/正文。
+        raise SourceProtocolError() from None
+
+
+def _ingest_capture(
+    capture_id: str,
+    *,
+    source: EarSource,
+    storage: StorageClient,
+    locator: AudioLocator,
+    config: AdapterConfig,
+) -> Outcome:
     try:
         evidence = source.read_capture(capture_id)
+        captures = evidence.of_type("capture", Capture)
+        if evidence.capture_id != capture_id or any(c.capture_id != capture_id for c in captures):
+            raise SourceProtocolError()
+        # capture 数量仍由 readiness 判定；匹配校验先于任何音频/声纹读取及去重。
         state = readiness(evidence)
         if isinstance(state, Waiting):
             return Pending(capture_id, state.reason)
@@ -99,6 +122,22 @@ def ingest_capture(
         return Pending(capture_id, "① 暂时不可用")
 
     records = capture_records(evidence, audio_file=audio_file, embeddings=embeddings, config=config)
+    return append_capture_batch(capture_id, records, storage=storage)
+
+
+def append_capture_batch(
+    capture_id: str,
+    records: Sequence[NewRawRecord],
+    *,
+    storage: StorageClient,
+    can_retry: Callable[[], bool] | None = None,
+    include_conflict_reason: bool = True,
+) -> Outcome:
+    """Submit one atomic batch; replay the same remote request on uncertain commit.
+
+    A replay can still cause the first commit. A supplied retry check must succeed
+    before resubmission; a failed check leaves the first commit's outcome unknown.
+    """
     ops = [AppendRaw(r) for r in records]
     context = Context.system()
     request_id = new_id()
@@ -115,6 +154,8 @@ def ingest_capture(
             if attempt == 2:
                 return Pending(capture_id, "① 提交结果仍未知；下一轮检查 audio_ref")
             time.sleep(0.25 * 2**attempt)
+            if can_retry is not None and not can_retry():
+                return Pending(capture_id, "① 提交结果未知；输入验证失败，未重放")
         except ServiceUnavailable:
             return Pending(capture_id, "① 暂时不可用")
         except ResourceLimit:
@@ -127,7 +168,10 @@ def ingest_capture(
     else:
         raise AssertionError("unreachable")
     if result.conflict is not None:
-        return Failed(capture_id, f"① 拒绝写入：{result.conflict.reason}")
+        reason = (
+            f"① 拒绝写入：{result.conflict.reason}" if include_conflict_reason else "① 拒绝写入"
+        )
+        return Failed(capture_id, reason)
     written = Counter(
         r.data_type for r in result.results if r.outcome == "written" and r.data_type is not None
     )
@@ -175,7 +219,13 @@ class Runner:
         self.config = config
         self.done: set[str] = set()
 
-    def run_once(self, *, should_stop: Callable[[], bool] = lambda: False) -> Report:
+    def run_once(
+        self,
+        *,
+        capture_ids: Sequence[str] | None = None,
+        should_stop: Callable[[], bool] = lambda: False,
+    ) -> Report:
+        selected = capture_selection(capture_ids)  # 冻结、去重、校验先于任何 IO。
         report = Report()
         try:
             for data_type in READ_TYPES:
@@ -186,18 +236,22 @@ class Runner:
             report.storage_error = "① 暂时不可用"
             return report
         try:
-            summaries = list(self.source.list_captures())
+            identifiers = (
+                [summary.capture_id for summary in self.source.list_captures()]
+                if selected is None
+                else selected
+            )
         except SourceUnavailable:
             report.source_error = "旧 Ear 暂时不可用"
             _log("source_unavailable", reason=report.source_error)
             return report
-        for summary in summaries:
+        for capture_id in identifiers:
             if should_stop():
                 break
-            if summary.capture_id in self.done:
+            if capture_id in self.done:
                 continue
             outcome = ingest_capture(
-                summary.capture_id,
+                capture_id,
                 source=self.source,
                 storage=self.storage,
                 locator=self.locator,
@@ -205,7 +259,7 @@ class Runner:
             )
             report.outcomes.append(outcome)
             if isinstance(outcome, Ingested | AlreadyIngested):
-                self.done.add(summary.capture_id)
+                self.done.add(capture_id)
             _log_outcome(outcome)
         return report
 

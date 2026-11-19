@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Literal
 
 from ear_contracts import SemanticRecord, SystemRecord, is_id
@@ -15,8 +16,11 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from starlette.exceptions import HTTPException
+from starlette.responses import Response
 from starlette.staticfiles import StaticFiles
+from starlette.types import Scope
 
+from ear_api import evidence
 from ear_api.boundary import Boundary, failure, response
 from ear_api.business import (
     BUSINESS_TYPES,
@@ -29,12 +33,42 @@ from ear_api.config import Binding, Settings
 from ear_api.execution import (
     PROTOCOL_BLOCKER,
     ActionAdapter,
+    ExecutionPump,
     ExecutionService,
     journal_status,
 )
+from ear_api.execution_http import (
+    RECOVERY_INPUT,
+    PrepareInput,
+    PumpInput,
+    projection,
+    pump_once,
+    recover,
+)
 from ear_api.execution_journal import ExecutionJournal, JournalUnavailable
+from ear_api.model_settings import (
+    ModelSelection,
+    ModelSettings,
+    ModelSettingsConflict,
+    ModelSettingsUnavailable,
+)
 from ear_api.models import FeedbackInput, load_json_object
 from ear_api.upstream import GatewayError, Upstream
+
+
+class _FlatPageFiles(StaticFiles):
+    """Serve only the named flat page's HTML, JS and CSS assets."""
+
+    def __init__(self, directory: Path, *, page: str) -> None:
+        super().__init__(directory=directory)
+        self.page = page
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        if path == ".":
+            path = f"{self.page}.html"
+        if path not in {f"{self.page}.html", f"{self.page}.js", f"{self.page}.css"}:
+            raise HTTPException(status_code=404)
+        return await super().get_response(path, scope)
 
 
 def valid_id(value: str) -> str:
@@ -92,6 +126,15 @@ def create_app(
     adapter: ActionAdapter | None = None,
 ) -> FastAPI:
     remote = upstream or Upstream(settings)
+    selection = (
+        ModelSettings(settings.model_settings_file)
+        if not settings.test_no_auth and settings.model_settings_file is not None
+        else None
+    )
+    if settings.execution_action_v2 and execution is not None:
+        raise ValueError("action_v2_requires_explicit_adapter_and_journal")
+    if isinstance(execution, ExecutionPump):
+        raise ValueError("action_v2_requires_explicit_adapter_and_journal")
     if execution is not None and (settings.execution_journal is not None or adapter is not None):
         raise ValueError("ambiguous_execution_configuration")
     if adapter is not None and settings.execution_journal is None:
@@ -120,7 +163,8 @@ def create_app(
         redirect_slashes=False,
         lifespan=lifespan,
     )
-    app.state.execution_http_enabled = False
+    v2_enabled = settings.execution_action_v2 and adapter is not None
+    app.state.execution_http_enabled = v2_enabled
 
     def current_journal() -> ExecutionJournal | None:
         if settings.execution_journal is not None and journal is None:
@@ -139,8 +183,12 @@ def create_app(
             exc.status_code, "not_found" if exc.status_code == 404 else "request_rejected"
         )
 
-    def authenticated(request: Request, *, admin: bool = False) -> Binding:
-        binding = settings.authenticate(request.headers.getlist("authorization"))
+    def authenticated(request: Request, *, admin: bool = False, session: bool = False) -> Binding:
+        # Endpoint-owned flags, never request-supplied role selectors. The selected
+        # binding flows unchanged into storage and feedback identity/source audit.
+        binding = settings.authenticate(
+            request.headers.getlist("authorization"), admin=admin, session=session
+        )
         if binding is None:
             raise GatewayError(401, "unauthenticated")
         if admin and binding.role != "admin":
@@ -166,10 +214,16 @@ def create_app(
             200 if healthy else 503,
         )
 
+    @app.get("/v1/session")
+    def session(request: Request):
+        params(request, set())
+        # Public capability discovery only; never expose bindings or credentials.
+        return response({"test_no_auth": settings.test_no_auth})
+
     @app.get("/v1/me")
     def me(request: Request):
         params(request, set())
-        binding = authenticated(request)
+        binding = authenticated(request, session=True)
         with remote.client(binding):
             pass
         return response({"subject": binding.subject, "role": binding.role})
@@ -208,6 +262,23 @@ def create_app(
         )
 
     app.add_api_route("/v1/records/{data_type}", list_records, methods=["GET"])
+
+    @app.get("/v1/evidence/search")
+    def evidence_search(request: Request):
+        binding = authenticated(request)
+        values = params(request, {"start", "end", "q", "limit", "cursor"})
+        time = evidence.validate_window(values.get("start", ""), values.get("end", ""))
+        phrase = values.get("q", "")
+        limit = integer(values.get("limit", "10"), maximum=10)
+        cursor = values.get("cursor")
+        if not 1 <= len(phrase) <= 256 or (
+            cursor is not None and not 1 <= len(cursor) <= evidence.MAX_CURSOR_BYTES
+        ):
+            raise GatewayError(422, "invalid_input")
+        # Live credentials on every request; the cursor confers no authorization.
+        with remote.client(binding) as client:
+            result = evidence.search(client, time, phrase, cursor, limit)
+        return response(result)
 
     @app.get("/v1/timeline")
     def timeline(request: Request):
@@ -370,6 +441,13 @@ def create_app(
         # Never disclose a local journal entry without CURRENT upstream authorization.
         with remote.client(binding) as client:
             record = client.get(suggestion_id)
+            if v2_enabled:
+                active = current_journal()
+                if active is None or trusted_adapter is None:
+                    raise JournalUnavailable()
+                return response(
+                    projection(ExecutionPump(client, active, trusted_adapter), suggestion_id)
+                )
         if not isinstance(record, SemanticRecord) or record.data_type != "action_suggestion":
             raise GatewayError(404, "not_found")
         active = current_journal()
@@ -392,31 +470,81 @@ def create_app(
             }
         )
 
+    def advance_execution(suggestion_id: str, request: Request, *, prepare: bool):
+        binding = authenticated(request)
+        params(request, set())
+        valid_id(suggestion_id)
+        parsed = (PrepareInput if prepare else PumpInput).model_validate(body(request))
+        with remote.client(binding) as client:
+            record = client.get(suggestion_id)
+            if not isinstance(record, SemanticRecord) or record.data_type != "action_suggestion":
+                raise GatewayError(404, "not_found")
+            if not v2_enabled:
+                raise GatewayError(501, PROTOCOL_BLOCKER)
+            active = current_journal()
+            if active is None or trusted_adapter is None:
+                raise JournalUnavailable()
+            service = ExecutionPump(client, active, trusted_adapter)
+            with active.lock:
+                if isinstance(parsed, PumpInput):
+                    pump_once(service, suggestion_id, parsed)
+                else:
+                    service.prepare(suggestion_id, parsed.expected_version)
+                return response(projection(service, suggestion_id), 202)
+
+    @app.post("/v1/actions/{suggestion_id}/prepare")
+    def execution_prepare(suggestion_id: str, request: Request):
+        return advance_execution(suggestion_id, request, prepare=True)
+
+    @app.post("/v1/actions/{suggestion_id}/pump")
+    def execution_pump(suggestion_id: str, request: Request):
+        return advance_execution(suggestion_id, request, prepare=False)
+
     @app.post("/v1/actions/{suggestion_id}/recovery")
     def execution_recovery(suggestion_id: str, request: Request):
         binding = authenticated(request)
         params(request, set())
         valid_id(suggestion_id)
+        if settings.execution_action_v2:
+            v2_input = RECOVERY_INPUT.validate_python(body(request))
+            with remote.client(binding) as client:
+                # This request's live identity/grants, never an injected service client.
+                record = client.get(suggestion_id)
+                if (
+                    not isinstance(record, SemanticRecord)
+                    or record.data_type != "action_suggestion"
+                ):
+                    raise GatewayError(404, "not_found")
+                if not v2_enabled:
+                    raise GatewayError(501, PROTOCOL_BLOCKER)
+                active = current_journal()
+                if active is None or trusted_adapter is None:
+                    raise JournalUnavailable()
+                service = ExecutionPump(client, active, trusted_adapter)
+                with active.lock:
+                    # Read authorization before acknowledgement errors or local state.
+                    projection(service, suggestion_id)
+                    recover(service, suggestion_id, v2_input)
+                    return response(projection(service, suggestion_id), 202)
         parsed = RecoveryInput.model_validate(body(request))
-        if parsed.operation == "retry" and not parsed.acknowledge_duplicate_risk:
-            raise GatewayError(409, "duplicate_risk_confirmation_required")
         with remote.client(binding) as client:
             record = client.get(suggestion_id)
         if not isinstance(record, SemanticRecord) or record.data_type != "action_suggestion":
             raise GatewayError(404, "not_found")
+        if parsed.operation == "retry" and not parsed.acknowledge_duplicate_risk:
+            raise GatewayError(409, "duplicate_risk_confirmation_required")
         if parsed.operation == "verify":
             active = current_journal()
             if active is not None and trusted_adapter is not None:
                 # Use THIS request's reauthenticated storage client, not the injected
-                # service's long-lived client. No HTTP operation calls execute().
+                # service's long-lived client. This legacy path only calls lookup().
                 with remote.client(binding) as client:
                     service = ExecutionService(client, active, trusted_adapter)
                     service.verify(suggestion_id, parsed.expected_revision)
                     return response(
                         {"suggestion_id": suggestion_id, **service.status(suggestion_id)}
                     )
-        # Even acknowledged risk is not permission to invent ④'s recovery protocol.
-        # No HTTP self-report can assert success; verification only calls lookup().
+        # Without explicit v2 opt-in, legacy confirmation/retry remains disabled.
         raise GatewayError(501, PROTOCOL_BLOCKER)
 
     @app.get("/v1/plugins")
@@ -429,6 +557,47 @@ def create_app(
             raise ValueError("invalid module")
         return response(remote.plugin_directory(binding, limit=limit, after=after))
 
+    if selection is not None:
+
+        def model_admin(request: Request) -> Binding:
+            binding = authenticated(request, admin=True)
+            if request.scope["query_string"]:
+                raise GatewayError(422, "invalid_input")
+            return binding
+
+        @app.get("/v1/settings/model")
+        def get_model_settings(request: Request):
+            binding = model_admin(request)
+            if request.scope["ear_api.body"]:
+                raise GatewayError(422, "invalid_input")
+            # /v1/identity alone may expose only the module. This read also
+            # verifies the binding's current storage-side admin authority.
+            remote.plugin_directory(binding, limit=1)
+            try:
+                return response(selection.read().model_dump())
+            except ModelSettingsUnavailable:
+                raise GatewayError(503, "model_settings_unavailable") from None
+
+        @app.put("/v1/settings/model")
+        def put_model_settings(request: Request):
+            binding = model_admin(request)
+            desired = ModelSelection.model_validate(body(request))
+            remote.plugin_directory(binding, limit=1)
+            try:
+                return response(selection.update(desired).model_dump())
+            except ModelSettingsConflict:
+                raise GatewayError(409, "model_settings_conflict") from None
+            except ModelSettingsUnavailable:
+                raise GatewayError(503, "model_settings_unavailable") from None
+
     if settings.static_dir is not None:
         app.mount("/plugins", StaticFiles(directory=settings.static_dir, html=True), name="plugins")
+        app.mount(
+            "/workspace", _FlatPageFiles(settings.static_dir, page="workspace"), name="workspace"
+        )
+        app.mount(
+            "/model-settings",
+            _FlatPageFiles(settings.static_dir, page="model-settings"),
+            name="model-settings",
+        )
     return app

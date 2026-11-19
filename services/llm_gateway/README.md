@@ -96,6 +96,16 @@ based-on: 设计 v1.2 第 9 节、信号补充、插件 MVP、工作分解 v1.2�
 
 容器：`deploy/Dockerfile.gateway`；可选覆盖文件 `deploy/compose.api-gateway.yaml`（profile `api-gateway`）。覆盖文件把 ⑥ 和 ⑦ 一起声明，必须显式提供三份受保护文件（UID 10001、权限 0600）：`EAR_API_CONFIG_FILE`（⑥的配置，见[⑥入口](../api/README.md)）、`EAR_GATEWAY_CONFIG_FILE`（JSON：`storage_url`、`aliases`，以及内置适配器的 `octopus={origin, models, service}` 或自定义 `provider_factory`，两者不能同时给）、`EAR_GATEWAY_STORAGE_TOKEN_FILE`；用内置 Octopus 适配器时再叠加 `deploy/compose.gateway-octopus.yaml` 并提供 `EAR_OCTOPUS_TOKEN_FILE`；自定义 provider 代码目录用 `deploy/compose.gateway-provider.yaml` 的 `EAR_GATEWAY_PROVIDER_DIR`（只读绑定）。Octopus 令牌不能写进 JSON 或 Compose 环境变量。网关端口 8077 只在内部网络，默认不对外发布；副本数固定 1（journal 文件锁只保证单 owner，不是多副本故障转移）；健康检查只是存活探测（启动恢复完成后才监听），不代表 provider 或①当前可用。新建命名卷会复制 UID 10001/0700，既有卷权限不自动修复。覆盖文件不做迁移和身份初始化。
 
+#### 直连 New API（可选）
+
+在现有 API/网关覆盖之后叠加 `deploy/compose.gateway-newapi.yaml`；不要叠加 Octopus 或自定义 provider 覆盖。默认部署不变，目标是固定的 HTTPS `newapi.hangjuan.cn/v1/chat/completions`。使用非流式 JSON，不跟随重定向、不从环境取代理、不切换模型或协议；不确定的上游结果不重发。只有⑦接入该覆盖声明的独立出站网络；无网关发布端口。
+
+- 网关 JSON 设置 `openai_compatible: true` 和引导校验值 `aliases: {"default":"gpt-6-luna"}`，不设置 `octopus` 或 `provider_factory`。运行时别名以私有设置目录为准；缺失/非法配置拒绝启动，不回退。
+- 预置 `EAR_MODEL_SETTINGS_DIR` 指向 `0700` 目录，内有 `0600` 的 `settings.json`，初始 `{"model":"gpt-6-luna","revision":1}`。绑定目录而不是文件：⑥读写、⑦只读；⑥设 `model_settings_file: /run/config/model-settings/settings.json`，使用正常 Bearer 配置。须按容器实际 UID 核对属主。⑦下次启动读取保存的模型，④继续请求别名 `default`。
+- `EAR_NEWAPI_TOKEN_FILE` 只填⑦挂载使用的私有密钥文件路径；该凭据不出现在网页、共享设置、启动参数或 Compose 环境内容中。不得用免登录测试实例验收真实提取；有权触发付费请求的反馈也需鉴权。网关与④仍须用各自①签发的身份，④手动提取先不启用定时任务或动作。
+- ④的 GatewayClient 超时保留请求审计及读写余量（例如该部署先明确设 `timeout: 90`，高于⑦ 60 秒上游预算）；`gateway_url` 使用实际内部端口 `8077`。
+- 当前验证仅为合成响应：真实④与⑦代码经过该请求格式，产生活动与关联 Markdown、无动作建议。未验证指定实例的模型可用性、用量、真实响应形状；发送真实证据之前先用合成短样本。模型输入和输出可能存于④的私有运行记录，不应上传诊断详情。
+
 ### 3.3 HTTP 接口
 
 认证：`Authorization: Bearer <调用方的①令牌>`（43 位，只认请求头）。错误体形如 `{"code": "..."}`，不含请求体、凭据或异常文本。

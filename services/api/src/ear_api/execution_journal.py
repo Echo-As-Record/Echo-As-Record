@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Literal
 
 from ear_contracts.base import Id
+from ear_extraction.domain import Command
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -39,6 +40,17 @@ class ExecutionEntry(BaseModel):
     external_ref: str | None = Field(default=None, max_length=512)
     error_code: str | None = Field(default=None, pattern=r"^[a-z_]{1,80}$")
     revision: int = Field(default=1, strict=True, ge=1)
+    # Additive JSON fields: old rows retain the legacy protocol and cannot be
+    # promoted to v2 or executed with a different identity by the new pump.
+    protocol: Literal["legacy", "action-v2"] = "legacy"
+    pending_command: Command | None = None
+    owner_version: int | None = Field(default=None, strict=True, ge=1)
+    owner_state: Literal["approved", "executing", "unknown", "executed", "failed"] | None = None
+    owner_receipt: str | None = None
+    owner_execution: dict | None = None
+    attempt: int = Field(default=1, strict=True, ge=1)
+    retry_acknowledged: bool = False
+    user_confirmed: bool = False
 
 
 class ExecutionJournal:
@@ -125,14 +137,33 @@ class ExecutionJournal:
                         if (
                             entry.suggestion_id != previous.suggestion_id
                             or entry.revision != previous.revision + 1
+                            or any(
+                                getattr(entry, key) != getattr(previous, key)
+                                for key in (
+                                    "protocol",
+                                    "approved_version",
+                                    "action_key",
+                                    "action_hash",
+                                    "action_json",
+                                    "adapter",
+                                )
+                            )
                         ):
+                            raise ValueError
+                        # Compare parsed values for pre-extension JSON rows, then
+                        # CAS the actual bytes. Never rewrite/migrate on read.
+                        row = db.execute(
+                            "SELECT body FROM execution WHERE suggestion_id=?",
+                            (previous.suggestion_id,),
+                        ).fetchone()
+                        if row is None or ExecutionEntry.model_validate_json(row[0]) != previous:
                             raise ValueError
                         changed = db.execute(
                             "UPDATE execution SET body=? WHERE suggestion_id=? AND body=?",
                             (
                                 entry.model_dump_json(),
                                 entry.suggestion_id,
-                                previous.model_dump_json(),
+                                row[0],
                             ),
                         ).rowcount
                         if changed != 1:

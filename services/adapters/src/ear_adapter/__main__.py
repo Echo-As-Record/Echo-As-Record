@@ -18,7 +18,13 @@ from ear_storage_client.remote_errors import AuthenticationError, ProtocolError,
 
 from ear_adapter.config import AdapterConfig
 from ear_adapter.runtime import Failed, Runner, configure_logging
-from ear_adapter.source import HttpEarSource, InboxAudioLocator
+from ear_adapter.selection import InvalidCaptureSelection, capture_selection
+from ear_adapter.source import (
+    AudioAccessError,
+    HttpEarSource,
+    InboxAudioLocator,
+    SourceProtocolError,
+)
 
 
 def _interval(value: str) -> float:
@@ -51,10 +57,17 @@ def main(argv: list[str] | None = None) -> int:
     if argv == ["--dry-run"]:
         argv = ["dry-run"]  # legacy alias；新脚本使用 dry-run。
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("dry-run")
-    commands.add_parser("once")
-    commands.add_parser("run").add_argument("--interval", type=_interval, default=60.0)
+    for command in ("dry-run", "once", "run"):
+        subparser = commands.add_parser(command)
+        subparser.add_argument("--capture-id", action="append", default=None)
+        if command == "run":
+            subparser.add_argument("--interval", type=_interval, default=60.0)
     args = parser.parse_args(argv)
+    try:
+        selected = capture_selection(args.capture_id)
+    except InvalidCaptureSelection:
+        _emit("configuration_error", reason="capture ID 必须是非空安全标识")
+        return 2
     required = ["EAR_ADAPTER_EAR_URL", "EAR_ADAPTER_EAR_TOKEN"]
     if args.command != "dry-run":
         required += ["EAR_ADAPTER_STORAGE_URL", "EAR_ADAPTER_STORAGE_TOKEN"]
@@ -91,14 +104,14 @@ def main(argv: list[str] | None = None) -> int:
                     config=config,
                 )
                 while not stop.is_set():
-                    report = runner.run_once(should_stop=stop.is_set)
+                    report = runner.run_once(capture_ids=selected, should_stop=stop.is_set)
                     if args.command == "dry-run":
                         rescan = Runner(
                             source=runner.source,
                             storage=storage,
                             locator=runner.locator,
                             config=config,
-                        ).run_once()
+                        ).run_once(capture_ids=selected)
                         print(
                             json.dumps(
                                 {"first": report.summary(), "rescan": rescan.summary()},
@@ -132,6 +145,9 @@ def main(argv: list[str] | None = None) -> int:
         PermissionDenied,
         InvalidRequest,
         ProtocolError,
+        SourceProtocolError,
+        AudioAccessError,
+        InvalidCaptureSelection,
         urllib.error.HTTPError,
     ) as exc:
         # 不记录异常正文、URL 或 HTTP body，避免配置凭据被带入日志。

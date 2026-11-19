@@ -17,6 +17,7 @@ from ear_storage_client.remote_errors import AuthenticationError, ServiceUnavail
 def cli(monkeypatch):
     for name in ("EAR_URL", "EAR_TOKEN", "STORAGE_URL", "STORAGE_TOKEN"):
         monkeypatch.setenv("EAR_ADAPTER_" + name, "SECRET")
+    monkeypatch.setenv("EAR_ADAPTER_EAR_URL", "http://127.0.0.1:1/internal")
     monkeypatch.setattr("ear_adapter.__main__.configure_logging", lambda: None)
     remote = Mock()
     monkeypatch.setattr("ear_adapter.__main__.RemoteStorageClient", remote)
