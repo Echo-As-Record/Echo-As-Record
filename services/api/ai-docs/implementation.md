@@ -114,3 +114,11 @@ EAR_RUN_API_GATEWAY_DEPLOY_TESTS=1 EAR_API_TEST_IMAGE=… EAR_GATEWAY_TEST_IMAGE
 ## 9. 刷新时机
 
 全套验收重跑后更新第 5 节；④协议到位后更新第 3、4 节并移除对应 501；合并进 dev 后删除“功能分支待合并”的说法；同步[全局实施计划第 6 节](../../../ai-docs/plans/mvp-implementation.md)。
+
+## MCP 接入与验证
+
+`src/ear_api/mcp.py` 注册 stdio 工具，经⑥ HTTP 使用同一绑定。`evidence.py` 在一次快照内按时间分页、筛选原话并解析录音和人物归属。跨工具调用使用当前数据。反馈提交、重试和状态沿用现有业务函数；③仍待消费契约。接口与客户端配置见[模块入口](../README.md)。
+
+`uv run pytest services/api/tests/test_mcp.py` 启动真实 stdio 子进程、回环⑥和内存模拟①，用合成记录验证发现工具、查询分页、片段偏移、归属纠正重放及状态。
+
+MCP 启动只使用客户端注入的 `EAR_API_URL`、`EAR_API_TOKEN`，不读取 `deploy/.env`。`test_project_command_lists_tools_without_dotenv` 使用 `.mcp.json` 的真实命令验证 stdio 初始化与五个工具；完整 HTTP 数据闭环仍由 `test_stdio_workflow` 验证，需允许回环 TCP 监听。

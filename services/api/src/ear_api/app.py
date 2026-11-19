@@ -26,6 +26,7 @@ from ear_api.business import (
     submit_feedback,
 )
 from ear_api.config import Binding, Settings
+from ear_api.evidence import search
 from ear_api.execution import (
     PROTOCOL_BLOCKER,
     ActionAdapter,
@@ -173,6 +174,38 @@ def create_app(
         with remote.client(binding):
             pass
         return response({"subject": binding.subject, "role": binding.role})
+
+    @app.get("/v1/evidence")
+    def evidence(request: Request):
+        binding = authenticated(request)
+        values = params(request, {"start", "end", "phrase", "cursor", "limit"})
+        adapter = TypeAdapter(UtcDatetime)
+        time = TimeRange(
+            adapter.validate_python(values.get("start")), adapter.validate_python(values.get("end"))
+        )
+        phrase = values.get("phrase", "")
+        limit, cursor = pagination({"limit": "5", **values})
+        if limit > 10 or len(phrase) > 256:
+            raise ValueError("invalid search")
+        with remote.client(binding) as client, client.snapshot() as reader:
+            return response(search(reader, time, phrase, cursor, limit))
+
+    @app.get("/v1/persons")
+    def persons(request: Request):
+        binding = authenticated(request)
+        values = params(request, {"name", "cursor"})
+        name = values.get("name", "")
+        if not name.strip() or len(name) > 256:
+            raise ValueError("invalid name")
+        _, cursor = pagination(values)
+        with remote.client(binding) as client:
+            page = client.query(Query("person", where={"name": name}, limit=10, cursor=cursor))
+        return response(
+            {
+                "items": [{"id": p.id, "name": p.payload.get("name")} for p in page.items],
+                "next_cursor": page.next_cursor,
+            }
+        )
 
     def list_records(data_type: str, request: Request):
         binding = authenticated(request)
