@@ -5,10 +5,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from ear_contracts import RawRecord, SemanticRecord
+from ear_contracts import RawRecord, SemanticRecord, format_utc
 from ear_storage_client import Query, Reader, TimeRange, iter_query
 
-from ear_extraction.domain import Activity, Interval, Segmentation, Waiting
+from ear_extraction.domain import Activity, Blocked, Interval, Segmentation, Waiting
 from ear_extraction.persistence import records, semantic
 
 RAW_TYPES = (
@@ -27,9 +27,12 @@ class Inputs:
     raw: list[RawRecord]
     attributions: list[SemanticRecord]
     entities: list[SemanticRecord]
+    transcript_only: bool = False
 
-    def public(self, *, anonymous: bool = False) -> dict:
-        data = {"evidence": [r.model_dump(mode="json") for r in self.raw]}
+    def public(self, *, anonymous: bool = False, link_ids: bool = True) -> dict:
+        if self.transcript_only:
+            return {"evidence": evidence_rows(self.raw, transcript_only=True, link_ids=link_ids)}
+        data = {"evidence": evidence_rows(self.raw)}
         if not anonymous:
             data["attributions"] = [r.model_dump(mode="json") for r in self.attributions]
             # Only names are semantic entity inputs; references never reach the model.
@@ -45,8 +48,41 @@ class Inputs:
         return data
 
 
-def raw_inputs(reader: Reader, interval: Interval) -> list[RawRecord]:
+def evidence_rows(
+    raw: list[RawRecord], *, transcript_only: bool = False, link_ids: bool = True
+) -> list[dict]:
+    if not transcript_only:
+        return [r.model_dump(mode="json") for r in raw]
+    rows = []
+    for r in raw:
+        text = r.payload.get("text")
+        if r.data_type != "transcript_segment" or not isinstance(text, str):
+            raise Blocked("transcript_evidence_invalid")
+        row = {
+            "event_start": format_utc(r.event_start),
+            "event_end": format_utc(r.event_end),
+            "text": text,
+        }
+        if link_ids:
+            row["id"] = r.id
+        rows.append(row)
+    return rows
+
+
+def raw_inputs(
+    reader: Reader, interval: Interval, *, transcript_only: bool = False
+) -> list[RawRecord]:
     time = TimeRange(interval.start, interval.end)
+    if transcript_only:
+        raw = []
+        for r in iter_query(reader, Query("transcript_segment", time=time)):
+            if not isinstance(r, RawRecord) or r.data_type != "transcript_segment":
+                raise Blocked("transcript_evidence_invalid")
+            raw.append(r)
+        if not raw:
+            # No capture/readiness record is consulted. Absence is not proof of silence.
+            raise Blocked("transcript_evidence_unavailable")
+        return sorted(raw, key=lambda r: (r.event_start, r.id))
     for kind in ("voiceprint", "gps_point"):
         if reader.count(Query(kind, time=time, unreferenced_by=("attribution", "subject_id"))):
             raise Waiting("attributions_pending")
@@ -82,6 +118,11 @@ def check_refs(text: str, entities: list[SemanticRecord]) -> None:
         raise ValueError("unknown_entity_reference")
     if "[[" in REFERENCES.sub("", text):
         raise ValueError("invalid_reference_syntax")
+
+
+def validate_anonymous_activity(activity: Activity) -> None:
+    if "[[" in activity.title_md + activity.description_md:
+        raise ValueError("segmentation_must_use_anonymous_titles")
 
 
 def validate_activity(activity: Activity, interval: Interval, evidence: list[RawRecord]) -> None:

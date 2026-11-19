@@ -192,6 +192,63 @@ def test_valid_configs_no_default_timer_or_history(tmp_path, module):
     assert SECRET not in repr(cfg)
 
 
+@pytest.mark.parametrize("value", [0, 361, "330", True, float("inf"), float("nan")])
+def test_extraction_rejects_invalid_gateway_timeout(tmp_path, value):
+    with pytest.raises(ValueError, match="gateway_timeout"):
+        worker.Settings.model_validate(settings(tmp_path, "extraction", gateway_timeout=value))
+
+
+@pytest.mark.parametrize("module", ["attribution", "dependency"])
+def test_gateway_timeout_is_extraction_only(tmp_path, module):
+    with pytest.raises(ValueError, match="unexpected_gateway_or_timer"):
+        worker.Settings.model_validate(settings(tmp_path, module, gateway_timeout=330))
+
+
+def test_storage_timeout_ceiling_unchanged_with_gateway_timeout(tmp_path):
+    with pytest.raises(ValueError, match=r"(?m)^timeout$"):
+        worker.Settings.model_validate(
+            settings(tmp_path, "extraction", timeout=121, gateway_timeout=330)
+        )
+
+
+@pytest.mark.parametrize(
+    "overrides,storage_timeout,gateway_timeout",
+    [
+        ({}, 35, 35),
+        ({"timeout": 120}, 120, 120),
+        ({"gateway_timeout": 330}, 35, 330),
+        ({"timeout": 120, "gateway_timeout": 360}, 120, 360),
+    ],
+)
+def test_extraction_gateway_timeout_is_independent(
+    tmp_path, monkeypatch, overrides, storage_timeout, gateway_timeout
+):
+    data = settings(tmp_path, "extraction")
+    del data["timeout"]
+    config = worker.load_config(str(write_config(tmp_path, data | overrides)))
+    seen = []
+
+    def request(req):
+        target = (req.url.host, req.url.path)
+        seen.append(target)
+        if target == ("synthetic.invalid", "/v1/identity"):
+            assert req.extensions["timeout"]["read"] == storage_timeout
+            return httpx.Response(200, json={"codec": 1, "module": "extraction"})
+        assert target == ("synthetic-gateway.invalid", "/v1/stats")
+        assert req.extensions["timeout"]["read"] == gateway_timeout
+        return httpx.Response(200, json={"roots": {}})
+
+    monkeypatch.setattr(httpx, "HTTPTransport", lambda **_: httpx.MockTransport(request))
+
+    def serve(service, *_args, **_kwargs):
+        assert service.gateway.stats() == {"roots": {}}
+
+    monkeypatch.setattr(worker, "serve", serve)
+    worker.run(config, threading.Event())
+    assert ("synthetic.invalid", "/v1/identity") in seen
+    assert seen[-1] == ("synthetic-gateway.invalid", "/v1/stats")
+
+
 @pytest.mark.parametrize(
     "start", ["2020-01-01", "2020-01-01T00:00:00", "2020-01-01T01:00:00+01:00"]
 )

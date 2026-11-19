@@ -6,7 +6,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Callable
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -41,13 +41,14 @@ from ear_extraction.planning import apply_plan, extract_plan, preview_reextract,
 from ear_extraction.reevaluation import discover_rules
 from ear_extraction.rules import rule_operations
 from ear_extraction.scheduler import uncovered
-from ear_extraction.selection import reselect_plan
+from ear_extraction.selection import reselect_plan, validate_summary_rule_config
 from ear_extraction.suggestions import suggestion_operations
 
 logger = logging.getLogger(__name__)
 CONSUMER = "extraction.jobs"
 COMPLETION_CONSUMER = "extraction.completion"
 MODEL_COMMANDS = {"extract", "reextract", "apply_rule", "extract_once", "reevaluate"}
+TRANSCRIPT_ONLY_COMMANDS = {"extract", "reextract", "rule_create", "rule_update", "rule_delete"}
 TERMINAL = {"succeeded", "failed", "blocked", "superseded"}
 
 
@@ -106,6 +107,10 @@ def _retry_barrier(run: SystemRecord) -> str | None:
     return None
 
 
+class _TranscriptCallLimitExceeded(Exception):
+    """The next call would exceed this transcript-only run's model call budget."""
+
+
 class ExtractionService:
     def __init__(
         self,
@@ -118,7 +123,16 @@ class ExtractionService:
         wait_seconds: int = 1800,
         lease_seconds: int = 900,
         max_input_chars: int = 100_000,
+        transcript_only: bool = False,
+        transcript_summary_rule_id: str | None = None,
+        transcript_max_calls: int = 5,
+        transcript_allowed_windows: tuple[Interval, ...] = (),
     ):
+        if type(transcript_only) is not bool:
+            raise ValueError("transcript_only_must_be_bool")
+        validate_summary_rule_config(transcript_only, transcript_summary_rule_id)
+        if type(transcript_max_calls) is not int or transcript_max_calls <= 0:
+            raise ValueError("transcript_max_calls_must_be_positive_int")
         if storage.module != "extraction":
             raise ValueError("extraction_storage_client_required")
         if min(max_attempts, retry_seconds, wait_seconds, lease_seconds, max_input_chars) <= 0:
@@ -130,6 +144,10 @@ class ExtractionService:
             wait_seconds,
         )
         self.lease_seconds, self.max_input_chars = lease_seconds, max_input_chars
+        self.transcript_only = transcript_only
+        self.transcript_summary_rule_id = transcript_summary_rule_id
+        self.transcript_max_calls = transcript_max_calls
+        self.transcript_allowed_windows = transcript_allowed_windows
 
     def subscribe(self) -> None:
         self.storage.subscribe(CONSUMER, self.handle_event)
@@ -443,6 +461,14 @@ class ExtractionService:
         if reason := _retry_barrier(run):
             self._finish(run, context, "blocked", reason)
             return
+        if (
+            self.transcript_only
+            and run.payload["command"].get("kind") not in TRANSCRIPT_ONLY_COMMANDS
+        ):
+            # Old activities/artifacts and reevaluation descriptions may contain
+            # context from the default (multimodal) path. Never send them.
+            self._finish(run, context, "failed", "transcript_only_command_unsupported")
+            return
         if self._refresh_scheduled(run):
             return
         payload = {
@@ -465,6 +491,11 @@ class ExtractionService:
         calls = []
 
         def ask(purpose: str, data: dict[str, Any], model: type[BaseModel]) -> BaseModel:
+            if (
+                self.transcript_only
+                and len(tracker.payload["gateway_calls"]) >= self.transcript_max_calls
+            ):
+                raise _TranscriptCallLimitExceeded
             output = invoke(
                 tracker,
                 model,
@@ -477,16 +508,27 @@ class ExtractionService:
                 additional_causes=tracker.context.additional_causes,
                 max_input_chars=self.max_input_chars,
             )
-            calls.append(
-                {"purpose": purpose, "input": data, "output": output.model_dump(mode="json")}
-            )
+            if not self.transcript_only:
+                calls.append(
+                    {"purpose": purpose, "input": data, "output": output.model_dump(mode="json")}
+                )
             return output
 
         business_ready = False
         try:
             command = Command.model_validate(payload["command"])
-            with self.storage.snapshot() as reader:
+            with ExitStack() as snapshots:
+                reader = snapshots.enter_context(self.storage.snapshot())
                 if command.kind in {"extract", "reextract"}:
+                    if (
+                        self.transcript_only
+                        and self.transcript_allowed_windows
+                        and (
+                            command.kind != "extract"
+                            or command.interval not in self.transcript_allowed_windows
+                        )
+                    ):
+                        raise Blocked("transcript_interval_not_allowed")
                     spec = self.storage.registry.data_types.get("rule_selection")
                     if (
                         spec is None
@@ -497,7 +539,15 @@ class ExtractionService:
                         or not spec.supports_reevaluation
                     ):
                         raise Blocked("rule_selection_registration_required")
-                    ops, detail = extract_plan(reader, command, run.id, ask)
+                    ops, detail = extract_plan(
+                        reader,
+                        command,
+                        run.id,
+                        ask,
+                        transcript_only=self.transcript_only,
+                        transcript_summary_rule_id=self.transcript_summary_rule_id,
+                        release_snapshot=snapshots.close,
+                    )
                 elif command.kind in {"apply_rule", "extract_once"}:
                     ops, detail = apply_plan(reader, command, run.id, ask)
                 elif command.kind == "reevaluate":
@@ -604,6 +654,8 @@ class ExtractionService:
             error = "attributions_pending"
         except Blocked as exc:
             status, error = "blocked", str(exc)
+        except _TranscriptCallLimitExceeded:
+            status, error = "failed", "transcript_max_calls_exceeded"
         except Exception as exc:
             # No exception bodies: model responses can contain private evidence or credentials.
             status = "failed" if isinstance(exc, (ValueError, ValidationError)) else "retry_wait"

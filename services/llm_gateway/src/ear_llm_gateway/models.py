@@ -16,6 +16,8 @@ from ear_contracts.events import TracedCause
 from ear_storage_client.protocol import StorageClient
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+MAX_PROVIDER_TIMEOUT_SECONDS = 300
+
 
 class CallRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)

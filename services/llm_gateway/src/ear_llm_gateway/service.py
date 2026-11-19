@@ -36,6 +36,7 @@ from ear_storage_client.remote import RemoteStorageClient
 
 from ear_llm_gateway.journal import Journal
 from ear_llm_gateway.models import (
+    MAX_PROVIDER_TIMEOUT_SECONDS,
     CallRequest,
     GatewayError,
     Provider,
@@ -100,7 +101,7 @@ class Gateway:
             or not 1 <= attempts <= 3
         ):
             raise ValueError("invalid_limits")
-        if not math.isfinite(timeout) or not 0 < timeout <= 120:
+        if not math.isfinite(timeout) or not 0 < timeout <= MAX_PROVIDER_TIMEOUT_SECONDS:
             raise ValueError("invalid_timeout")
         for model in aliases.values():
             # Validate provider model identifiers without accepting arbitrary caller targets.

@@ -86,7 +86,7 @@ def mounts(runtime, tmp_path, monkeypatch):
         {"origin": "https://alternate.invalid"},
         {"provider_timeout_seconds": True},
         {"provider_timeout_seconds": 0},
-        {"provider_timeout_seconds": 121},
+        {"provider_timeout_seconds": 301},
         {"provider_timeout_seconds": 90.0},
         {"provider_timeout_seconds": "90"},
         {"newapi_token": PRIVATE},
@@ -103,7 +103,7 @@ def test_invalid_opt_in_or_ambiguous_config_does_not_open_mounts(
     assert capsys.readouterr().err == '{"code":"gateway_container_unavailable"}\n'
 
 
-@pytest.mark.parametrize("configured", [None, 1, 90, 120])
+@pytest.mark.parametrize("configured", [None, 1, 90, 120, 300])
 def test_provider_timeout_used_at_startup(runtime, mounts, monkeypatch, configured):
     config, _, _, _ = mounts
     if configured is not None:
@@ -216,10 +216,14 @@ def test_bad_key_never_uses_environment_or_calls_storage(raw, runtime, mounts, m
     )
 
 
+@pytest.mark.parametrize("provider_timeout", [None, 300])
 def test_real_cli_uses_projection_snapshot_until_restart(
-    runtime, mounts, monkeypatch, tmp_path, caplog
+    runtime, mounts, monkeypatch, tmp_path, caplog, provider_timeout
 ):
-    _, projection, _, reads = mounts
+    config, projection, _, reads = mounts
+    if provider_timeout is not None:
+        config.write_text(json.dumps({**BOOTSTRAP, "provider_timeout_seconds": provider_timeout}))
+    expected_timeout = 60 if provider_timeout is None else provider_timeout
     model_a = "model.provider:one/test@a+-"
     model_b = "B" * 128
     projection.write_text(json.dumps({"model": model_a, "revision": 1}))
@@ -244,6 +248,9 @@ def test_real_cli_uses_projection_snapshot_until_restart(
         return Writer() if module == "llm_gateway" else nullcontext(store.client(module))
 
     def upstream(request):
+        assert request.extensions["timeout"] == dict.fromkeys(
+            ("connect", "read", "write", "pool"), expected_timeout
+        )
         assert str(request.url) == "https://newapi.hangjuan.cn/v1/chat/completions"
         assert request.headers["authorization"] == "Bearer " + KEY
         assert KEY not in request.content.decode()
@@ -276,7 +283,7 @@ def test_real_cli_uses_projection_snapshot_until_restart(
 
     def serve(app, **kwargs):
         assert kwargs["workers"] == 1 and kwargs["access_log"] is False
-        assert int(sys.argv[sys.argv.index("--provider-timeout-seconds") + 1]) == 60
+        assert int(sys.argv[sys.argv.index("--provider-timeout-seconds") + 1]) == expected_timeout
         assert KEY not in repr(sys.argv) + repr(os.environ)
         assert "EAR_NEWAPI_TOKEN" not in os.environ
         assert len(requests) == (0 if not runs else 2)

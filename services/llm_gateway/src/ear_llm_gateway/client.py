@@ -16,6 +16,8 @@ from pydantic import BaseModel
 
 from ear_llm_gateway.models import CallRequest, GatewayError
 
+MAX_CLIENT_TIMEOUT_SECONDS = 360
+
 
 def endpoint(value: str) -> httpx.URL:
     try:
@@ -50,7 +52,11 @@ class GatewayClient:
 
         if re.fullmatch(r"[A-Za-z0-9_-]{43}", token) is None:
             raise ValueError("invalid_credentials")
-        if not math.isfinite(timeout) or not 0 < timeout <= 120 or max_response_bytes < 1:
+        if (
+            not math.isfinite(timeout)
+            or not 0 < timeout <= MAX_CLIENT_TIMEOUT_SECONDS
+            or max_response_bytes < 1
+        ):
             raise ValueError("invalid_client_limits")
         self.model, self.system, self.max_response_bytes = model, system, max_response_bytes
         self._http = httpx.Client(

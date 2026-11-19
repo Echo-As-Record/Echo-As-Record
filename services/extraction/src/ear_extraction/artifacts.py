@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ear_contracts import SemanticRecord, VersionRef
+from ear_contracts import RawRecord, SemanticRecord, VersionRef
 from ear_storage_client import Create, DependencyInput, RegisterDependencies, WriteOp
 
 from ear_extraction.domain import Activity, Generated, Rule
@@ -44,7 +44,13 @@ def dependencies(
     return [activity_ref, rule_ref, *input_dependencies(data)]
 
 
+def transcript_dependencies(raw: list[RawRecord]) -> list[VersionRef]:
+    return [VersionRef(data_type=r.data_type, id=r.id, version=r.version) for r in raw]
+
+
 def input_dependencies(data: Inputs) -> list[VersionRef | DependencyInput]:
+    if data.transcript_only:
+        return [*transcript_dependencies(data.raw)]
     # ALL interval attributions, including those not cited in the generated text.
     return [
         *[ref(a) for a in data.attributions],

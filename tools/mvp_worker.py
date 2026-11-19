@@ -4,9 +4,11 @@ Private JSON keys: module (attribution/extraction/dependency), storage_url,
 storage_token, consumer, journal_namespace, state_dir (existing owned 0700).
 Consumers are fixed: attribution / extraction.jobs / dependency.changes.
 ③ additionally requires cosine_threshold and gps_threshold_m. ④ requires
- gateway_url and model; its storage identity authenticates at ⑦ too. Optional
-schedule={start: RFC3339 UTC ending Z, every_seconds: positive integer} is the
-ONLY timer opt-in. No history registration, memory fallback or provider factory.
+gateway_url and model; its storage identity authenticates at ⑦ too. Optional
+④ gateway_timeout configures only the gateway client; omitted, it uses timeout
+as before. Optional schedule={start: RFC3339 UTC ending Z, every_seconds:
+positive integer} is the ONLY timer opt-in. No history registration, memory
+fallback or provider factory.
 
 Keep the state directory/namespace with the same deployment and identity across
 restarts. State identity also binds the storage origin (token rotation is allowed).
@@ -34,15 +36,18 @@ import time
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager, suppress
 from datetime import datetime, timedelta
+from itertools import pairwise
 from pathlib import Path
 from threading import Event
 from typing import Any, Literal, Self
 
 import httpx
-from ear_contracts import SystemRecord
+from ear_contracts import SystemRecord, is_id
+from ear_extraction.domain import Interval
 from ear_extraction.model_io import SYSTEM
 from ear_extraction.orchestration import TERMINAL, ExtractionService
 from ear_extraction.worker import Schedule, serve
+from ear_llm_gateway.client import MAX_CLIENT_TIMEOUT_SECONDS
 from ear_storage_client import Query
 from ear_storage_client.remote import RemoteStorageClient
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
@@ -99,8 +104,14 @@ class Settings(SafeModel):
     cosine_threshold: float | None = Field(default=None, strict=True, allow_inf_nan=False)
     gps_threshold_m: float | None = Field(default=None, strict=True, allow_inf_nan=False)
     gateway_url: str | None = Field(default=None, strict=True, repr=False)
+    gateway_timeout: float | None = Field(
+        default=None, strict=True, gt=0, le=MAX_CLIENT_TIMEOUT_SECONDS, allow_inf_nan=False
+    )
     model: str | None = Field(default=None, strict=True, min_length=1, max_length=128)
     schedule: Timer | None = None
+    transcript_only: bool = Field(default=False, strict=True)
+    transcript_summary_rule_id: str | None = Field(default=None, strict=True)
+    transcript_windows: tuple[Interval, ...] = Field(default=(), max_length=3)
 
     @model_validator(mode="after")
     def valid(self) -> Self:
@@ -134,10 +145,28 @@ class Settings(SafeModel):
             MatchConfig(self.cosine_threshold, self.gps_threshold_m)
         elif self.cosine_threshold is not None or self.gps_threshold_m is not None:
             raise ValueError("unexpected_thresholds")
+        if self.transcript_only:
+            if (
+                self.module != "extraction"
+                or self.schedule is not None
+                or not is_id(self.transcript_summary_rule_id)
+                or not self.transcript_windows
+            ):
+                raise ValueError("transcript_only_requires_fixed_rule_and_windows")
+            ordered = sorted(self.transcript_windows, key=lambda w: w.start)
+            if any(a.end > b.start for a, b in pairwise(ordered)):
+                raise ValueError("transcript_windows_overlap")
+            if any(w.end - w.start > timedelta(minutes=15) for w in ordered):
+                raise ValueError("transcript_window_too_long")
+        elif self.transcript_summary_rule_id is not None or self.transcript_windows:
+            raise ValueError("unexpected_transcript_only_settings")
         if self.module == "extraction":
             if self.gateway_url is None or self.model is None:
                 raise ValueError("gateway_required")
-        elif any(value is not None for value in (self.gateway_url, self.model, self.schedule)):
+        elif any(
+            value is not None
+            for value in (self.gateway_url, self.gateway_timeout, self.model, self.schedule)
+        ):
             raise ValueError("unexpected_gateway_or_timer")
         return self
 
@@ -441,7 +470,14 @@ class BoundedExtraction(ExtractionService):
     """Host-only limits; existing process/schedule semantics are not reimplemented."""
 
     def __init__(self, *args, config: Settings, stop: Event, state: State, **kwargs):
-        super().__init__(*args, **kwargs)
+        super().__init__(
+            *args,
+            transcript_only=config.transcript_only,
+            transcript_summary_rule_id=config.transcript_summary_rule_id,
+            transcript_allowed_windows=config.transcript_windows,
+            lease_seconds=1900 if config.transcript_only else 900,
+            **kwargs,
+        )
         self.config, self.stop, self.state = config, stop, state
 
     def runs(self) -> list[SystemRecord]:
@@ -531,8 +567,21 @@ def run(config: Settings, stop: Event) -> None:
                     config.gateway_url,
                     config.storage_token.get_secret_value(),
                     model=config.model,
-                    system=SYSTEM,
-                    timeout=config.timeout,
+                    system=SYSTEM
+                    + (
+                        "\nGroup the ordered utterances into coherent activities. "
+                        "Usually one to three per short recording; use fewer where supported. "
+                        "Do not invent activities to fill gaps. "
+                        "Use privacy-preserving titles and descriptions; mask direct identifiers. "
+                        "Cite a few representative evidence IDs, not all IDs."
+                        if config.transcript_only
+                        else ""
+                    ),
+                    timeout=(
+                        config.gateway_timeout
+                        if config.gateway_timeout is not None
+                        else config.timeout
+                    ),
                     transport=httpx.HTTPTransport(retries=0, trust_env=False),
                 )
                 stack.callback(gateway.close)

@@ -147,8 +147,10 @@ def main() -> int:
             raise ValueError("invalid configuration")
         if not isinstance(config["storage_url"], str):
             raise ValueError("invalid configuration")
+        from ear_llm_gateway.models import MAX_PROVIDER_TIMEOUT_SECONDS
+
         timeout = config.get("provider_timeout_seconds", 60)
-        if type(timeout) is not int or not 1 <= timeout <= 120:
+        if type(timeout) is not int or not 1 <= timeout <= MAX_PROVIDER_TIMEOUT_SECONDS:
             raise ValueError("invalid provider timeout")
         factory = configure_provider(config)
         # Snapshot the required projection once. The bootstrap alias is not a fallback;

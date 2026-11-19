@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+import sys
 import threading
 import time
 from contextlib import contextmanager, nullcontext
@@ -15,7 +16,14 @@ import httpx
 import pytest
 import uvicorn
 from ear_contracts import Cause, LLMCallRecord, LLMUsage, TracedCause, new_id
-from ear_llm_gateway import CallRequest, Gateway, GatewayClient, ProviderFailure, ProviderResult
+from ear_llm_gateway import (
+    CallRequest,
+    Gateway,
+    GatewayClient,
+    ProviderFailure,
+    ProviderResult,
+    cli,
+)
 from ear_llm_gateway.http import create_app
 from ear_llm_gateway.journal import Journal
 from ear_llm_gateway.models import GatewayError
@@ -109,6 +117,50 @@ def harness(tmp_path):
     h = Harness(tmp_path / "journal.sqlite3")
     yield h
     h.close()
+
+
+def test_gateway_rejects_provider_timeout_above_ceiling(harness):
+    with pytest.raises(ValueError, match=r"^invalid_timeout$"):
+        Gateway(
+            callers=harness.caller,
+            writer=harness.writer,
+            provider=harness.provider,
+            journal=harness.journal,
+            aliases={"default": "synthetic/model"},
+            timeout=301,
+        )
+
+
+def test_cli_rejects_provider_timeout_above_ceiling(monkeypatch, capsys):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ear-llm-gateway",
+            "--storage-url",
+            "http://synthetic.invalid",
+            "--journal",
+            "/synthetic-not-used",
+            "--aliases",
+            '{"default":"synthetic/model"}',
+            "--provider-timeout-seconds",
+            "301",
+        ],
+    )
+    monkeypatch.setattr(
+        "ear_llm_gateway.octopus.create_provider", lambda: pytest.fail("must not create provider")
+    )
+    with pytest.raises(SystemExit) as caught:
+        cli.main()
+    assert caught.value.code == 1
+    assert capsys.readouterr().err == (
+        "gateway startup/runtime failed; inspect deployment health without secrets\n"
+    )
+
+
+def test_client_rejects_timeout_above_ceiling():
+    with pytest.raises(ValueError, match=r"^invalid_client_limits$"):
+        GatewayClient("http://synthetic.invalid", TOKEN, timeout=361)
 
 
 def test_success_metadata_usage_unknown_and_no_events(harness, caplog):
@@ -778,10 +830,8 @@ def test_retry_rechecks_access_and_classifies_preflight_failure(harness, failure
 
 
 def test_cli_default_remote_preflight_connection(tmp_path, monkeypatch):
-    import sys
     from types import ModuleType
 
-    from ear_llm_gateway import cli
     from ear_storage_client import (
         Context,
         Create,

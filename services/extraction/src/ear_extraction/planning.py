@@ -12,11 +12,12 @@ from ear_storage_client import (
     Reader,
     RegisterDependencies,
     Supersede,
+    TimeRange,
     Update,
     WriteOp,
 )
 
-from ear_extraction.artifacts import dependencies, validate_generated
+from ear_extraction.artifacts import dependencies, transcript_dependencies, validate_generated
 from ear_extraction.domain import (
     Blocked,
     Command,
@@ -28,8 +29,12 @@ from ear_extraction.long_input import generate, segment
 from ear_extraction.persistence import range_of, records, semantic
 from ear_extraction.reevaluation import ReevaluationPlan, terminate, unavailable
 from ear_extraction.rules import eligible
-from ear_extraction.segmentation import inputs, raw_inputs
-from ear_extraction.selection import create_selection
+from ear_extraction.segmentation import Inputs, inputs, raw_inputs, validate_anonymous_activity
+from ear_extraction.selection import (
+    create_selection,
+    load_rule_candidates,
+    validate_summary_rule_config,
+)
 from ear_extraction.suggestions import create_suggestion, pending_replacements
 
 Ask = Callable[[str, dict[str, Any], type], Any]
@@ -58,35 +63,60 @@ def preview_reextract(reader: Reader, interval: Interval) -> dict:
     }
 
 
+def _reextract_ops(reader: Reader, command: Command, interval: Interval) -> list[WriteOp]:
+    ops: list[WriteOp] = []
+    preview = preview_reextract(reader, interval)
+    if preview["versions"] != command.preview:
+        raise Blocked("reextract_preview_changed")
+    assert command.preview is not None
+    for id, version in command.preview.items():
+        r = reader.get(id)
+        assert isinstance(r, SemanticRecord)
+        ops.append(Supersede(r.data_type, id, version))
+    # Preserve the public preview's original version-set meaning (⑥ also
+    # computes it). Selections are internal derived state, not user edits;
+    # retire their current snapshot versions with CAS in this same batch.
+    activity_ids = {r.id for r in records(reader, "activity", interval)}
+    ops.extend(
+        Supersede("rule_selection", r.id, r.version)
+        for r in records(reader, "rule_selection")
+        if r.payload.get("activity_id") in activity_ids
+    )
+    return ops
+
+
 def extract_plan(
-    reader: Reader, command: Command, run_id: str, ask: Ask
+    reader: Reader,
+    command: Command,
+    run_id: str,
+    ask: Ask,
+    *,
+    transcript_only: bool = False,
+    transcript_summary_rule_id: str | None = None,
+    release_snapshot: Callable[[], None] | None = None,
 ) -> tuple[list[WriteOp], dict]:
+    validate_summary_rule_config(transcript_only, transcript_summary_rule_id)
     assert command.interval is not None
     interval = command.interval
-    result = segment(ask, interval, raw_inputs(reader, interval))
-    ops: list[WriteOp] = []
-    if command.kind == "reextract":
-        preview = preview_reextract(reader, interval)
-        if preview["versions"] != command.preview:
-            raise Blocked("reextract_preview_changed")
-        assert command.preview is not None
-        for id, version in command.preview.items():
-            r = reader.get(id)
-            assert isinstance(r, SemanticRecord)
-            ops.append(Supersede(r.data_type, id, version))
-        # Preserve the public preview's original version-set meaning (⑥ also
-        # computes it). Selections are internal derived state, not user edits;
-        # retire their current snapshot versions with CAS in this same batch.
-        activity_ids = {r.id for r in records(reader, "activity", interval)}
-        ops.extend(
-            Supersede("rule_selection", r.id, r.version)
-            for r in records(reader, "rule_selection")
-            if r.payload.get("activity_id") in activity_ids
-        )
+    ops = (
+        _reextract_ops(reader, command, interval)
+        if transcript_only and command.kind == "reextract"
+        else []
+    )
+    raw = raw_inputs(reader, interval, transcript_only=transcript_only)
+    candidates = None
+    if transcript_only:
+        candidates = load_rule_candidates(reader, summary_rule_id=transcript_summary_rule_id)
+        # All reads (including any reextract CAS versions) are now materialized.
+        # A model call may outlast the snapshot lease; commit uses the captured guards.
+        if release_snapshot is not None:
+            release_snapshot()
+    result = segment(ask, interval, raw, transcript_only=transcript_only)
+    if not transcript_only and command.kind == "reextract":
+        ops = _reextract_ops(reader, command, interval)
     for activity in result.activities:
         # Keep segmentation independent from attribution and only validate its raw references.
-        if "[[" in activity.title_md + activity.description_md:
-            raise ValueError("segmentation_must_use_anonymous_titles")
+        validate_anonymous_activity(activity)
         aid = new_id()
         ops.append(
             Create(
@@ -97,9 +127,27 @@ def extract_plan(
                 event_end=activity.end,
             )
         )
-        current = inputs(reader, activity)
-        ops.append(RegisterDependencies("activity", aid, []))
-        ops.extend(create_selection(reader, aid, activity, current, run_id, ask))
+        if transcript_only:
+            time = TimeRange(activity.start, activity.end)
+            current = Inputs(
+                [r for r in raw if time.overlaps(r.event_start, r.event_end)],
+                [],
+                [],
+                transcript_only=True,
+            )
+            # Boundary placement and any merge used the entire segmentation input,
+            # not just the records cited in this activity or consumed by its rules.
+            deps = transcript_dependencies(raw)
+        else:
+            current = inputs(reader, activity)
+            deps = []
+        ops.append(RegisterDependencies("activity", aid, deps))
+        rules = candidates if candidates is not None else load_rule_candidates(reader)
+        ops.extend(create_selection(rules, aid, activity, current, run_id, ask))
+    # In this profile keep only outcome metadata, not free-form audit text that
+    # could contain the verbatim transcript. Product Markdown is still persisted.
+    if transcript_only:
+        return ops, {"activities": len(result.activities)}
     return ops, {"empty_reason": result.empty_reason, "activities": len(result.activities)}
 
 

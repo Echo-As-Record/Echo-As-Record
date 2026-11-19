@@ -19,6 +19,7 @@ from ear_storage_client.remote import RemoteStorageClient
 from ear_llm_gateway.client import endpoint
 from ear_llm_gateway.http import create_app
 from ear_llm_gateway.journal import Journal
+from ear_llm_gateway.models import MAX_PROVIDER_TIMEOUT_SECONDS
 from ear_llm_gateway.service import Gateway
 
 
@@ -34,7 +35,7 @@ def main():
     args = parser.parse_args()
     writer = journal = None
     try:
-        if not 1 <= args.provider_timeout_seconds <= 120:
+        if not 1 <= args.provider_timeout_seconds <= MAX_PROVIDER_TIMEOUT_SECONDS:
             raise ValueError("invalid provider timeout")
         storage_url = str(endpoint(args.storage_url))
         aliases = json.loads(args.aliases)

@@ -13,7 +13,13 @@ from typing import Any, cast
 import httpx
 from ear_contracts import LLMUsage
 
-from ear_llm_gateway.models import CallRequest, GatewayError, ProviderFailure, ProviderResult
+from ear_llm_gateway.models import (
+    MAX_PROVIDER_TIMEOUT_SECONDS,
+    CallRequest,
+    GatewayError,
+    ProviderFailure,
+    ProviderResult,
+)
 from ear_llm_gateway.output_json import OutputSchema, encode, strict_json
 
 logger = logging.getLogger(__name__)
@@ -71,7 +77,9 @@ class OpenAICompatibleProvider:
     @staticmethod
     def _prepare(call: CallRequest, model: str, timeout: float) -> tuple[OutputSchema, bytes]:
         if not valid_model_id(model) or not (
-            type(timeout) in (float, int) and math.isfinite(timeout) and 0 < timeout <= 120
+            type(timeout) in (float, int)
+            and math.isfinite(timeout)
+            and 0 < timeout <= MAX_PROVIDER_TIMEOUT_SECONDS
         ):
             raise ValueError("invalid_direct_request")
         schema = OutputSchema(call.output_schema)
