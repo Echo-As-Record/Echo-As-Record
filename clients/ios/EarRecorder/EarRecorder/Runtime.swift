@@ -5,6 +5,16 @@ import UIKit
 import UserNotifications
 import Combine
 
+struct CallState: Equatable {
+    let outgoing: Bool
+    let connected: Bool
+    let ended: Bool
+
+    init(outgoing: Bool, connected: Bool, ended: Bool = false) {
+        self.outgoing = outgoing; self.connected = connected; self.ended = ended
+    }
+}
+
 struct Snapshot {
     var status = "已停止", index = 0, gps = 0, pending = 0
     var elapsed: Int64 = 0
@@ -40,11 +50,14 @@ final class Runtime: NSObject, CXCallObserverDelegate {
     private var recoveryTask: UIBackgroundTaskIdentifier = .invalid
     private(set) var recoveryID: UUID?
     private var hasLiveCall = false
+    private var callsProvider: (() -> [CallState])?
+    private var interruptionEndedAllowsRinging = false
+    private var lastRecoveryBlocked: String?
     private var systemInterrupted = false
     private var observers: [NSObjectProtocol] = []
     var onSnapshot: ((Snapshot) -> Void)?
-    init(store injected: Store? = nil, audio: AudioInput = Audio(), location: LocationInput = Location(), now: @escaping () -> Int64 = epochMS) {
-        self.audio = audio; self.location = location; self.now = now
+    init(store injected: Store? = nil, audio: AudioInput = Audio(), location: LocationInput = Location(), now: @escaping () -> Int64 = epochMS, callsProvider: (() -> [CallState])? = nil) {
+        self.audio = audio; self.location = location; self.now = now; self.callsProvider = callsProvider
         var failure: Error?
         do { store = try injected ?? Store() } catch { store = nil; failure = error }
         diagnostics = Diagnostics(root: store?.root ?? Store.root)
@@ -72,7 +85,7 @@ final class Runtime: NSObject, CXCallObserverDelegate {
             guard !self.booted else { return }; self.booted = true
             self.calls.setDelegate(self, queue: self.queue)
             self.observingCalls = true
-            self.hasLiveCall = self.calls.calls.contains { !$0.hasEnded }
+            self.hasLiveCall = self.currentCalls().contains { !$0.ended }
             self.register()
             self.diagnostics.log("launch", ["reason": reason]); self.diagnostics.memory()
             do {
@@ -164,7 +177,15 @@ final class Runtime: NSObject, CXCallObserverDelegate {
         guard let startedAt else { return 0 }; return max(0, now() - startedAt)
     }
     private func attempt() {
-        guard let id, let store, !audio.running, !hasLiveCall, !systemInterrupted, self.now() >= retryAt else { return }
+        guard let id, let store, !audio.running else { return }
+        if systemInterrupted { recordRecoveryBlocked(reason: "system_interrupted"); return }
+        if hasLiveCall {
+            let calls = currentCalls().filter { !$0.ended }
+            let reason = calls.contains { $0.outgoing } ? "outgoing_call" : calls.contains { $0.connected } ? "connected_call" : "incoming_call"
+            recordRecoveryBlocked(reason: reason); return
+        }
+        if self.now() < retryAt { return }
+        lastRecoveryBlocked = nil
         var stage = "manifest"
         do {
             let manifest = try store.read(id); guard !manifest.userStopped else { return }
@@ -319,17 +340,53 @@ final class Runtime: NSObject, CXCallObserverDelegate {
             }
         }
     }
+    private func currentCalls() -> [CallState] {
+        if let callsProvider { return callsProvider() }
+        return calls.calls.map { CallState(outgoing: $0.isOutgoing, connected: $0.hasConnected, ended: $0.hasEnded) }
+    }
+
+    static func callBlocksResume(calls: [CallState], interruptionEnded: Bool, shouldResume: Bool) -> Bool {
+        let active = calls.filter { !$0.ended }
+        guard !active.isEmpty else { return false }
+        if interruptionEnded && shouldResume {
+            return active.contains { $0.connected || $0.outgoing }
+        }
+        return true
+    }
+
     private func refreshCalls() {
-        if observingCalls { updateCalls(active: calls.calls.contains { !$0.hasEnded }) }
+        guard observingCalls || callsProvider != nil else { return }
+        let states = currentCalls()
+        let active = states.contains { !$0.ended }
+        if interruptionEndedAllowsRinging && !Self.callBlocksResume(calls: states, interruptionEnded: true, shouldResume: true) {
+            updateCalls(active: false)
+        } else {
+            updateCalls(active: active)
+        }
     }
     func callObserver(_ callObserver: CXCallObserver, callChanged call: CXCall) {
         guard id != nil else { refreshCalls(); return }
         diagnostic("call_changed", ["outgoing": call.isOutgoing, "connected": call.hasConnected,
                                          "ended": call.hasEnded])
+        interruptionEndedAllowsRinging = false
         refreshCalls()
     }
-    private func beginRecovery(_ reason: String) {
-        guard id != nil, !hasLiveCall, recoveryID == nil else { return }
+    private func recordRecoveryBlocked(reason: String) {
+        let states = currentCalls()
+        let signature = reason + "|" + states.map { "\($0.outgoing ? 1 : 0),\($0.connected ? 1 : 0),\($0.ended ? 1 : 0)" }.joined(separator: ";")
+        guard signature != lastRecoveryBlocked else { return }
+        lastRecoveryBlocked = signature
+        diagnostic("recovery_blocked", ["reason": reason, "active_call": !states.isEmpty,
+            "calls": states.map { ["outgoing": $0.outgoing, "connected": $0.connected, "ended": $0.ended] }])
+    }
+
+    private func beginRecovery(_ reason: String, allowActiveCall: Bool = false) {
+        guard id != nil, recoveryID == nil else { return }
+        let states = currentCalls()
+        if !allowActiveCall && hasLiveCall && states.contains(where: { !$0.ended && ($0.outgoing || $0.connected) }) {
+            recordRecoveryBlocked(reason: states.contains { !$0.ended && $0.outgoing } ? "outgoing_call" : "connected_call")
+            return
+        }
         let token = UUID()
         recoveryID = token
         recoveryTask = UIApplication.shared.beginBackgroundTask(withName: "Resume EarRecorder audio") { [weak self] in
@@ -356,10 +413,15 @@ final class Runtime: NSObject, CXCallObserverDelegate {
     func updateCalls(active: Bool) { // Called on the recorder queue.
         let ended = hasLiveCall && !active
         hasLiveCall = active
-        if active { endRecovery() }
+        if active {
+            let states = currentCalls()
+            if states.contains(where: { !$0.ended && ($0.outgoing || $0.connected) }) { endRecovery() }
+        }
         if ended, id != nil, !audio.running {
             systemInterrupted = false
             beginRecovery("call_ended")
+            // A recovery window may already exist (ringing call); restart backoff either way.
+            retries = 0
             // Let the phone release its I/O route before starting the engine.
             retryAt = now() + 1000
         }
@@ -390,7 +452,8 @@ final class Runtime: NSObject, CXCallObserverDelegate {
             let began = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) == AVAudioSession.InterruptionType.began.rawValue
             if began {
                 systemInterrupted = true
-                if observingCalls { hasLiveCall = calls.calls.contains { !$0.hasEnded } }
+                interruptionEndedAllowsRinging = false
+                if observingCalls || callsProvider != nil { hasLiveCall = currentCalls().contains { !$0.ended } }
                 if context != nil || audio.running {
                     var fields: [String: Any] = [:]
                     let reason = note.userInfo?[AVAudioSessionInterruptionReasonKey] as? NSNumber
@@ -406,12 +469,23 @@ final class Runtime: NSObject, CXCallObserverDelegate {
                 }
             } else {
                 systemInterrupted = false
-                diagnostic("audio_interruption_ended", ["options": (note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt) ?? 0])
+                let options = (note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt) ?? 0
+                let shouldResume = (options & AVAudioSession.InterruptionOptions.shouldResume.rawValue) != 0
+                let states = currentCalls()
+                let active = states.contains { !$0.ended }
+                diagnostic("audio_interruption_ended", ["options": options, "should_resume": shouldResume,
+                    "active_call": active, "calls": states.map { ["outgoing": $0.outgoing, "connected": $0.connected, "ended": $0.ended] }])
+                let blocked = Self.callBlocksResume(calls: states, interruptionEnded: true, shouldResume: shouldResume)
+                interruptionEndedAllowsRinging = shouldResume && active && !blocked
                 refreshCalls()
-                if !audio.running, !hasLiveCall {
-                    beginRecovery("interruption_ended")
-                    retryAt = 0
-                    attempt()
+                if !audio.running {
+                    if blocked {
+                        recordRecoveryBlocked(reason: states.contains { !$0.ended && $0.outgoing } ? "outgoing_call" : "connected_call")
+                    } else {
+                        beginRecovery("interruption_ended", allowActiveCall: true)
+                        if !(interruptionEndedAllowsRinging && active) { retryAt = 0 }
+                        attempt()
+                    }
                 }
             }
         } else {

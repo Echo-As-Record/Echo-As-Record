@@ -230,6 +230,73 @@ final class RecorderTests: XCTestCase {
         XCTAssertEqual(audio.stops, 2)
         runtime.stop(); runtime.queue.sync {}
     }
+    func testCallBlocksResumeTreatsUnconnectedIncomingAsEndedOnlyAfterShouldResume() {
+        let ringing = [CallState(outgoing: false, connected: false)]
+        XCTAssertFalse(Runtime.callBlocksResume(calls: ringing, interruptionEnded: true, shouldResume: true))
+        XCTAssertTrue(Runtime.callBlocksResume(calls: ringing, interruptionEnded: false, shouldResume: false))
+        XCTAssertTrue(Runtime.callBlocksResume(calls: [CallState(outgoing: false, connected: true)], interruptionEnded: true, shouldResume: true))
+        XCTAssertTrue(Runtime.callBlocksResume(calls: [CallState(outgoing: true, connected: false)], interruptionEnded: true, shouldResume: true))
+    }
+
+    func testIncomingRingingInterruptionResumesWhileCallStateLags() throws {
+        let store = try Store(root: root), audio = FakeAudio()
+        var clock: Int64 = 1000
+        var states = [CallState(outgoing: false, connected: false)]
+        let runtime = Runtime(store: store, audio: audio, location: FakeLocation(), now: { clock }, callsProvider: { states })
+        runtime.start(); runtime.queue.sync {}
+        runtime.queue.sync {
+            runtime.handleAudioNotification(Notification(name: AVAudioSession.interruptionNotification, userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue]))
+            XCTAssertNotNil(runtime.recoveryID)
+            runtime.handleAudioNotification(Notification(name: AVAudioSession.interruptionNotification, userInfo: [
+                AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.ended.rawValue,
+                AVAudioSessionInterruptionOptionKey: AVAudioSession.InterruptionOptions.shouldResume.rawValue]))
+            XCTAssertFalse(audio.running)
+            clock += 1000
+            states = [CallState(outgoing: false, connected: false, ended: true)]
+            runtime.tick()
+            XCTAssertTrue(audio.running)
+        }
+        runtime.stop(); runtime.queue.sync {}
+    }
+
+    func testConnectedCallBlocksUntilCallEndsAndTickResumes() throws {
+        let store = try Store(root: root), audio = FakeAudio()
+        var clock: Int64 = 1000
+        var states = [CallState(outgoing: false, connected: true)]
+        let runtime = Runtime(store: store, audio: audio, location: FakeLocation(), now: { clock }, callsProvider: { states })
+        runtime.start(); runtime.queue.sync {}
+        runtime.queue.sync {
+            runtime.handleAudioNotification(Notification(name: AVAudioSession.interruptionNotification, userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue]))
+            runtime.handleAudioNotification(Notification(name: AVAudioSession.interruptionNotification, userInfo: [
+                AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.ended.rawValue,
+                AVAudioSessionInterruptionOptionKey: AVAudioSession.InterruptionOptions.shouldResume.rawValue]))
+            XCTAssertFalse(audio.running)
+            states = [CallState(outgoing: false, connected: true, ended: true)]
+            clock += 1000
+            runtime.tick()
+            XCTAssertFalse(audio.running) // Waits ~1 s for the call to release the I/O route.
+            clock += 1000
+            runtime.tick()
+            XCTAssertTrue(audio.running)
+        }
+        runtime.stop(); runtime.queue.sync {}
+    }
+
+    func testOutgoingCallStillBlocksAfterInterruptionEnds() throws {
+        let store = try Store(root: root), audio = FakeAudio()
+        var states = [CallState(outgoing: true, connected: false)]
+        let runtime = Runtime(store: store, audio: audio, location: FakeLocation(), callsProvider: { states })
+        runtime.start(); runtime.queue.sync {}
+        runtime.queue.sync {
+            runtime.handleAudioNotification(Notification(name: AVAudioSession.interruptionNotification, userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue]))
+            runtime.handleAudioNotification(Notification(name: AVAudioSession.interruptionNotification, userInfo: [
+                AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.ended.rawValue,
+                AVAudioSessionInterruptionOptionKey: AVAudioSession.InterruptionOptions.shouldResume.rawValue]))
+            XCTAssertFalse(audio.running)
+        }
+        runtime.stop(); runtime.queue.sync {}
+    }
+
     func testCallEndRetriesWhileRouteReturnsWithoutAudioEndNotification() throws {
         let store = try Store(root: root), audio = FakeAudio()
         var clock: Int64 = 1000

@@ -193,6 +193,12 @@ Runtime 在启动恢复前订阅 CXCallObserver，监听最后一通电话结束
 
 `Upload.swift` 原先把所有 HTTP 地址都当作加密中继（`Relay.accepts` 只看 scheme），未配对时报“请先扫码配对中继”，手填 `http://<名字>.local:8791` 无法上传。现改为仅在已配对时走 `/api/v1/relay`，未配对时普通直连；完成回调按请求是否带 `X-Ear-Request` 决定是否校验中继回执。验证：模拟器 `build` 与 `build-for-testing` 通过；未在真机复测手填直连。
 
+### 未接来电与中断结束顺序（2026-11-19）
+
+`Runtime` 通过可选的 `callsProvider: () -> [CallState]` 注入 CallKit 状态；生产默认映射 `CXCallObserver`，测试使用纯值。`Runtime.callBlocksResume(calls:interruptionEnded:shouldResume:)` 是恢复判断的唯一纯函数：系统中断结束且带 `shouldResume` 时，未接通来电不阻止恢复；已接通通话或外呼仍阻止。中断开始时只有未接通来电也会申请 `recoveryID` 对应的后台窗口，响铃中的来电不会提前结束窗口。
+
+2026-11-19 真机 `diag.jsonl` 显示 11:59:23 中断开始时来电 `connected=false`，恢复窗口因原有 `hasLiveCall` 守卫未申请；11:59:29 系统发出 `shouldResume`，CallKit 尚未给出 `ended=true`，因此原实现没有恢复并很快被挂起，13:56:17 用户打开 App 后才自动续录。现行实现记录 `audio_interruption_ended` 的 `active_call`、`calls` 和 `should_resume`，窗口内 tick 继续读取 CallKit；通话阻塞恢复时按状态变化去重记录 `recovery_blocked`。
+
 ### 中断恢复基线（2026-11-17 / 11-18）
 
 本节依据主检出目录未提交代码及其真机联调记录；本分支仅移植中断处理，不含实时转写。保留原有 HTTP 直连修复和去个人配置改动。
