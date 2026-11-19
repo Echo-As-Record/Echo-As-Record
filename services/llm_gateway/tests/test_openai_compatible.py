@@ -99,6 +99,22 @@ def offline(*, raw=None, headers=None, status=200, stream=None):
     return OpenAICompatibleProvider(TOKEN, transport=httpx.MockTransport(handler)), requests, stream
 
 
+def test_documented_newapi_extras_are_not_retained():
+    envelope = reply()
+    envelope["choices"][0]["message"]["reasoning_content"] = PRIVATE
+    envelope["usage"]["prompt_tokens_details"] = {"text_tokens": 5, "image_tokens": 0}
+    envelope["usage"]["completion_tokens_details"] = {"text_tokens": 3, "image_tokens": 0}
+    envelope["usage"].update(input_tokens=0, output_tokens=0, input_tokens_details=None)
+    envelope["usage"]["claude_cache_creation_5_m_tokens"] = 0
+    envelope["usage"]["claude_cache_creation_1_h_tokens"] = 0
+    envelope["usage"]["prompt_tokens_details"]["cached_creation_tokens"] = 0
+    provider, _, _ = offline(raw=encode(envelope))
+    result = provider.complete(call(), model=MODEL, timeout=1)
+    assert result.output == {"answer": 42}
+    assert result.usage == LLMUsage(input_tokens=5, output_tokens=3, total_tokens=8)
+    assert PRIVATE not in repr(result)
+
+
 def test_fixed_request_usage_redaction_and_transport_options(monkeypatch, caplog):
     monkeypatch.setenv("HTTPS_PROXY", "https://synthetic-proxy.invalid")
     monkeypatch.setenv("SSL_CERT_FILE", "/synthetic-invalid-certificate-path")
@@ -137,7 +153,13 @@ def test_fixed_request_usage_redaction_and_transport_options(monkeypatch, caplog
             {"role": "system", "content": "Return a JSON object matching output_schema."},
             {
                 "role": "user",
-                "content": encode({"data": data, "output_schema": request.output_schema}).decode(),
+                "content": encode(
+                    {
+                        "instruction": "Return a JSON object matching output_schema.",
+                        "data": data,
+                        "output_schema": request.output_schema,
+                    }
+                ).decode(),
             },
         ],
     }
@@ -232,7 +254,7 @@ def test_invalid_envelope_json_is_unknown(raw):
         (("choices", 0, "message", "refusal"), PRIVATE),
         (("choices", 0, "message", "tool_calls"), [{}]),
         (("choices", 0, "message", "function_call"), {}),
-        (("choices", 0, "message", "reasoning_content"), PRIVATE),
+        (("choices", 0, "message", "reasoning_content"), {"invalid": PRIVATE}),
         (("usage",), {}),
         (("usage",), PRIVATE),
         (("usage", "prompt_tokens"), True),

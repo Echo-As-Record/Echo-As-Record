@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import re
 from collections.abc import AsyncGenerator
@@ -15,10 +16,28 @@ from ear_contracts import LLMUsage
 from ear_llm_gateway.models import CallRequest, GatewayError, ProviderFailure, ProviderResult
 from ear_llm_gateway.output_json import OutputSchema, encode, strict_json
 
+logger = logging.getLogger(__name__)
+
 CHAT_URL = "https://newapi.hangjuan.cn/v1/chat/completions"
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_COMPLETION_TOKENS = 4096
+_WIRE_FAILURES = frozenset(
+    {
+        "direct_http_status",
+        "direct_media_type",
+        "direct_length",
+        "direct_response_limit",
+        "direct_envelope",
+        "direct_choices",
+        "direct_choice",
+        "direct_message",
+        "direct_output",
+        "direct_usage",
+        "direct_usage_details",
+        "direct_credential_echo",
+    }
+)
 _MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/@+-]{0,127}")
 
 
@@ -64,9 +83,15 @@ class OpenAICompatibleProvider:
                     {"role": "system", "content": "Return a JSON object matching output_schema."},
                     {
                         "role": "user",
-                        "content": encode({"data": call.data, "output_schema": schema.root}).decode(
-                            "utf-8"
-                        ),
+                        # Some New API channels convert system messages to Responses
+                        # instructions. JSON mode also requires a directive in input.
+                        "content": encode(
+                            {
+                                "instruction": "Return a JSON object matching output_schema.",
+                                "data": call.data,
+                                "output_schema": schema.root,
+                            }
+                        ).decode("utf-8"),
                     },
                 ],
                 "stream": False,
@@ -79,8 +104,10 @@ class OpenAICompatibleProvider:
         return schema, body
 
     def complete(self, call: CallRequest, *, model: str, timeout: float) -> ProviderResult:
+        phase = "prepare"
         try:
             schema, body = self._prepare(call, model, timeout)
+            phase = "transport"
             # asyncio.run waits for DNS's default executor even after cancellation.
             # Close this private loop without joining it; late DNS cannot resume I/O.
             loop = asyncio.new_event_loop()
@@ -88,13 +115,23 @@ class OpenAICompatibleProvider:
                 raw = loop.run_until_complete(self._request(body, timeout))
             finally:
                 loop.close()
-            output, usage = _reply(strict_json(raw))
+            phase = "decode"
+            value = strict_json(raw)
+            phase = "chat_response"
+            output, usage = _reply(value)
+            phase = "extraction_schema"
             schema.validate(output)
+            phase = "output_boundary"
             if self._credential.encode("ascii") in encode(output):
                 raise ValueError("direct_credential_echo")
             return ProviderResult(output, usage)
-        except Exception:
-            pass
+        except Exception as exc:
+            # Record only closed local stage names; never log raw upstream values.
+            if type(exc) is ValueError and exc.args and isinstance(exc.args[0], str):
+                code = exc.args[0]
+                if code in _WIRE_FAILURES:
+                    phase = code
+            logger.warning("newapi_call_failed stage=%s", phase)
         # No remote status can attest non-execution. Do not retain exception context.
         raise ProviderFailure()
 
@@ -207,13 +244,23 @@ def _reply(reply: Any) -> tuple[dict[str, Any], LLMUsage | None]:
             "function_call",
             "audio",
             "annotations",
+            "reasoning_content",
+            "reasoning",
+            "name",
+            "tool_call_id",
         }
         or message.get("role") != "assistant"
         or not isinstance(message.get("content"), str)
+        or any(
+            message.get(key) is not None and not isinstance(message[key], str)
+            for key in ("reasoning_content", "reasoning", "name")
+        )
+        or message.get("tool_call_id") not in (None, "")
         or any(message.get(key) is not None for key in ("refusal", "function_call", "audio"))
         or any(message.get(key) not in (None, []) for key in ("tool_calls", "annotations"))
     ):
         raise ValueError("direct_message")
+    # New API can send optional reasoning text. Never return or retain it.
     output = strict_json(message["content"])
     if not isinstance(output, dict):
         raise ValueError("direct_output")
@@ -229,17 +276,21 @@ def _usage(raw: Any) -> LLMUsage | None:
         return None  # Missing usage is unknown; never estimate or assume zero.
     counts = {"prompt_tokens", "completion_tokens", "total_tokens"}
     details = {
-        "prompt_tokens_details": {"cached_tokens", "audio_tokens"},
+        "prompt_tokens_details": {"cached_tokens", "audio_tokens", "text_tokens", "image_tokens"},
         "completion_tokens_details": {
             "reasoning_tokens",
+            "text_tokens",
             "audio_tokens",
+            "image_tokens",
             "accepted_prediction_tokens",
             "rejected_prediction_tokens",
         },
     }
+    # New API may add provider-specific accounting (e.g. input_tokens,
+    # output_tokens and cache creation counts). We only use the standard
+    # Chat Completions totals; other fields are not forwarded or persisted.
     if (
         not isinstance(raw, dict)
-        or raw.keys() - counts - details.keys()
         or any(not _count(raw.get(key)) for key in counts)
         or raw["total_tokens"] != raw["prompt_tokens"] + raw["completion_tokens"]
     ):
@@ -247,9 +298,7 @@ def _usage(raw: Any) -> LLMUsage | None:
     for key, fields in details.items():
         value = raw.get(key)
         if value is not None and (
-            not isinstance(value, dict)
-            or value.keys() - fields
-            or any(not _count(count) for count in value.values())
+            not isinstance(value, dict) or any(not _count(value[k]) for k in fields & value.keys())
         ):
             raise ValueError("direct_usage_details")
     return LLMUsage(
