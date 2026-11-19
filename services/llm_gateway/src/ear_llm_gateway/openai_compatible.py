@@ -127,7 +127,13 @@ class OpenAICompatibleProvider:
             return ProviderResult(output, usage)
         except Exception as exc:
             # Record only closed local stage names; never log raw upstream values.
-            if type(exc) is ValueError and exc.args and isinstance(exc.args[0], str):
+            if phase == "transport" and isinstance(exc, TimeoutError):
+                phase = "transport_deadline"
+            elif phase == "transport" and isinstance(exc, httpx.ConnectTimeout):
+                phase = "transport_connect_timeout"
+            elif phase == "transport" and isinstance(exc, httpx.ReadTimeout):
+                phase = "transport_read_timeout"
+            elif type(exc) is ValueError and exc.args and isinstance(exc.args[0], str):
                 code = exc.args[0]
                 if code in _WIRE_FAILURES:
                     phase = code

@@ -84,6 +84,11 @@ def mounts(runtime, tmp_path, monkeypatch):
         {"aliases": {"default": "gpt-6-luna", "another": "other"}},
         {"aliases": "gpt-6-luna"},
         {"origin": "https://alternate.invalid"},
+        {"provider_timeout_seconds": True},
+        {"provider_timeout_seconds": 0},
+        {"provider_timeout_seconds": 121},
+        {"provider_timeout_seconds": 90.0},
+        {"provider_timeout_seconds": "90"},
         {"newapi_token": PRIVATE},
     ],
 )
@@ -96,6 +101,19 @@ def test_invalid_opt_in_or_ambiguous_config_does_not_open_mounts(
     assert runtime.main() == 1
     assert reads == [str(config)]
     assert capsys.readouterr().err == '{"code":"gateway_container_unavailable"}\n'
+
+
+@pytest.mark.parametrize("configured", [None, 1, 90, 120])
+def test_provider_timeout_used_at_startup(runtime, mounts, monkeypatch, configured):
+    config, _, _, _ = mounts
+    if configured is not None:
+        config.write_text(json.dumps({**BOOTSTRAP, "provider_timeout_seconds": configured}))
+
+    def fake_main():
+        assert sys.argv[sys.argv.index("--provider-timeout-seconds") + 1] == str(configured or 60)
+
+    monkeypatch.setattr(cli, "main", fake_main)
+    assert runtime.main() == 0
 
 
 def test_internal_direct_factory_cannot_be_selected_as_custom(runtime, mounts):
@@ -258,6 +276,7 @@ def test_real_cli_uses_projection_snapshot_until_restart(
 
     def serve(app, **kwargs):
         assert kwargs["workers"] == 1 and kwargs["access_log"] is False
+        assert int(sys.argv[sys.argv.index("--provider-timeout-seconds") + 1]) == 60
         assert KEY not in repr(sys.argv) + repr(os.environ)
         assert "EAR_NEWAPI_TOKEN" not in os.environ
         assert len(requests) == (0 if not runs else 2)

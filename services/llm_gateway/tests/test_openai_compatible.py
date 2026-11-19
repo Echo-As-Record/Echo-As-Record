@@ -363,6 +363,29 @@ def test_admission_rejects_unsupported_schema_without_io():
     assert not requests
 
 
+@pytest.mark.parametrize(
+    ("error", "stage"),
+    [
+        (TimeoutError, "deadline"),
+        (httpx.ReadTimeout, "read_timeout"),
+        (httpx.ConnectTimeout, "connect_timeout"),
+    ],
+)
+def test_timeout_category_no_sensitive_log_or_retry(error, stage, caplog):
+    sent = []
+
+    async def handler(request):
+        sent.append(request)
+        raise error(PRIVATE + TOKEN)
+
+    provider = OpenAICompatibleProvider(TOKEN, transport=httpx.MockTransport(handler))
+    with pytest.raises(ProviderFailure, match="provider_outcome_unknown") as err:
+        provider.complete(call(), model=MODEL, timeout=1)
+    assert len(sent) == 1 and not err.value.safe_to_retry
+    assert "stage=transport_" + stage in caplog.text
+    assert PRIVATE not in caplog.text and TOKEN not in caplog.text
+
+
 def test_deadline_covers_headers_and_slow_drip_body():
     stream = Body(*(b" " for _ in range(20)), delay=0.02)
     requests = []

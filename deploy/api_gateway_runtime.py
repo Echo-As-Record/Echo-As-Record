@@ -135,11 +135,21 @@ def main() -> int:
             not isinstance(config, dict)
             or not {"storage_url", "aliases"} <= set(config)
             or set(config)
-            - {"storage_url", "aliases", "provider_factory", "octopus", "openai_compatible"}
+            - {
+                "storage_url",
+                "aliases",
+                "provider_factory",
+                "octopus",
+                "openai_compatible",
+                "provider_timeout_seconds",
+            }
         ):
             raise ValueError("invalid configuration")
         if not isinstance(config["storage_url"], str):
             raise ValueError("invalid configuration")
+        timeout = config.get("provider_timeout_seconds", 60)
+        if type(timeout) is not int or not 1 <= timeout <= 120:
+            raise ValueError("invalid provider timeout")
         factory = configure_provider(config)
         # Snapshot the required projection once. The bootstrap alias is not a fallback;
         # later edits are read only in a newly started gateway.
@@ -159,6 +169,8 @@ def main() -> int:
             factory,
             "--aliases",
             json.dumps(aliases, allow_nan=False),
+            "--provider-timeout-seconds",
+            str(timeout),
             "--journal",
             "/state/gateway.sqlite3",
             "--host",

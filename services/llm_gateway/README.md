@@ -103,7 +103,7 @@ based-on: 设计 v1.2 第 9 节、信号补充、插件 MVP、工作分解 v1.2�
 - 网关 JSON 设置 `openai_compatible: true` 和引导校验值 `aliases: {"default":"gpt-6-luna"}`，不设置 `octopus` 或 `provider_factory`。运行时别名以私有设置目录为准；缺失/非法配置拒绝启动，不回退。
 - 预置 `EAR_MODEL_SETTINGS_DIR` 指向 `0700` 目录，内有 `0600` 的 `settings.json`，初始 `{"model":"gpt-6-luna","revision":1}`。绑定目录而不是文件：⑥读写、⑦只读；⑥设 `model_settings_file: /run/config/model-settings/settings.json`，使用正常 Bearer 配置。须按容器实际 UID 核对属主。⑦下次启动读取保存的模型，④继续请求别名 `default`。
 - `EAR_NEWAPI_TOKEN_FILE` 只填⑦挂载使用的私有密钥文件路径；该凭据不出现在网页、共享设置、启动参数或 Compose 环境内容中。不得用免登录测试实例验收真实提取；有权触发付费请求的反馈也需鉴权。网关与④仍须用各自①签发的身份，④手动提取先不启用定时任务或动作。
-- ④的 GatewayClient 超时保留请求审计及读写余量（例如该部署先明确设 `timeout: 90`，高于⑦ 60 秒上游预算）；`gateway_url` 使用实际内部端口 `8077`。
+- 网关 JSON 可选 `provider_timeout_seconds`（整型 1–120，默认 60；CLI 对应 `--provider-timeout-seconds`），重启生效。④的 GatewayClient 超时须高于⑦上游预算，留出请求审计及读写余量（如⑦ 90 秒、④ `timeout: 115`）。`gateway_url` 使用实际内部端口 `8077`。超时仍为结果未知，不自动重发。
 - 当前验证仅为合成响应：真实④与⑦代码经过该请求格式，产生活动与关联 Markdown、无动作建议。未验证指定实例的模型可用性、用量、真实响应形状；发送真实证据之前先用合成短样本。模型输入和输出可能存于④的私有运行记录，不应上传诊断详情。
 
 ### 3.3 HTTP 接口

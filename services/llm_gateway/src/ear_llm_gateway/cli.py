@@ -28,11 +28,14 @@ def main():
     parser.add_argument("--journal", required=True)
     parser.add_argument("--provider-factory", default="ear_llm_gateway.octopus:create_provider")
     parser.add_argument("--aliases", required=True)
+    parser.add_argument("--provider-timeout-seconds", type=int, default=60)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8077)
     args = parser.parse_args()
     writer = journal = None
     try:
+        if not 1 <= args.provider_timeout_seconds <= 120:
+            raise ValueError("invalid provider timeout")
         storage_url = str(endpoint(args.storage_url))
         aliases = json.loads(args.aliases)
         if not isinstance(aliases, dict) or any(
@@ -51,6 +54,7 @@ def main():
             provider=provider,
             journal=journal,
             aliases=aliases,
+            timeout=args.provider_timeout_seconds,
         )
         # Recover audits before accepting NEW work. A failing ① keeps the
         # deployment unready, rather than quietly accumulating missing records.
