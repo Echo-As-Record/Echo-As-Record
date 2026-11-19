@@ -10,6 +10,8 @@ based-on: octopus-flutter 67869770（ios/Runner 本地录音、PC transfer、Con
 # 提案：把手机录音链路从 Octopus 抽成 Ear 自己的基础设施
 
 > 2026-11-13 YijieYing 在 Claude Code 对话中同意：新写原生 app；iOS 先做，Android（APK）随后、不急；新增 `clients/` 目录并改 README；去掉 100Hz IMU；码率降到 32kbps。本文件据此标为 accepted，未经逐字人工复审。
+>
+> 2026-11-19 YijieYing 在 Claude Code 对话中决定：手机端拆成独立仓库 [EarRecorder](https://github.com/Echo-As-Record/EarRecorder)（保留 `clients/` 的提交历史），本仓库删除 `clients/`。协议文档与测试样例留在本仓库。第 4 节据此更新。
 
 ## 1. 目标
 
@@ -120,7 +122,7 @@ PC：Octopus 的 brain channel（servicehub euxcet/octopus-service-brain-channel
 
 ## 4. 放在哪里
 
-新增顶层目录 `clients/`：`clients/ios/` 为 iOS app，之后的 Android app 放 `clients/android/`。接收服务为 `services/ingest/`。README 第 2 节已同步。
+原定新增顶层目录 `clients/`；2026-11-19 起手机端改为独立仓库 [EarRecorder](https://github.com/Echo-As-Record/EarRecorder)：`ios/` 为 iOS app，之后的 Android app 放 `android/`。接收服务仍为本仓库的 `services/ingest/`，手机客户端协议与测试样例也留在本仓库。README 第 2 节已同步。
 
 ## 5. 已决定（2026-11-13）
 

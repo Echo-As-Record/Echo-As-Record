@@ -21,7 +21,7 @@ doc-type: guide
 ### 手机客户端
 
 - [手机客户端协议与固定测试向量](modules/phone-client-protocol.md)：Android 等新客户端的现状互操作依据。
-- [手机采集端入口与双端同步守则](../clients/README.md)：各端状态、功能对照、改协议的规则、给 Android 实现者的入门。
+- [手机采集端入口与双端同步守则](https://github.com/Echo-As-Record/EarRecorder#双端同步守则)（独立仓库 EarRecorder）：各端状态、功能对照、改协议的规则、给 Android 实现者的入门。
 
 ### AI 开发入口
 
