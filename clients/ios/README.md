@@ -175,3 +175,15 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project cli
 查断录时，在本机导出的 `diag.jsonl` 和轮转文件 `diag.previous.jsonl` 里先找 `interruption`，按同一 `interruption_id` 串起恢复窗口、路由、重试失败和 `interruption_resolved`。其中 `system_reason` 来自系统通知；没有具体原因时显示 unknown。通话方向与接通状态可辅助判断。进程重启时用 manifest 里的未结束中断连接前后两次运行；未观察到触发事件的重启标记为 unknown_before_relaunch。audio_gap_ms 用上一段有效音频的结束位置和新段开始位置估算，缺少端点时省略。
 
 若始终没有收到系统中断结束通知，也没有通话结束、回前台或显式开始，当前实现会继续等待；定时器和位置回调不会解除这个等待。
+
+### 记录 EarRecorder 的功耗
+
+iOS 26+ 真机连接 Xcode 后，先开始录音，再在 Mac 仓库根目录执行以下命令。输出目录须为新目录。默认采样 300 秒，若连接多台手机可用 `--device UDID` 选择。
+
+```sh
+python3 clients/ios/scripts/record_power.py local-notes/power-sample --seconds 300
+```
+
+脚本附加到现有录音进程，保存 Instruments trace、按进程筛选的 samples.jsonl 和 summary.json。CPU、GPU、显示与网络各自按实际采样时长加权，缺测留空。数值是 Apple 的 power impact 分数，不能换算为电池容量或每小时掉电百分比。采样期间保持目标录音状态；改变网络或屏幕状态时另开样本。要分析未连接 Xcode 时采集的 Power Profiler trace，可用 `--trace 路径` 读取第一轮采样。原始 trace 可能含系统信息，只在本地保留。
+
+要用手机电量百分点表示 EarRecorder 的耗电，在 iPhone「设置 → 电池」选择同一时段，读取整机用量和 EarRecorder 占该时段用量的百分比。例如整机用掉 20 个百分点、App 占 12%、窗口长 4 小时，运行 `python3 clients/ios/scripts/battery_usage.py --used 20 --share 12 --hours 4` 得到约 2.4 个百分点，窗口平均每小时 0.6 个百分点。整段未充电时可用起止电量差估算整机用量。结果包含该 App 的录音、定位和传输等活动；只有全窗口都在录音时才适合作为每录音小时的估计。
