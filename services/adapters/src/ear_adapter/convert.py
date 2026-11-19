@@ -334,6 +334,13 @@ def capture_records(
             },
         )
 
+    return b.records + context_records(evidence, capture, config)
+
+
+def context_records(
+    evidence: CaptureEvidence, capture: EarCapture, config: AdapterConfig
+) -> list[NewRawRecord]:
+    b = _Builder(capture, config)
     device = capture.instance_id
     observations = sorted(
         evidence.of_type("sensor_observation", SensorObservation),

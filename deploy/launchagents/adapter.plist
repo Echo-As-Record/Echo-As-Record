@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>org.example.ear.archive-adapter</string>
+<key>ProgramArguments</key><array>
+<string>/ABSOLUTE/REPOSITORY/.venv/bin/python</string>
+<string>/ABSOLUTE/REPOSITORY/deploy/adapter.py</string>
+<string>--config</string><string>/PRIVATE/CONFIG/adapter.json</string>
+<string>run</string><string>--interval</string><string>30</string>
+</array>
+<key>WorkingDirectory</key><string>/ABSOLUTE/REPOSITORY</string>
+<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+<key>StandardOutPath</key><string>/PRIVATE/LOGS/adapter.log</string>
+<key>StandardErrorPath</key><string>/PRIVATE/LOGS/adapter-error.log</string>
+</dict></plist>

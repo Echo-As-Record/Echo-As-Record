@@ -89,6 +89,9 @@ def main(argv: list[str] | None = None) -> int:
                     storage=storage,
                     locator=InboxAudioLocator(data_root),
                     config=config,
+                    delivery_db=Path(path).expanduser()
+                    if (path := os.getenv("EAR_ADAPTER_DELIVERY_DB"))
+                    else None,
                 )
                 while not stop.is_set():
                     report = runner.run_once(should_stop=stop.is_set)
