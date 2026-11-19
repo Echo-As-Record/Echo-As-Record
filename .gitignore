@@ -35,3 +35,8 @@ Thumbs.db
 
 # Reverse-geocoding cache (contains location data)
 geo-cache.sqlite3*
+
+# Private capture data and Xcode user state at any depth
+local-data/
+xcuserdata/
+experiments/*/local-data/

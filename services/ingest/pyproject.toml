@@ -1,0 +1,21 @@
+[project]
+name = "ear-ingest"
+version = "0.1.0"
+description = "Phone upload receiver for the legacy Ear inbox"
+requires-python = ">=3.12"
+dependencies = ["cryptography>=45", "segno>=1.6", "fastapi>=0.115", "httpx>=0.28", "python-multipart>=0.0.20", "uvicorn>=0.34"]
+
+[project.scripts]
+ear-ingest = "ear_ingest.__main__:main"
+
+[build-system]
+requires = ["uv_build>=0.8,<0.14"]
+build-backend = "uv_build"
+
+[tool.pyright]
+venvPath = "../.."
+venv = ".venv"
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+extraPaths = ["src"]
+include = ["src", "tests"]
