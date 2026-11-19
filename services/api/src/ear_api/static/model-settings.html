@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex">
+  <title>Ear 大模型设置</title>
+  <link rel="stylesheet" href="model-settings.css">
+  <script src="model-settings.js" defer></script>
+</head>
+<body>
+  <main>
+    <nav aria-label="页面导航"><a href="/plugins/">返回插件管理</a></nav>
+    <h1>大模型设置</h1>
+    <p>固定供应商：<code>https://newapi.hangjuan.cn</code></p>
+    <p>这里只选择模型，不设置或检查供应商密钥。保存不会调用模型，也不会重启网关；网关在下次启动时读取已保存的设置。</p>
+    <form id="connect-form" method="post" autocomplete="off" hidden>
+      <label for="token-input">管理员 API 令牌（不是供应商密钥）</label>
+      <input id="token-input" type="password" required maxlength="43" autocomplete="off" spellcheck="false" autocapitalize="off">
+      <button id="connect-btn" type="submit">连接</button>
+      <p>令牌仅在本页内存中使用；刷新、离开或断开连接会清除它。</p>
+    </form>
+    <section id="edit-area" aria-label="模型选择" hidden>
+      <p>已保存的模型：<code id="saved-model"></code>（修订 <span id="saved-revision"></span>）</p>
+      <form id="model-form" method="post" autocomplete="off" hidden>
+        <label for="model-input">模型标识</label>
+        <input id="model-input" type="text" maxlength="128" required autocomplete="off" spellcheck="false" autocapitalize="off">
+        <button id="save-btn" type="submit">保存模型</button>
+      </form>
+      <button id="reload-btn" type="button">重新读取</button>
+      <button id="disconnect-btn" type="button">断开并清除令牌</button>
+    </section>
+    <p id="status" role="status" aria-live="polite">正在检查登录方式…</p>
+  </main>
+</body>
+</html>

@@ -4,24 +4,33 @@ Operator-provisioned files must be regular, single-link, UID 10001 owned and 060
 Local Compose file secrets preserve host ownership/mode; uid/gid options cannot fix it.
 Provider credentials, if required by the configured factory, must also be mounted files.
 The factory and its credentials are deployment trusted, never caller controlled.
+Direct mode requires a gateway-only key and a read-only gateway mount of the
+shared model-settings directory (not its individual, atomically replaced file).
+The bootstrap alias is never used instead of the required startup snapshot.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import stat
 import sys
 
+DIRECT_MODEL_SETTINGS = "/run/config/model-settings/settings.json"
+DIRECT_TOKEN = "/run/secrets/newapi-token"
+DIRECT_FACTORY_NAME = "_create_direct_provider"
 
-def protected_file(path: str, limit: int = 65536) -> bytes:
+
+def protected_file(path: str, limit: int = 65536, *, exact_mode: bool = False) -> bytes:
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     with os.fdopen(descriptor, "rb") as handle:
         before = os.fstat(handle.fileno())
         if (
             not stat.S_ISREG(before.st_mode)
             or before.st_mode & 0o077
+            or (exact_mode and stat.S_IMODE(before.st_mode) != 0o600)
             or before.st_uid != os.geteuid()
             or before.st_nlink != 1
             or before.st_size > limit
@@ -47,9 +56,51 @@ def unique_object(pairs):
     return result
 
 
+def direct_aliases() -> dict[str, str]:
+    from ear_llm_gateway.openai_compatible import valid_model_id
+    from ear_llm_gateway.output_json import strict_json
+
+    projection = strict_json(protected_file(DIRECT_MODEL_SETTINGS, 4096, exact_mode=True))
+    if (
+        not isinstance(projection, dict)
+        or set(projection) != {"model", "revision"}
+        or type(projection["revision"]) is not int
+        or not 1 <= projection["revision"] <= (1 << 63) - 1
+        or not valid_model_id(projection["model"])
+    ):
+        raise ValueError("invalid model settings")
+    return {"default": projection["model"]}
+
+
+def _create_direct_provider():
+    from ear_llm_gateway.openai_compatible import OpenAICompatibleProvider
+
+    token = protected_file(DIRECT_TOKEN, 8196, exact_mode=True).decode("ascii")
+    # HTTP Core's debug traces include untrusted response headers/exception text.
+    # Limit library logging in this dedicated runtime, even under root DEBUG.
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    return OpenAICompatibleProvider(
+        token.removesuffix("\r\n") if token.endswith("\r\n") else token.removesuffix("\n")
+    )
+
+
 def configure_provider(config):
+    if "openai_compatible" in config:
+        if (
+            config["openai_compatible"] is not True
+            or {"octopus", "provider_factory"} & config.keys()
+            or config.get("aliases") != {"default": "gpt-6-luna"}
+        ):
+            raise ValueError("invalid direct provider configuration")
+        # The entrypoint is already imported as __main__ when run as a script.
+        # Existing CLI imports this deployment factory; the key stays out of argv/env.
+        return f"{__name__}:{DIRECT_FACTORY_NAME}"
     factory = config.get("provider_factory", "ear_llm_gateway.octopus:create_provider")
-    if not isinstance(factory, str):
+    if not isinstance(factory, str) or factory in {
+        f"{module}:{DIRECT_FACTORY_NAME}"
+        for module in (__name__, "__main__", "api_gateway_runtime", "deploy.api_gateway_runtime")
+    }:
         raise ValueError("invalid provider factory")
     if factory == "ear_llm_gateway.octopus:create_provider":
         options = config.get("octopus")
@@ -83,12 +134,16 @@ def main() -> int:
         if (
             not isinstance(config, dict)
             or not {"storage_url", "aliases"} <= set(config)
-            or set(config) - {"storage_url", "aliases", "provider_factory", "octopus"}
+            or set(config)
+            - {"storage_url", "aliases", "provider_factory", "octopus", "openai_compatible"}
         ):
             raise ValueError("invalid configuration")
         if not isinstance(config["storage_url"], str):
             raise ValueError("invalid configuration")
         factory = configure_provider(config)
+        # Snapshot the required projection once. The bootstrap alias is not a fallback;
+        # later edits are read only in a newly started gateway.
+        aliases = direct_aliases() if "openai_compatible" in config else config["aliases"]
         token = protected_file("/run/secrets/gateway-storage-token", 128).decode("ascii").strip()
         if re.fullmatch(r"[A-Za-z0-9_-]{43}", token) is None:
             raise ValueError("invalid credential")
@@ -103,7 +158,7 @@ def main() -> int:
             "--provider-factory",
             factory,
             "--aliases",
-            json.dumps(config["aliases"], allow_nan=False),
+            json.dumps(aliases, allow_nan=False),
             "--journal",
             "/state/gateway.sqlite3",
             "--host",

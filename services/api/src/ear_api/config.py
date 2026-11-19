@@ -38,6 +38,7 @@ class Settings(BaseModel):
     public_origin: str | None = Field(default=None, strict=True)
     static_dir: Path | None = Path(__file__).with_name("static")
     execution_journal: Path | None = None
+    model_settings_file: Path | None = None
     execution_action_v2: bool = Field(default=False, strict=True)
     test_no_auth: bool = Field(default=False, strict=True)
     test_no_auth_role: Literal["user", "admin"] = "user"

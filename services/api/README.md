@@ -23,6 +23,10 @@ HEAD **`84d2d0f` 已包含 `origin/dev ba36543`（PR #20）及此前GPS**；不�
 - [动态插件 MVP](../../docs/design/plugins-mvp.md)（管理页与异步反馈）、[工作分解 v1.2](../../docs/design/work-breakdown-v1.2.md)（⑥一节，含验收标准）
 - [实现说明与验证记录](ai-docs/implementation.md)；[全局实施计划](../../ai-docs/plans/mvp-implementation.md)；[①当前状态](../storage/ai-docs/progress.md)；[⑦大模型入口](../llm_gateway/README.md)
 
+## 网页大模型设置（显式部署启用）
+
+在插件管理页进入 `/model-settings/`；配置 `model_settings_file` 后，登录的管理员可查看、修改保存的模型 ID。`GET/PUT /v1/settings/model` 必须使用正常管理员 Bearer 并复核①的当前管理权限，**免登录测试模式不启用这两个端点**。更新按修订号比较并原子写入；旧修订返回409，需要重新读取。保存不发起模型请求；由操作者重启⑦后读取新值，页面不把保存值当作正在运行的配置。第一版固定上游，网页不编辑地址或 API key。配置和验证边界见[⑦部署说明](../llm_gateway/README.md#直连-new-api可选)。
+
 ## 本地测试免登录（2026-11-18 用户明确授权）
 
 `test_no_auth` 是严格布尔配置，默认 `false`，原有 Bearer 验证默认不变。

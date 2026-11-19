@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Literal
 
 from ear_contracts import SemanticRecord, SystemRecord, is_id
@@ -45,17 +46,27 @@ from ear_api.execution_http import (
     recover,
 )
 from ear_api.execution_journal import ExecutionJournal, JournalUnavailable
+from ear_api.model_settings import (
+    ModelSelection,
+    ModelSettings,
+    ModelSettingsConflict,
+    ModelSettingsUnavailable,
+)
 from ear_api.models import FeedbackInput, load_json_object
 from ear_api.upstream import GatewayError, Upstream
 
 
-class _WorkspaceFiles(StaticFiles):
-    """Serve only the flat viewer assets, never the legacy workspace/ directory."""
+class _FlatPageFiles(StaticFiles):
+    """Serve only the named flat page's HTML, JS and CSS assets."""
+
+    def __init__(self, directory: Path, *, page: str) -> None:
+        super().__init__(directory=directory)
+        self.page = page
 
     async def get_response(self, path: str, scope: Scope) -> Response:
         if path == ".":
-            path = "workspace.html"
-        if path not in {"workspace.html", "workspace.js", "workspace.css"}:
+            path = f"{self.page}.html"
+        if path not in {f"{self.page}.html", f"{self.page}.js", f"{self.page}.css"}:
             raise HTTPException(status_code=404)
         return await super().get_response(path, scope)
 
@@ -115,6 +126,11 @@ def create_app(
     adapter: ActionAdapter | None = None,
 ) -> FastAPI:
     remote = upstream or Upstream(settings)
+    selection = (
+        ModelSettings(settings.model_settings_file)
+        if not settings.test_no_auth and settings.model_settings_file is not None
+        else None
+    )
     if settings.execution_action_v2 and execution is not None:
         raise ValueError("action_v2_requires_explicit_adapter_and_journal")
     if isinstance(execution, ExecutionPump):
@@ -541,7 +557,47 @@ def create_app(
             raise ValueError("invalid module")
         return response(remote.plugin_directory(binding, limit=limit, after=after))
 
+    if selection is not None:
+
+        def model_admin(request: Request) -> Binding:
+            binding = authenticated(request, admin=True)
+            if request.scope["query_string"]:
+                raise GatewayError(422, "invalid_input")
+            return binding
+
+        @app.get("/v1/settings/model")
+        def get_model_settings(request: Request):
+            binding = model_admin(request)
+            if request.scope["ear_api.body"]:
+                raise GatewayError(422, "invalid_input")
+            # /v1/identity alone may expose only the module. This read also
+            # verifies the binding's current storage-side admin authority.
+            remote.plugin_directory(binding, limit=1)
+            try:
+                return response(selection.read().model_dump())
+            except ModelSettingsUnavailable:
+                raise GatewayError(503, "model_settings_unavailable") from None
+
+        @app.put("/v1/settings/model")
+        def put_model_settings(request: Request):
+            binding = model_admin(request)
+            desired = ModelSelection.model_validate(body(request))
+            remote.plugin_directory(binding, limit=1)
+            try:
+                return response(selection.update(desired).model_dump())
+            except ModelSettingsConflict:
+                raise GatewayError(409, "model_settings_conflict") from None
+            except ModelSettingsUnavailable:
+                raise GatewayError(503, "model_settings_unavailable") from None
+
     if settings.static_dir is not None:
         app.mount("/plugins", StaticFiles(directory=settings.static_dir, html=True), name="plugins")
-        app.mount("/workspace", _WorkspaceFiles(directory=settings.static_dir), name="workspace")
+        app.mount(
+            "/workspace", _FlatPageFiles(settings.static_dir, page="workspace"), name="workspace"
+        )
+        app.mount(
+            "/model-settings",
+            _FlatPageFiles(settings.static_dir, page="model-settings"),
+            name="model-settings",
+        )
     return app
