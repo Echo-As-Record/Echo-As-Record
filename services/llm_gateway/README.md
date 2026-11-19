@@ -90,7 +90,7 @@ based-on: 设计 v1.2 第 9 节、信号补充、插件 MVP、工作分解 v1.2�
 
 - `--aliases` 把调用方可用的模型别名映射到模型 ID；别名不在表里 → 422 `unknown_model_alias`；没有“模型回退”。
 - `--journal` 必须是绝对路径且不含 `..`；其目录和文件须为当前用户私有，符号链接、他人所有或权限过宽会使启动失败。
-- `--provider-factory pkg.module:factory` 可换成自己的 provider（默认 `ear_llm_gateway.octopus:create_provider`）。CLI 的 `--provider-timeout-seconds`（容器 JSON 对应 `provider_timeout_seconds`）接受 1–300 的整数，默认仍为 60 秒；内置 Octopus 适配器自身的 120 秒上限不变。
+- `--provider-factory pkg.module:factory` 可换成自己的 provider（默认 `ear_llm_gateway.octopus:create_provider`）。CLI 的 `--provider-timeout-seconds`（容器 JSON 对应 `provider_timeout_seconds`）接受 1–600 的整数，默认仍为 60 秒；内置 Octopus 适配器自身的 120 秒上限不变。
 - 启动时先回放未写入①的审计记录（每批 100 条，直到没有可处理项）；①不可用就不开始服务，不会悄悄积压缺失记录。固定单 worker。
 - 失败时只输出一行固定提示，不回显配置、令牌或异常文本。
 
@@ -103,8 +103,9 @@ based-on: 设计 v1.2 第 9 节、信号补充、插件 MVP、工作分解 v1.2�
 - 网关 JSON 设置 `openai_compatible: true` 和引导校验值 `aliases: {"default":"gpt-6-luna"}`，不设置 `octopus` 或 `provider_factory`。运行时别名以私有设置目录为准；缺失/非法配置拒绝启动，不回退。
 - 预置 `EAR_MODEL_SETTINGS_DIR` 指向 `0700` 目录，内有 `0600` 的 `settings.json`，初始 `{"model":"gpt-6-luna","revision":1}`。绑定目录而不是文件：⑥读写、⑦只读；⑥设 `model_settings_file: /run/config/model-settings/settings.json`，使用正常 Bearer 配置。须按容器实际 UID 核对属主。⑦下次启动读取保存的模型，④继续请求别名 `default`。
 - `EAR_NEWAPI_TOKEN_FILE` 只填⑦挂载使用的私有密钥文件路径；该凭据不出现在网页、共享设置、启动参数或 Compose 环境内容中。不得用免登录测试实例验收真实提取；有权触发付费请求的反馈也需鉴权。网关与④仍须用各自①签发的身份，④手动提取先不启用定时任务或动作。
-- 五分钟用于**单次直连上游请求的整个 I/O 阶段**（包括读取完整响应），不是一次提取任务的总时限。网关 JSON 可显式设置 `"provider_timeout_seconds": 300`（重启生效），④ worker JSON 则设置 `"gateway_timeout": 330`，给网关鉴权和审计留出余量。`gateway_timeout` 只配置 GatewayClient 的 HTTP I/O 超时，须为大于 0 且不超过 360 的有限数值；省略时仍沿用 `timeout`。`timeout` 的存储用途、默认 35 秒和 120 秒上限均不变。`gateway_url` 使用实际内部端口 `8077`。超时后的结果未知处理不变。
-- ④ 使用同步 pump，默认 `health_max_age_seconds: 300`；单个任务运行超过该值时，worker 本地健康探测可能报告不健康，即使进程仍在工作。任务领取的默认租约为 900 秒，不随单次调用续期；一个任务可能串行调用模型多次。二者均不是任务的执行时限。①远程快照的默认有效期仍为 300 秒；接近上游时限的调用返回后，④若继续读取同一快照，可能遇到快照过期。
+- 十分钟用于**单次直连上游请求的整个 I/O 阶段**（包括读取完整响应），不是一次提取任务的总时限。网关 JSON 可显式设置 `"provider_timeout_seconds": 600`（重启生效；默认仍为 60 秒），④ worker JSON 则设置 `"gateway_timeout": 630`，给网关鉴权和审计留出余量。`gateway_timeout` 配置 GatewayClient 的 HTTP I/O 超时，须为大于 0 且不超过 660 的有限数值；省略时仍沿用 `timeout`。`timeout` 的存储用途、默认 35 秒和 120 秒上限均不变。`gateway_url` 使用实际内部端口 `8077`。直连仍只发送一次，不重试、不回退；超时后的结果未知处理不变。
+- ④ 使用同步 pump，任务执行期间不更新探针。设 `"gateway_timeout": 630` 的仅转写 worker 可配置 `"health_max_age_seconds": 3500`，其任务租约为 3,400 秒，详见[④仅转写说明](../extraction/README.md#部署可选仅转写transcript_only)。默认探针年龄仍为 300 秒，普通提取的租约仍为 900 秒；租约不随单次调用续期，二者都不是任务硬时限。①远程快照的默认有效期仍为 300 秒；仅转写任务在首个模型调用前释放快照，仍持有快照的其他路径可能遇到快照过期。
+- **停机需单独规划**：现有 Compose 的网关停止宽限为 40 秒，MVP worker 为 5 分钟；配置请求超时或探针年龄不会延长这些宽限。计划停止或重启时，先停止向④提交新任务并等待在途任务结束，再停止④和⑦。如需在有在途任务时停机，由部署方另行设置足够的停止宽限；强制终止时保留持久状态，按结果未知流程核对，不盲目重发。
 - 当前验证仅为合成响应：真实④与⑦代码经过该请求格式，产生活动与关联 Markdown、无动作建议。未验证指定实例的模型可用性、用量、真实响应形状；发送真实证据之前先用合成短样本。模型输入和输出可能存于④的私有运行记录，不应上传诊断详情。
 
 ### 3.3 HTTP 接口

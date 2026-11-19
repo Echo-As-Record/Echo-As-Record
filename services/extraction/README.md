@@ -23,7 +23,7 @@ based-on: 设计 v1.2；c5c31f8 的④实现；本轮负责人授权④直接依
 
 ## 部署可选：仅转写（`transcript_only`）
 
-通过 `mvp_worker.py` 部署时，仅允许手动 `extract` 匹配 `transcript_windows` 中的完整 UTC 窗口（最多 3 个，每个不超过 15 分钟，不能重叠）；必须指定 `transcript_summary_rule_id`，不能同时启用定时。超出窗口时在模型调用前阻止。该配置每任务最多 5 次模型调用，租约为 1,900 秒；不是模型请求的超时。
+通过 `mvp_worker.py` 部署时，仅允许手动 `extract` 匹配 `transcript_windows` 中的完整 UTC 窗口（最多 3 个，每个不超过 15 分钟，不能重叠）；必须指定 `transcript_summary_rule_id`，不能同时启用定时。超出窗口时在模型调用前阻止。该配置每任务最多 5 次模型调用。租约取 1,900 秒和「调用上限 × 向上取整的生效 `gateway_timeout`（未配置时用 `timeout`）+ 250 秒」两者中的较大值，给存储及本地处理留出余量；租约不是请求超时或任务硬时限。默认配置和 `gateway_timeout: 330` 仍使用 1,900 秒。租约超过 1,900 秒时，`health_max_age_seconds` 必须至少覆盖租约（上限仍为 3,600 秒）；例如 `gateway_timeout: 630` 时租约为 3,400 秒，可配置 `health_max_age_seconds: 3500`。普通提取 worker 的 900 秒租约不变。
 
 宿主可显式传 `ExtractionService(storage, gateway, transcript_only=True)`；省略此参数或传 `False` 时，现有输入及归属、逆地理编码就绪门槛保持不变。此选项不是反馈参数、权限配置或历史迁移；历史成功区间仍按原逻辑去重，要重新处理请显式预览并提交重提取。
 

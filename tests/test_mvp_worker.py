@@ -192,7 +192,7 @@ def test_valid_configs_no_default_timer_or_history(tmp_path, module):
     assert SECRET not in repr(cfg)
 
 
-@pytest.mark.parametrize("value", [0, 361, "330", True, float("inf"), float("nan")])
+@pytest.mark.parametrize("value", [0, 661, "330", True, float("inf"), float("nan")])
 def test_extraction_rejects_invalid_gateway_timeout(tmp_path, value):
     with pytest.raises(ValueError, match="gateway_timeout"):
         worker.Settings.model_validate(settings(tmp_path, "extraction", gateway_timeout=value))
@@ -211,20 +211,41 @@ def test_storage_timeout_ceiling_unchanged_with_gateway_timeout(tmp_path):
         )
 
 
+def transcript_only_settings():
+    return {
+        "transcript_only": True,
+        "transcript_summary_rule_id": new_id(),
+        "transcript_windows": [{"start": "2026-11-12T00:00:00Z", "end": "2026-11-12T00:15:00Z"}],
+    }
+
+
 @pytest.mark.parametrize(
-    "overrides,storage_timeout,gateway_timeout",
+    "transcript_only,overrides,storage_timeout,gateway_timeout,lease_seconds",
     [
-        ({}, 35, 35),
-        ({"timeout": 120}, 120, 120),
-        ({"gateway_timeout": 330}, 35, 330),
-        ({"timeout": 120, "gateway_timeout": 360}, 120, 360),
+        (False, {}, 35, 35, 900),
+        (False, {"timeout": 120}, 120, 120, 900),
+        (False, {"gateway_timeout": 330}, 35, 330, 900),
+        (False, {"timeout": 120, "gateway_timeout": 660}, 120, 660, 900),
+        (True, {}, 35, 35, 1900),
+        (True, {"gateway_timeout": 330}, 35, 330, 1900),
+        (True, {"gateway_timeout": 330.5, "health_max_age_seconds": 1905}, 35, 330.5, 1905),
+        (True, {"gateway_timeout": 630, "health_max_age_seconds": 3500}, 35, 630, 3400),
+        (True, {"gateway_timeout": 660, "health_max_age_seconds": 3600}, 35, 660, 3550),
     ],
 )
-def test_extraction_gateway_timeout_is_independent(
-    tmp_path, monkeypatch, overrides, storage_timeout, gateway_timeout
+def test_extraction_timeout_and_lease_are_wired_independently_of_storage(
+    tmp_path,
+    monkeypatch,
+    transcript_only,
+    overrides,
+    storage_timeout,
+    gateway_timeout,
+    lease_seconds,
 ):
     data = settings(tmp_path, "extraction")
     del data["timeout"]
+    if transcript_only:
+        data.update(transcript_only_settings())
     config = worker.load_config(str(write_config(tmp_path, data | overrides)))
     seen = []
 
@@ -241,12 +262,50 @@ def test_extraction_gateway_timeout_is_independent(
     monkeypatch.setattr(httpx, "HTTPTransport", lambda **_: httpx.MockTransport(request))
 
     def serve(service, *_args, **_kwargs):
+        assert service.lease_seconds == lease_seconds
+        assert service.transcript_only is transcript_only
+        assert service.transcript_max_calls == 5
         assert service.gateway.stats() == {"roots": {}}
 
     monkeypatch.setattr(worker, "serve", serve)
     worker.run(config, threading.Event())
     assert ("synthetic.invalid", "/v1/identity") in seen
     assert seen[-1] == ("synthetic-gateway.invalid", "/v1/stats")
+
+
+@pytest.mark.parametrize("health", [None, 3399, 3601])
+def test_long_transcript_config_requires_sufficient_bounded_health_age(tmp_path, health):
+    values = settings(tmp_path, "extraction", gateway_timeout=630, **transcript_only_settings())
+    if health is not None:
+        values["health_max_age_seconds"] = health
+    with pytest.raises(ValueError, match="health_max_age_seconds"):
+        worker.Settings.model_validate(values)
+
+
+def test_long_transcript_job_health_can_cover_one_job_but_not_stay_healthy_forever(
+    tmp_path, monkeypatch
+):
+    cfg = worker.Settings.model_validate(
+        settings(
+            tmp_path,
+            "extraction",
+            gateway_timeout=630,
+            health_max_age_seconds=3500,
+            **transcript_only_settings(),
+        )
+    )
+    fake_time = Mock()
+    fake_time.time.return_value = 10_000
+    monkeypatch.setattr(worker, "time", fake_time)
+    state = worker.State(cfg)
+    try:
+        state.health("busy")
+        fake_time.time.return_value += 3500
+        assert worker.healthy(cfg)
+        fake_time.time.return_value += 1
+        assert not worker.healthy(cfg)
+    finally:
+        state.close()
 
 
 @pytest.mark.parametrize(

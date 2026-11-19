@@ -127,7 +127,7 @@ def test_gateway_rejects_provider_timeout_above_ceiling(harness):
             provider=harness.provider,
             journal=harness.journal,
             aliases={"default": "synthetic/model"},
-            timeout=301,
+            timeout=601,
         )
 
 
@@ -144,7 +144,7 @@ def test_cli_rejects_provider_timeout_above_ceiling(monkeypatch, capsys):
             "--aliases",
             '{"default":"synthetic/model"}',
             "--provider-timeout-seconds",
-            "301",
+            "601",
         ],
     )
     monkeypatch.setattr(
@@ -160,7 +160,7 @@ def test_cli_rejects_provider_timeout_above_ceiling(monkeypatch, capsys):
 
 def test_client_rejects_timeout_above_ceiling():
     with pytest.raises(ValueError, match=r"^invalid_client_limits$"):
-        GatewayClient("http://synthetic.invalid", TOKEN, timeout=361)
+        GatewayClient("http://synthetic.invalid", TOKEN, timeout=661)
 
 
 def test_success_metadata_usage_unknown_and_no_events(harness, caplog):

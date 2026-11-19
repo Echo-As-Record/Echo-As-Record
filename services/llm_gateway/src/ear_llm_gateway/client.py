@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from ear_llm_gateway.models import CallRequest, GatewayError
 
-MAX_CLIENT_TIMEOUT_SECONDS = 360
+MAX_CLIENT_TIMEOUT_SECONDS = 660
 
 
 def endpoint(value: str) -> httpx.URL:

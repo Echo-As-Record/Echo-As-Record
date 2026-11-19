@@ -47,6 +47,7 @@ from ear_extraction.suggestions import suggestion_operations
 logger = logging.getLogger(__name__)
 CONSUMER = "extraction.jobs"
 COMPLETION_CONSUMER = "extraction.completion"
+DEFAULT_TRANSCRIPT_MAX_CALLS = 5
 MODEL_COMMANDS = {"extract", "reextract", "apply_rule", "extract_once", "reevaluate"}
 TRANSCRIPT_ONLY_COMMANDS = {"extract", "reextract", "rule_create", "rule_update", "rule_delete"}
 TERMINAL = {"succeeded", "failed", "blocked", "superseded"}
@@ -125,7 +126,7 @@ class ExtractionService:
         max_input_chars: int = 100_000,
         transcript_only: bool = False,
         transcript_summary_rule_id: str | None = None,
-        transcript_max_calls: int = 5,
+        transcript_max_calls: int = DEFAULT_TRANSCRIPT_MAX_CALLS,
         transcript_allowed_windows: tuple[Interval, ...] = (),
     ):
         if type(transcript_only) is not bool:

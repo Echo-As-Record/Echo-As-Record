@@ -27,6 +27,7 @@ import fcntl
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import signal
@@ -45,7 +46,7 @@ import httpx
 from ear_contracts import SystemRecord, is_id
 from ear_extraction.domain import Interval
 from ear_extraction.model_io import SYSTEM
-from ear_extraction.orchestration import TERMINAL, ExtractionService
+from ear_extraction.orchestration import DEFAULT_TRANSCRIPT_MAX_CALLS, TERMINAL, ExtractionService
 from ear_extraction.worker import Schedule, serve
 from ear_llm_gateway.client import MAX_CLIENT_TIMEOUT_SECONDS
 from ear_storage_client import Query
@@ -60,6 +61,8 @@ CONSUMERS = {
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 FILE_FLAGS = os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 MAX_CONFIG = 65536
+TRANSCRIPT_LEASE_FLOOR_SECONDS = 1900
+TRANSCRIPT_LEASE_OVERHEAD_SECONDS = 250
 ERROR_METADATA = (
     '{"module":"mvp_worker","event_id":null,"root_feedback_id":"system",'
     '"depth":0,"code":"mvp_worker_unavailable"}'
@@ -113,6 +116,21 @@ class Settings(SafeModel):
     transcript_summary_rule_id: str | None = Field(default=None, strict=True)
     transcript_windows: tuple[Interval, ...] = Field(default=(), max_length=3)
 
+    @property
+    def effective_gateway_timeout(self) -> float:
+        return self.timeout if self.gateway_timeout is None else self.gateway_timeout
+
+    @property
+    def extraction_lease_seconds(self) -> int:
+        if not self.transcript_only:
+            return 900
+        # Size for all serial calls, plus storage and local processing overhead.
+        return max(
+            TRANSCRIPT_LEASE_FLOOR_SECONDS,
+            DEFAULT_TRANSCRIPT_MAX_CALLS * math.ceil(self.effective_gateway_timeout)
+            + TRANSCRIPT_LEASE_OVERHEAD_SECONDS,
+        )
+
     @model_validator(mode="after")
     def valid(self) -> Self:
         if self.consumer != CONSUMERS[self.module]:
@@ -158,6 +176,11 @@ class Settings(SafeModel):
                 raise ValueError("transcript_windows_overlap")
             if any(w.end - w.start > timedelta(minutes=15) for w in ordered):
                 raise ValueError("transcript_window_too_long")
+            # Long jobs get no heartbeat while process() is running. Preserve the
+            # old probe behavior unless the timeout extends the transcript lease.
+            lease = self.extraction_lease_seconds
+            if lease > TRANSCRIPT_LEASE_FLOOR_SECONDS and self.health_max_age_seconds < lease:
+                raise ValueError("health_max_age_seconds_below_transcript_lease")
         elif self.transcript_summary_rule_id is not None or self.transcript_windows:
             raise ValueError("unexpected_transcript_only_settings")
         if self.module == "extraction":
@@ -475,7 +498,8 @@ class BoundedExtraction(ExtractionService):
             transcript_only=config.transcript_only,
             transcript_summary_rule_id=config.transcript_summary_rule_id,
             transcript_allowed_windows=config.transcript_windows,
-            lease_seconds=1900 if config.transcript_only else 900,
+            transcript_max_calls=DEFAULT_TRANSCRIPT_MAX_CALLS,
+            lease_seconds=config.extraction_lease_seconds,
             **kwargs,
         )
         self.config, self.stop, self.state = config, stop, state
@@ -577,11 +601,7 @@ def run(config: Settings, stop: Event) -> None:
                         if config.transcript_only
                         else ""
                     ),
-                    timeout=(
-                        config.gateway_timeout
-                        if config.gateway_timeout is not None
-                        else config.timeout
-                    ),
+                    timeout=config.effective_gateway_timeout,
                     transport=httpx.HTTPTransport(retries=0, trust_env=False),
                 )
                 stack.callback(gateway.close)

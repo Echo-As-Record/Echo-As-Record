@@ -344,7 +344,7 @@ def test_undeclared_stream_stops_at_byte_limit():
         ({}, "https://alternate.invalid/?caller_override", 1),
         ({}, MODEL, 0),
         ({}, MODEL, float("inf")),
-        ({}, MODEL, 301),
+        ({}, MODEL, 601),
     ],
 )
 def test_admission_limits_before_any_request(data, model, timeout):

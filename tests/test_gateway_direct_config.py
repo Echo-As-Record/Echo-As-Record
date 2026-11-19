@@ -86,7 +86,7 @@ def mounts(runtime, tmp_path, monkeypatch):
         {"origin": "https://alternate.invalid"},
         {"provider_timeout_seconds": True},
         {"provider_timeout_seconds": 0},
-        {"provider_timeout_seconds": 301},
+        {"provider_timeout_seconds": 601},
         {"provider_timeout_seconds": 90.0},
         {"provider_timeout_seconds": "90"},
         {"newapi_token": PRIVATE},
@@ -103,7 +103,7 @@ def test_invalid_opt_in_or_ambiguous_config_does_not_open_mounts(
     assert capsys.readouterr().err == '{"code":"gateway_container_unavailable"}\n'
 
 
-@pytest.mark.parametrize("configured", [None, 1, 90, 120, 300])
+@pytest.mark.parametrize("configured", [None, 1, 90, 120, 300, 600])
 def test_provider_timeout_used_at_startup(runtime, mounts, monkeypatch, configured):
     config, _, _, _ = mounts
     if configured is not None:
@@ -216,7 +216,7 @@ def test_bad_key_never_uses_environment_or_calls_storage(raw, runtime, mounts, m
     )
 
 
-@pytest.mark.parametrize("provider_timeout", [None, 300])
+@pytest.mark.parametrize("provider_timeout", [None, 600])
 def test_real_cli_uses_projection_snapshot_until_restart(
     runtime, mounts, monkeypatch, tmp_path, caplog, provider_timeout
 ):
