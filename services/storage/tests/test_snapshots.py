@@ -23,6 +23,7 @@ from ear_storage import (
 )
 from ear_storage.auth import can_use_consumer
 from ear_storage.codec import encode_result, fingerprint
+from ear_storage.http import create_app
 from ear_storage.repository import persist
 from ear_storage.schema import DDL, DDL_V2, connection, writer
 from ear_storage.snapshots import sweep_expired
@@ -44,8 +45,11 @@ from ear_storage_client import (
 )
 from ear_storage_client.engine import State, Transaction, canonical_json
 from ear_storage_client.protocol import iter_query
+from ear_storage_client.remote import RemoteStorageClient
+from ear_storage_client.remote_errors import ResourceLimit
 from ear_storage_client.testing import make_raw
 
+from .test_api_gateway_integration import loopback
 from .test_auth import env as env
 from .test_auth import reference, wait_blocked
 
@@ -176,6 +180,66 @@ def test_all_reader_results_frozen_restart_and_no_transaction_while_paused(seede
     assert counts(dsn) == (0, 0)
     with pytest.raises(SnapshotUnavailable, match=r"^snapshot unavailable$"):
         snap.get(target)
+
+
+def test_attribution_snapshot_excludes_graph_without_raising_the_limit(env):
+    dsn, store, _service, operator = env
+    person = new_id()
+    store.client("attribution").write([Create("person", person, {})], SYS).check()
+    subject = make_raw("voiceprint", {"synthetic": True}, start="2026-01-01T00:00:00Z")
+    store.client("adapter").write([AppendRaw(subject)], SYS).check()
+    activities = [new_id() for _ in range(22)]
+    store.client("extraction").write(
+        [
+            op
+            for id in activities
+            for op in (
+                Create("activity", id, {}),
+                RegisterDependencies("activity", id, [reference("person", person, 1)]),
+            )
+        ],
+        SYS,
+    ).check()
+    issued = operator.issue_principal(
+        "attribution", read_types=["person", "voiceprint", "activity"]
+    )
+    peer = operator.issue_principal("extraction", read_types=["person", "voiceprint", "activity"])
+    service = StorageService(dsn, snapshot_limits=SnapshotLimits(max_rows=45))
+    with (
+        loopback(create_app(service)) as url,
+        RemoteStorageClient(issued.token, url) as client,
+        RemoteStorageClient(peer.token, url) as other,
+    ):
+        with pytest.raises(ResourceLimit):
+            client.create_snapshot()
+        with pytest.raises(PermissionDenied):
+            other.create_snapshot(profile="attribution")
+        with client.snapshot(profile="attribution") as view:
+            assert view.get_many([person, subject.id]) == client.get_many([person, subject.id])
+            assert view.count(Query("activity")) == 22
+            assert view.type_revision("person") == client.type_revision("person")
+            assert not view.is_processed("attribution", new_id())
+            # Reopen through an independent service, not a process-local profile flag.
+            assert view.snapshot_id is not None
+            again = StorageService(dsn).read_snapshot(issued.token, view.snapshot_id)
+            assert again.get(person) == client.get(person)
+            for attempt in (
+                lambda: view.dependency_set(activities[0]),
+                lambda: view.dependencies_of(activities[0]),
+                lambda: view.dependents_of(person),
+                lambda: again.stale_dependencies([person]),
+            ):
+                with pytest.raises(PermissionDenied):
+                    attempt()
+            with pytest.raises(PermissionDenied):
+                other.read_snapshot(view.snapshot_id).get(person)
+            operator.set_grants(issued.principal_id, read_types=["person", "activity"])
+            with pytest.raises(PermissionDenied):
+                view.get(subject.id)
+        assert counts(dsn) == (0, 0)
+        # The normal profile still returns actual dependency edges.
+        with StorageService(dsn).client(issued.token).snapshot() as ordinary:
+            assert len(ordinary.dependencies_of(activities[0])) == 1
 
 
 def test_hydration_checks_each_consumer_once_but_refetches_authority_per_read(env, monkeypatch):

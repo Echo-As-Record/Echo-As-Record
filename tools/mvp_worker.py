@@ -51,6 +51,7 @@ from ear_extraction.worker import Schedule, serve
 from ear_llm_gateway.client import MAX_CLIENT_TIMEOUT_SECONDS
 from ear_storage_client import Query
 from ear_storage_client.remote import RemoteStorageClient
+from ear_storage_client.wire import SnapshotProfile
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 CONSUMERS = {
@@ -435,6 +436,11 @@ class PumpStorage(RemoteStorageClient):
         self.stop, self.state = stop, state
         self.handler_failed = False
         super().__init__(*args, **kwargs)
+
+    def snapshot(self, *, profile: SnapshotProfile | None = None):
+        if self.state.config.module == "attribution":
+            profile = "attribution"
+        return super().snapshot(profile=profile)
 
     def subscribe(self, consumer, handler, *, event_types=None, from_beginning=False):
         if from_beginning or consumer != self.state.config.consumer:
