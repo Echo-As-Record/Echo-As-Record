@@ -51,6 +51,7 @@ from ear_extraction.worker import Schedule, serve
 from ear_llm_gateway.client import MAX_CLIENT_TIMEOUT_SECONDS
 from ear_storage_client import Query
 from ear_storage_client.remote import RemoteStorageClient
+from ear_storage_client.remote_errors import CommitUnknown, ResourceLimit, ServiceUnavailable
 from ear_storage_client.wire import SnapshotProfile
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
@@ -435,7 +436,43 @@ class PumpStorage(RemoteStorageClient):
     def __init__(self, *args, stop: Event, state: State, **kwargs):
         self.stop, self.state = stop, state
         self.handler_failed = False
+        self._storage_failure_noted = False
         super().__init__(*args, **kwargs)
+
+    def _request(self, method, path, text=None, *, request_id=None):
+        try:
+            return super()._request(method, path, text, request_id=request_id)
+        except (ResourceLimit, CommitUnknown, ServiceUnavailable) as exc:
+            if self.state.config.module == "attribution" and not self._storage_failure_noted:
+                phase = {
+                    "/v1/batches": "commit",
+                    "/v1/snapshots": "create_snapshot",
+                    "/v1/read": "read",
+                    "/v1/consumers/fetch": "fetch",
+                    "/v1/consumers/ack": "ack",
+                    "/v1/consumers/nack": "nack",
+                }.get(path)
+                if phase is not None:
+                    self._storage_failure_noted = True
+                    code = (
+                        "resource_limit"
+                        if isinstance(exc, ResourceLimit)
+                        else "commit_outcome_unknown"
+                        if isinstance(exc, CommitUnknown)
+                        else "storage_unavailable"
+                    )
+                    # Persist only closed metadata, never exception text, IDs or URLs.
+                    with suppress(OSError, ValueError):
+                        self.state.write(
+                            "last_storage_failure.json",
+                            {
+                                "module": "attribution",
+                                "phase": phase,
+                                "code": code,
+                                "observed_at": time.time(),
+                            },
+                        )
+            raise
 
     def snapshot(self, *, profile: SnapshotProfile | None = None):
         if self.state.config.module == "attribution":
@@ -471,6 +508,7 @@ class PumpStorage(RemoteStorageClient):
         if self.stop.is_set():
             return 0
         self.state.health("busy")
+        self._storage_failure_noted = False
         self.handler_failed = False
         count = super().poll_once(consumer)
         if self.handler_failed and not self.stop.is_set():

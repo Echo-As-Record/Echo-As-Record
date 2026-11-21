@@ -939,3 +939,27 @@ def test_dependency_default_yields_to_scheduler_after_each_delivery(tmp_path, mo
     worker.run(cfg, stop)
     assert order == ["delivery", "tick"] * 3
     assert client.poll_batch.call_count == scheduler.tick.call_count == 3
+
+
+def test_attribution_storage_failure_records_only_safe_first_phase(tmp_path):
+    from ear_storage_client.remote_errors import ResourceLimit
+
+    config = worker.Settings.model_validate(settings(tmp_path))
+    state = worker.State(config)
+    client = worker.PumpStorage(
+        SECRET,
+        config.storage_url,
+        stop=threading.Event(),
+        state=state,
+        transport=httpx.MockTransport(lambda _: httpx.Response(413, text="private body")),
+    )
+    try:
+        for path in ("/v1/batches", "/v1/consumers/nack"):
+            with pytest.raises(ResourceLimit):
+                client._request("POST", path, "private payload", request_id=new_id())
+        d = json.loads((state.path / "last_storage_failure.json").read_bytes())
+        assert set(d) == {"module", "phase", "code", "observed_at"}
+        assert (d["module"], d["phase"], d["code"]) == ("attribution", "commit", "resource_limit")
+    finally:
+        client.close()
+        state.close()
