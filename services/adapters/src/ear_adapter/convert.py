@@ -384,6 +384,13 @@ def capture_records(
         resolutions=resolutions,
         events=evidence.of_type("audio_event", AudioEvent),
     )
+    return audio + context_records(evidence, capture, config)
+
+
+def context_records(
+    evidence: CaptureEvidence, capture: EarCapture, config: AdapterConfig
+) -> list[NewRawRecord]:
+    device = capture.instance_id
     b = _Builder(device, config)
     observations = sorted(
         evidence.of_type("sensor_observation", SensorObservation),
@@ -445,4 +452,4 @@ def capture_records(
             },
         )
 
-    return audio + b.records
+    return b.records

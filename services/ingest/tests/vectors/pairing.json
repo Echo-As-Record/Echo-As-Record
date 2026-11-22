@@ -1,0 +1,14 @@
+{
+  "url": "earrecorder://pair?receiver=00000000-0000-4000-8000-000000000004&pin=abababababababababababababababababababababababababababababababab&code=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef&relay=http%3A%2F%2Frelay.example.invalid%3A8080",
+  "fields": {
+    "receiver": "00000000-0000-4000-8000-000000000004",
+    "pin": "abababababababababababababababababababababababababababababababab",
+    "code": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "relay": "http://relay.example.invalid:8080"
+  },
+  "device": "ear-test-00000000-0000-4000-8000-000000000001",
+  "issued_at": 1800000000,
+  "expires_at": 1800000300,
+  "invite_id": "a8ae6e6ee929abea3afcfc5258c8ccd6f85273e0d4626d26c7279f3250f77c8e",
+  "token": "0c9a887c678245264327d67eda00fbb3891420905a9baeb8277fe099cf309911"
+}

@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import sys
 import time
 from collections import Counter
 from collections.abc import Callable, Sequence
+from contextlib import closing
 from dataclasses import dataclass, field
+from itertools import batched
+from pathlib import Path
 
 from ear_contracts import SYSTEM, NewRawRecord, new_id
 from ear_storage_client import AppendRaw, Context, PermissionDenied, Query, StorageClient
@@ -17,7 +21,14 @@ from ear_storage_client.remote_errors import CommitUnknown, ResourceLimit, Servi
 from ear_storage_client.wire import encode_request
 
 from ear_adapter.config import AdapterConfig
-from ear_adapter.convert import Blocked, Waiting, audio_ref_id, capture_records, readiness
+from ear_adapter.convert import (
+    Blocked,
+    Waiting,
+    audio_ref_id,
+    capture_records,
+    context_records,
+    readiness,
+)
 from ear_adapter.ear_api import Capture, SpeakerResolution
 from ear_adapter.selection import capture_selection, validate_capture_id
 from ear_adapter.source import AudioLocator, EarSource, SourceProtocolError, SourceUnavailable
@@ -99,29 +110,37 @@ def _ingest_capture(
         if evidence.capture_id != capture_id or any(c.capture_id != capture_id for c in captures):
             raise SourceProtocolError()
         # capture 数量仍由 readiness 判定；匹配校验先于任何音频/声纹读取及去重。
-        state = readiness(evidence)
-        if isinstance(state, Waiting):
-            return Pending(capture_id, state.reason)
-        if isinstance(state, Blocked):
-            return Failed(capture_id, state.reason)
-        capture = state.capture
-        # 整批原子写入：audio_ref 已存在就说明这段录音整批导入过。
-        if storage.get(audio_ref_id(capture, config)) is not None:
-            return AlreadyIngested(capture_id)
-        audio_file = locator.locate(capture)
-        if audio_file is None:
-            return Pending(capture_id, "在 Brain inbox 里找不到大小和哈希都对得上的音频文件")
-        embeddings = {
-            r.resolution_id: source.read_embedding(r.resolution_id)
-            for r in evidence.of_type("speaker_resolution", SpeakerResolution)
-            if r.embedding_ref is not None
-        }
+        if len(captures) == 1 and storage.get(audio_ref_id(captures[0], config)) is not None:
+            # 音频整批已导入：只补写迟到的 Context。
+            records: list[NewRawRecord] = []
+            for batch in batched(context_records(evidence, captures[0], config), 100):
+                existing = storage.get_many([r.id for r in batch])
+                records.extend(r for r in batch if r.id not in existing)
+            if not records:
+                return AlreadyIngested(capture_id)
+        else:
+            state = readiness(evidence)
+            if isinstance(state, Waiting):
+                return Pending(capture_id, state.reason)
+            if isinstance(state, Blocked):
+                return Failed(capture_id, state.reason)
+            capture = state.capture
+            audio_file = locator.locate(capture)
+            if audio_file is None:
+                return Pending(capture_id, "在 Brain inbox 里找不到大小和哈希都对得上的音频文件")
+            embeddings = {
+                r.resolution_id: source.read_embedding(r.resolution_id)
+                for r in evidence.of_type("speaker_resolution", SpeakerResolution)
+                if r.embedding_ref is not None
+            }
+            records = capture_records(
+                evidence, audio_file=audio_file, embeddings=embeddings, config=config
+            )
     except SourceUnavailable:
         return Pending(capture_id, "旧 Ear 暂时不可用")
     except ServiceUnavailable:
         return Pending(capture_id, "① 暂时不可用")
 
-    records = capture_records(evidence, audio_file=audio_file, embeddings=embeddings, config=config)
     return append_capture_batch(capture_id, records, storage=storage)
 
 
@@ -212,12 +231,16 @@ class Runner:
         storage: StorageClient,
         locator: AudioLocator,
         config: AdapterConfig,
+        delivery_db: Path | None = None,
     ) -> None:
         self.source = source
         self.storage = storage
         self.locator = locator
         self.config = config
         self.done: set[str] = set()
+        self.delivery_db = delivery_db
+        self.receipt_cursor = 0
+        self.recheck_at: dict[str, float] = {}
 
     def run_once(
         self,
@@ -245,10 +268,22 @@ class Runner:
             report.source_error = "旧 Ear 暂时不可用"
             _log("source_unavailable", reason=report.source_error)
             return report
+        if self.delivery_db is not None and self.delivery_db.is_file():
+            try:
+                uri = self.delivery_db.resolve().as_uri() + "?mode=ro"
+                with closing(sqlite3.connect(uri, uri=True)) as db:
+                    for seq, received_id in db.execute(
+                        "SELECT seq, capture_id FROM receipts WHERE seq > ? ORDER BY seq",
+                        (self.receipt_cursor,),
+                    ):
+                        self.done.discard(received_id)
+                        self.receipt_cursor = seq
+            except sqlite3.Error:
+                _log("delivery_receipts_unavailable")
         for capture_id in identifiers:
             if should_stop():
                 break
-            if capture_id in self.done:
+            if capture_id in self.done and time.monotonic() < self.recheck_at[capture_id]:
                 continue
             outcome = ingest_capture(
                 capture_id,
@@ -260,6 +295,7 @@ class Runner:
             report.outcomes.append(outcome)
             if isinstance(outcome, Ingested | AlreadyIngested):
                 self.done.add(capture_id)
+                self.recheck_at[capture_id] = time.monotonic() + (3600 if self.delivery_db else 300)
             _log_outcome(outcome)
         return report
 

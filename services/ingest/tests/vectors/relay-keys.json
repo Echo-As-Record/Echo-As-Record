@@ -1,0 +1,9 @@
+{
+  "secret": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "ticket": "00112233445546778899aabbccddeeff",
+  "keys": {
+    "request": "e00273e9c4c4ce3d8f06940dd24d2aaa6bad81db94077d2391e141c35078d049",
+    "response": "6f4d829dc6eafcaa70be44758764a84f3cc27be625f2692cb9fbc3eaa6c815b5",
+    "receipt": "e0ee89a27491343b9ba55cf9701f68f0ba623cccd4ba419a4c535fd2ad5e3a70"
+  }
+}

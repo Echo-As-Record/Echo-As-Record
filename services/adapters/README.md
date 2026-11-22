@@ -26,7 +26,7 @@ based-on: c5c31f8 的②实现与文档；工作区未提交的②改动（selec
 - [数据流、导入规则与验收方法](ai-docs/implementation.md)
 - [各类型 payload 字段](ai-docs/payloads.md)，供 ③④ 使用
 
-当前状态：转换、导入规则、远程写入和常驻扫描已实现。`ear-adapter dry-run` 使用内存并模拟重启重扫（兼容 `--dry-run`）；`ear-adapter once` 向①导入一轮；`ear-adapter run --interval 60` 常驻扫描，SIGTERM/SIGINT 在当前录音处理结束后退出。①临时不可用、提交结果未知均留待下轮，配置/授权错误退出非零。每段录音保持一个原子批次，超限不会拆批。
+当前状态：转换、导入规则、远程写入和常驻扫描已实现。`ear-adapter dry-run` 使用内存并模拟重启重扫（兼容 `--dry-run`）；`ear-adapter once` 向①导入一轮；`ear-adapter run --interval 60` 常驻扫描，SIGTERM/SIGINT 在当前录音处理结束后退出。①临时不可用、提交结果未知均留待下轮，配置/授权错误退出非零。首次音频导入保持一个原子批次，超限不会拆批；迟到 Context 独立追加。
 
 **工作区里未提交的增补（不是 c5c31f8 的内容；2026-11-11 晚仍在修复，2026-11-12 已修复并通过，见“验证状态”）**
 
@@ -39,7 +39,56 @@ based-on: c5c31f8 的②实现与文档；工作区未提交的②改动（selec
 
 `ear-adapter` 身份为 `adapter`，写权限由登记表 `writer=adapter` 决定；必须显式授予 `read_types=["audio_ref", "local_speaker", "voiceprint", "transcript_segment", "ambient_sound", "gps_point", "phone_info"]`，不需要订阅。每轮扫描先验证全部七种读权限，无授权不会被当作尚未导入。①当前 `init-identities` 只签发 api 管理员和 manage-worker，**没有 adapter 身份的签发流程**；正式部署由①负责人 / I 决定，本地测试用部署内 `AuthOperator.issue_principal("adapter", read_types=[...])`，不修改①部署脚本。
 
-真实①联调测试已加入 PostgreSQL/NATS 双门控，2026-11-11 本机运行通过；同日真实旧 Ear 数据经 `Runner` 写入测试夹具起的临时①：384 段导入、重扫无重复、4008 个声纹事件的引用全部可读（[实现说明 7.3](ai-docs/implementation.md)）。Compose 临时部署上用命令行跑真实数据、常驻模式的掉线恢复尚未做，也不是生产验收。③④⑤ 的首片在工作区各自实现且未提交；② 的 `Runner`（显式 capture id、合成 Evidence）已被 `services/storage/tests/test_attribution_runtime.py`（测试夹具起的临时 PostgreSQL/NATS/①）与 `tests/e2e/test_core_memory_loop.py`（`MemoryStorage`）用于合成入库联调，不是完整业务联调，也不是真实数据。旧 Ear 的列录音接口历史状态与 2026-11-05 内存试运行结果也保留在实现说明中。
+真实①联调测试已加入 PostgreSQL/NATS 双门控，2026-11-11 本机运行通过；同日真实旧 Ear 数据经 `Runner` 写入测试夹具起的临时①：384 段导入、重扫无重复、4008 个声纹事件的引用全部可读（[实现说明 7.3](ai-docs/implementation.md)）。该轮使用临时①的 Runner。独立识别进程配合常驻②的后续实测见[实现说明 7.4](ai-docs/implementation.md#74-独立识别进程的历史录音回放2026-11-14)。正式链路的 24 小时运行另行验收。② 的 `Runner`（显式 capture id、合成 Evidence）已被 `services/storage/tests/test_attribution_runtime.py`（测试夹具起的临时 PostgreSQL/NATS/①）与 `tests/e2e/test_core_memory_loop.py`（`MemoryStorage`）用于合成入库联调，不是完整业务联调，也不是真实数据。旧 Ear 的列录音接口历史状态与 2026-11-05 内存试运行结果也保留在实现说明中。
+
+### 独立运行旧 Ear 识别后端
+
+手机可通过 ear-ingest 直接把录音交给旧 Ear 的识别进程；② 从该进程的 Evidence 接口取结果。这样部署时，Octopus Manager 和原 Octopus 手机 App 均可退出。仍需旧 Ear 的识别代码、FFmpeg、可访问的 MOSS 语音服务及本地 ECAPA/PANNs 模型。以下从本机已有的模型配置建立独立实例，运行目录、数据库、凭据和 inbox 都独立。首次准备在本仓库根目录执行：
+
+```bash
+original="${EAR_LEGACY_SOURCE:?设置旧 Ear 源码目录}"
+profile="${EAR_LEGACY_CONFIG:?设置已有模型配置}"
+recognition="$HOME/Library/Application Support/EarRecognition"
+umask 077
+mkdir -p "$recognition"
+git clone --no-local "$original" "$recognition/source"
+git -C "$recognition/source" checkout --detach 7b21bb81c8f6caacd95bccd61584d1a81d88a066
+uv sync --project "$recognition/source" --frozen --no-default-groups --group speaker --group environment
+"$recognition/source/.venv/bin/python" deploy/legacy_ear.py \
+  --config "$profile" --service-dir "$EAR_LEGACY_SERVICE_DIR"
+```
+
+准备脚本把已配置的模型端点、检查点路径和对应的模型服务凭据复制到新实例，为②签发独立的只读凭据。已有的目标实例会受到保护。模型权重沿用配置中的路径，源模型服务必须能直连。启动命令可跨进程重启复用：
+
+```bash
+(cd "$recognition/source" && OCTOPUS_DATA_HOME="$recognition/data" HF_HUB_OFFLINE=1 NO_PROXY='*' no_proxy='*' \
+  .venv/bin/python -m uvicorn ear.standalone:app --host 127.0.0.1 --port 8794)
+```
+
+`GET http://127.0.0.1:8794/internal/api/health` 可检查后端存活。为隔离回放，另起接收进程，用独立 token 和端口（例如 8795），把 `EAR_INGEST_INBOX_ROOT` 设为 `$recognition/data/local/inbox/brain`，将 `EAR_INGEST_EVENT_URL` 指向 `http://127.0.0.1:8794/internal/api/ingest/brain-event`。② 的 `EAR_ADAPTER_DATA_ROOT` 设为 `$recognition/data/local`，`EAR_ADAPTER_EAR_URL` 设为 `http://127.0.0.1:8794/internal`。`EAR_ADAPTER_EAR_TOKEN` 从独立数据目录内 `local/service/<owner>/octopus-service-ear/secrets/gateway.json` 的 `service_tokens.adapter` 读取。
+
+隔离回放时，使用接收端的 `EAR_INGEST_TOKEN`，明确选择同一段的两份元数据。下例中，`device` 是 inbox 的设备目录名，`context_metadata` 和 `audio_metadata` 分别指向该段的 `phoneContext`、`richVoice` 元数据 JSON。两个命令各发送一份附件，先发送 Context 的顺序用于测试旧 Ear 等待音频的行为。
+
+```bash
+uv run python services/ingest/scripts/replay_record.py --device "$device" --url http://127.0.0.1:8795 "$context_metadata"
+uv run python services/ingest/scripts/replay_record.py --device "$device" --url http://127.0.0.1:8795 "$audio_metadata"
+```
+
+切换在用手机链路时，同步切换在用接收服务的 inbox 和事件目标，并让负责正式数据的②指向同一实例；只启动隔离实例，手机仍沿用已有接收端。旧识别后端属于兼容依赖，将来由自有识别实现接替。
+
+常驻②可配置 `EAR_ADAPTER_DELIVERY_DB=<inbox>/.ear-ingest/delivery.sqlite3`。Context 晚于首次音频入库时，下一轮扫描按回执补写新增 GPS 和手机状态，保留原转写与声纹。
+
+本机正式入口共用上述独立识别实例，MOSS 在 配置的模型服务器 上做归档转写与说话人分离。Mac 上的 `com.prts.ear-archive-adapter` 每 30 秒从识别实例向①导入。正式逐句数据类型是 `transcript_segment`。用只执行读取的脚本指定手机和带时区的起止时间，返回与区间相交的句子，每行一个 JSON。说话人标签仅在同一个 `speaker_scope` 内有效。
+
+```bash
+# 先配置 EAR_ADAPTER_STORAGE_URL 和 EAR_ADAPTER_STORAGE_TOKEN
+uv run python services/adapters/scripts/read_transcripts.py --device "$device" --start "$start" --end "$end"
+```
+
+
+Mac 的用户 LaunchAgent `com.prts.ear-recognition` 在登录或 8794 退出后按 30 秒周期启动识别实例，使用独立数据目录，并限制该进程连接 Octopus Manager。已在监听的实例可继续处理队列。
+
+可配置的仓库内启动入口与占位 LaunchAgent 见[部署说明](../../deploy/launchagents/README.md)。读回脚本逐句返回 `id`、`audio_ref_id` 和 `local_speaker_id`，便于核对稳定引用。
 
 ## GPS 逆地理编码
 

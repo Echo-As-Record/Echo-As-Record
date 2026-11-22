@@ -18,6 +18,11 @@ doc-type: guide
 5. ①相关：[存储职责与接口语义](modules/storage.md)。
 6. [已确认决策](decisions/mvp-confirmed-decisions.md)、[插件 MVP](design/plugins-mvp.md)、[架构 ADR](adr/0001-storage-and-runtime-modules.md)。原[审议清单](proposals/review-agenda.md)已转为结果导航。
 
+### 手机客户端
+
+- [手机客户端协议与固定测试向量](modules/phone-client-protocol.md)：Android 等新客户端的现状互操作依据。
+- [手机采集端入口与双端同步守则](https://github.com/Echo-As-Record/EarRecorder#双端同步守则)（独立仓库 EarRecorder）：各端状态、功能对照、改协议的规则、给 Android 实现者的入门。
+
 ### AI 开发入口
 
 阅读 [AGENTS.md](../AGENTS.md)，再从 [工程上下文索引](../ai-docs/README.md) 按需加载模块资料。不要一次加载全部文档，也不要跳过设计只依据代码猜测需求。

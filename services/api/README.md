@@ -10,12 +10,12 @@ based-on: 设计 v1.2、信号补充、插件 MVP、工作分解 v1.2；origin/d
 
 HEAD **`84d2d0f` 已包含 `origin/dev ba36543`（PR #20）及此前GPS**；不再处于697de3b/7f98132合并中。旧79e8dc3/2026-11-12的“第二批工作区未提交”仅是历史观察；本轮代码已提交并推送为85c8e5b至PR #16。保留③可信回执/`create_place`、v1.2、action-v2默认关闭与未知不自动重试；核心业务读取共17类（含rule_selection、gps_geocode），profile已增加extraction的gps_geocode读取授权，不自动修改已有库grant。
 
-- **已有真实入口**：`GET /v1/evidence/search` 与 flat只读 `/workspace/`；**`/v1/evidence` 和 `/v1/persons` 不是当前路径**，人物用 `/v1/records/person`，没有专用精确姓名API。浏览页不提供纠正、审核、执行或恢复操作；普通API令牌本身不是新增的只读scope。
+- **已有真实入口**：`GET /v1/evidence/search` 与 flat只读 `/workspace/`；另有 #23 的 `GET /v1/evidence`、`GET /v1/persons`（供 stdio MCP 使用，见“MCP”一节），两组证据查询并存。人物也可用 `/v1/records/person`。浏览页不提供纠正、审核、执行或恢复操作；普通API令牌本身不是新增的只读scope。
 - **已有独立部署（初始为空，现已导入3段）**：vm-remote项目 `ear-real-sample-20261118`，8服务运行、7healthy，relay无健康探针。初始部署报告已用真实Chromium、无mock验证普通用户鉴权、17类空结果和空页面。旧ear-dev未动。Docker内网未实际发布host ports，回环可达性依赖私有有界用户态转发；临时用户单元不跨重启持久化，重启后须操作者人工恢复并复验，**不宣称完整可复现或自动恢复**。
 - **真实最小链路已通过**：3段录音、1007条原始记录、125条需归属输入全部归属；重复导入0新增；真实Chromium无mock验证转写/检索/人物/历史。没有启动真实LLM/geocoder/外部动作，活动/产物仍为空。用户明确接受专用测试凭据具有额外写能力，实际请求限定GET；测试结束已撤销该身份并关闭专用源连接。
 - **最新已读验证**：默认全套exit0，**3209 passed/862 skipped/2 warnings**；GPS定向真实PG/NATS **10 passed**（两个八步均通过，但输入/模型/效果合成），另有347内存与926契约/API，范围重叠不相加。**代码85c8e5b远端四开关CI已成功：4058 passed/13 skipped/2 warnings，Node144通过**（run44342822642）。
 - **UI复审**：两个P2已修，Node144通过、Chromium5个合成检查通过（mock fetch，非线上验收）。最终API-only重部署报告 `/tmp/ear-real-ui-deployment-final-20261118.json` 已核对完成，83项HTTP/镜像检查和真实Chromium无mock验证通过，修复资产已在线。初始化材料保留；启动helper仍拒绝变化后的冻结镜像，更新回执采纳与重启恢复尚未完成，见恢复交接。
-- **MCP仅proposed，未安装/接线代码或启用客户端配置**。见[只读优先MCP提案](../../docs/proposals/mcp-interface.md)；实际证据、旧失败、重部署终态、访问及重启边界统一见[事实与恢复交接](../../ai-docs/plans/real-sample-web-mcp.md)。不是完整MVP或生产验收。
+- **#23 的 stdio MCP 已随 dev 合入**，含写流程工具，与下述只读优先提案（proposed）不一致，待负责人决定。见[只读优先MCP提案](../../docs/proposals/mcp-interface.md)；实际证据、旧失败、重部署终态、访问及重启边界统一见[事实与恢复交接](../../ai-docs/plans/real-sample-web-mcp.md)。不是完整MVP或生产验收。
 
 用户与管理员进入系统的服务端入口：读取时间线、活动、Markdown 产物、人物、地点、规则和建议；把用户操作写成结构化反馈（`feedback`）；把管理员操作写成插件管理反馈（`plugin_management_feedback`）并查询①写出的管理结果；执行已批准的外部动作并回写反馈；提供轻量插件管理页面/API。⑥只写反馈，不做推断，不直接改③④的业务数据，也不写插件登记和权限（那是①的单写职责）。
 
@@ -221,6 +221,32 @@ JSON 文件，必须是当前用户拥有的普通文件、权限不含 group/ot
   - 历史请求信封不变：受理写入的原始反馈里 `integration` 仍是 `pending_contract`（为了不改变请求指纹与已受理请求的重放），对外的 `attribution_result_query` 是响应与状态里的字段；真实 PostgreSQL 的重放测试把实际批次信封与手写的 79e8dc3 信封逐一对比过。
   - **`dependency` 命令**：写入后返回 `integration: "pending_contract"`，状态一直是 `pending`——**没有任何模块消费它**。
 - 状态里的 `status_scope` 固定为“反馈处理，不是外部执行”；受理或入队不是业务完成。
+
+### MCP（Codex 与 Claude Code）
+
+在仓库根目录启动客户端。仓库提供 Claude Code 的 `.mcp.json` 和 Codex 的 `.codex/config.toml`，使用同一启动命令，服务名都是 `ear`。Codex 需信任本项目，Claude Code 首次使用时按客户端提示启用。启动命令为 `uv run --frozen --package ear-api ear-mcp`。stdio 使用 stdout 传协议消息。
+
+Codex 项目配置可使用：
+
+```toml
+[mcp_servers.ear]
+command = "uv"
+args = ["run", "--frozen", "--package", "ear-api", "ear-mcp"]
+env_vars = ["EAR_API_URL", "EAR_API_TOKEN"]
+```
+
+
+按 §3.1–3.3 启动①和⑥。在启动 MCP 客户端的环境中仅设置 `EAR_API_URL`（默认 `http://127.0.0.1:8086`）和 `EAR_API_TOKEN`（⑥普通用户绑定的调用方令牌）。MCP 不读取 `deploy/.env`，文件缺失也能启动；不要把整个 dotenv 导入 MCP。远程⑥使用 HTTPS。重连 MCP 后可用；尚未配置令牌时可发现工具，数据调用会提示缺少凭据。
+
+| 工具 | 输入与返回 |
+|---|---|
+| `find_evidence` | UTC 半开区间、可选原话（原样子串）与条数（默认 5，最多 10）。返回带稳定 ID 的转写摘录、音频文件引用与相对秒数、局部说话人、声纹和可唯一确定的当前人物归属。无声纹或归属时相应字段为空。每次最多检查 100 条转写，空页也要检查 `next_cursor`，保持原查询条件续查。 |
+| `find_person` | 按完整姓名查当前人物，返回 ID，支持游标。同名时让用户明确目标。 |
+| `new_request_id` | 为一次新纠正分配 UUIDv7，调用方保存供重试。 |
+| `correct_attribution` | 用户确认后，传声纹 ID、原人物 ID、新人物 ID 和请求 ID；同一操作重试复用全部参数。纠正对象是声纹，同一声纹可能对应多条转写。 |
+| `feedback_status` | 用受理回执中的反馈 ID 查处理状态。③的纠正显示 `attribution_result_query`；③尚未写入结果时为 `pending`，①的登记表没有 `attribution_feedback_result` 时返回 503。 |
+
+查询对应⑥的 `GET /v1/evidence` 和 `GET /v1/persons`，沿用调用方对①的权限。录音位置依据②的 `audio_ref.file_ref`（相对 Octopus 数据根目录）；实际回听需要客户端能访问对应文件。MCP 只读取已入库的转写；手机收件、解析和常驻入库沿用各模块部署。
 
 ### 3.5 插件管理页
 

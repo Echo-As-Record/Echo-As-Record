@@ -24,6 +24,7 @@ def test_commit_unknown_replays_same_objects(monkeypatch):
     memory = MemoryStorage()
     local = memory.client("adapter")
     remote = Mock(spec=RemoteStorageClient)
+    remote.get_many.side_effect = local.get_many
     remote.get.side_effect = local.get
     remote.query.side_effect = local.query
     calls = []
@@ -59,6 +60,7 @@ def test_commit_unknown_replays_same_objects(monkeypatch):
 def test_remote_write_errors(error, kind, monkeypatch):
     local = MemoryStorage().client("adapter")
     remote = Mock(spec=RemoteStorageClient)
+    remote.get_many.side_effect = local.get_many
     remote.get.side_effect = local.get
     remote.query.side_effect = local.query
     remote.write.side_effect = error
@@ -112,6 +114,7 @@ def test_unknown_exhausted_then_next_round_finds_commit(monkeypatch):
     memory = MemoryStorage()
     local = memory.client("adapter")
     remote = Mock(spec=RemoteStorageClient)
+    remote.get_many.side_effect = local.get_many
     remote.get.side_effect = local.get
     remote.query.side_effect = local.query
     calls = []
@@ -142,6 +145,7 @@ def test_storage_get_unavailable_recovers_next_round():
     r = runner(remote)
     assert isinstance(r.run_once().outcomes[0], Pending)
     remote.write.assert_not_called()
+    remote.get_many.side_effect = local.get_many
     remote.get.side_effect = local.get
     remote.write.side_effect = lambda ops, context, **kwargs: local.write(ops, context)
     assert isinstance(r.run_once().outcomes[0], Ingested)

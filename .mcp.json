@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "ear": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--frozen", "--package", "ear-api", "ear-mcp"]
+    }
+  }
+}

@@ -3,9 +3,19 @@ name = "ear-api"
 version = "0.1.0"
 description = "Authenticated feedback and read-only user gateway"
 requires-python = ">=3.12"
-dependencies = ["ear-contracts", "ear-storage-client", "ear-storage", "ear-extraction", "fastapi>=0.115", "httpx>=0.28", "uvicorn>=0.34"]
+dependencies = [
+    "ear-contracts",
+    "ear-storage-client",
+    "ear-storage",
+    "ear-extraction",
+    "fastapi>=0.115",
+    "httpx>=0.28",
+    "uvicorn>=0.34",
+    "mcp>=1.12,<2",
+]
 
 [project.scripts]
+ear-mcp = "ear_api.mcp:main"
 ear-api = "ear_api.cli:main"
 
 [tool.uv.sources]

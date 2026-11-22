@@ -12,11 +12,11 @@ based-on: 设计 v1.2；信号补充；插件 MVP；工作分解 v1.2；origin/d
 
 ### 当前代码与路由
 
-- `app.py:evidence_search` 已挂 `GET /v1/evidence/search`，仅接受start/end/q/limit/cursor；时间UTC Z非空≤24h、q长1–256、limit默认10且≤10、每次当前身份经①授权。**没有 `/v1/evidence` 或 `/v1/persons` 当前路由**；人物用 `/v1/records/person`，精确姓名专用查询未实现。
+- `app.py:evidence_search` 已挂 `GET /v1/evidence/search`，仅接受start/end/q/limit/cursor；时间UTC Z非空≤24h、q长1–256、limit默认10且≤10、每次当前身份经①授权。另有合并 dev 带入的 #23 路由 `/v1/evidence`（快照内按时间分页，实现在 `transcript_search.py`）与 `/v1/persons`（精确姓名），供 stdio MCP 使用；两组证据查询并存，是否统一待决定。
 - `evidence.py` 用Reader.query/get而非全库snapshot；候选/页/Reader/返回对象计账及响应限额、短期查询绑定cursor、明确truncated/continuation、`live_best_effort`。10秒是同步调用之间的cooperative检查，不是硬deadline/严格取消/底层IO内存上限；cursor不授权、不绑定主体，重启/换worker失效。
 - `app.py:_WorkspaceFiles` 只服务flat的 `workspace.html`、`workspace.js`、`workspace.css`，挂载 `/workspace`；入口 `/workspace/`。旧 `static/workspace/` prototype不是运行时依赖，`/plugins/`保留。通用records完整获权payload与UI显示裁剪不同，不声称字段级服务端保护。
 - `business.py` 17类含静态rule_selection与gps_geocode；`core_deployment.RAW_TYPES`已加gps_geocode，extraction读策略引用它。新库profile缺权阻塞已修，不修改旧库grant，不等于源Evidence/embedding已授权。
-- 保留action-v2默认关闭、CLI不注入adapter、未知停自动重试、③可信回执投影及旧信封重放；只读viewer不提供审核/执行/恢复/纠正按钮。**MCP仅proposed，代码/stdio/客户端配置未安装接线**，不照PR #23整文件覆盖app/config/business或锁文件。
+- 保留action-v2默认关闭、CLI不注入adapter、未知停自动重试、③可信回执投影及旧信封重放；只读viewer不提供审核/执行/恢复/纠正按钮。**合并 dev 后，#23 的 MCP 代码、stdio 入口与客户端配置已在树内**；它含写流程工具，与[只读优先提案](../../../docs/proposals/mcp-interface.md)（proposed）不一致，待负责人决定。
 
 ### 本轮实际证据与未证明事项
 
@@ -163,6 +163,7 @@ plugin_management_feedback/result，不自动扩为业务类型。工作台可�
 | `attribution_results.py`（第二批） | ⑥ 对 ③ 命令的结果投影：`INTEGRATION = "attribution_result_query"`，`SUPPORTED` 为 `correct_attribution`、`confirm_attribution`、`add_reference`、`remove_reference`、`rename`、`create_place`；只读 ③ 写的 `attribution_feedback_result`，回执畸形或有歧义返回 503，读授权缺失 403 |
 | `execution_journal.py` | `ExecutionJournal`：私有 SQLite 恢复事实，仅 Linux 本地文件系统，持有 OS 文件锁，不是④的权威业务状态 |
 | `evidence.py` | 当前有界live字面证据查询；路由 `/v1/evidence/search`；合作式截止、签名查询游标与受限摘录，不是MCP实现 |
+| `transcript_search.py` | #23 的证据查询（dev 上原名 `evidence.py`，合并时改名以避开同名模块）；路由 `/v1/evidence`，供 MCP 使用 |
 | `static/` | 插件页 `index.html`、`app.js`、`core.js`、`styles.css`；当前只读viewer为flat的 `workspace.html`、`workspace.js`、`workspace.css`，不依赖旧workspace目录 |
 
 测试在 `services/api/tests/`：`conftest.py`（回环 TCP 假存储）、`test_api.py`、`test_execution.py`、`test_hardening.py`；第二批新增 `test_execution_protocol.py`（`ExecutionPump` 与证据校验）、`test_execution_http_v2.py`（HTTP 接线）；`tests/ui/core.test.js`、`tests/ui/page.test.js`（Node 纯逻辑与假 DOM）。动作的真实运行测试在 `services/storage/tests/test_action_protocol_runtime.py`（需 `EAR_RUN_POSTGRES_TESTS=1` 与 `EAR_RUN_NATS_TESTS=1`，临时容器、回环 HTTP、真实 ④ consumer、合成适配器），④ 侧在 `services/extraction/tests/test_execution_protocol.py`；合成八步在仓库根 `tests/test_mvp_eight_steps_runtime.py`。部署烟测在仓库根 `tests/test_api_gateway_deployment.py`。当前evidence/flat viewer测试另见 `test_evidence.py`、`test_workspace.py`、`tests/ui/workspace-flat.test.js`、`tests/ui/workspace-flat-browser.test.js`；后者opt-in被跳过不等于已跑真实浏览器验收。
@@ -262,3 +263,11 @@ EAR_RUN_API_GATEWAY_DEPLOY_TESTS=1 EAR_API_TEST_IMAGE=… EAR_GATEWAY_TEST_IMAGE
 ## 9. 刷新时机
 
 全套验收重跑后更新第 5 节；真实适配器接入或 action-v2 的默认启用方式确定后更新第 3、3A、4 节并重新评估 501；新的四开关全量验收结果由主 agent 补入[交接第 7 节](../../../ai-docs/plans/mvp-runtime-handoff.md)；同步[全局实施计划第 6 节](../../../ai-docs/plans/mvp-implementation.md)。
+
+## MCP 接入与验证
+
+`src/ear_api/mcp.py` 注册 stdio 工具，经⑥ HTTP 使用同一绑定。`transcript_search.py` 在一次快照内按时间分页、筛选原话并解析录音和人物归属。跨工具调用使用当前数据。反馈提交、重试和状态沿用现有业务函数；③仍待消费契约。接口与客户端配置见[模块入口](../README.md)。
+
+`uv run pytest services/api/tests/test_mcp.py` 启动真实 stdio 子进程、回环⑥和内存模拟①，用合成记录验证发现工具、查询分页、片段偏移、归属纠正重放及状态。
+
+MCP 启动只使用客户端注入的 `EAR_API_URL`、`EAR_API_TOKEN`，不读取 `deploy/.env`。`test_project_command_lists_tools_without_dotenv` 使用 `.mcp.json` 的真实命令验证 stdio 初始化与五个工具；完整 HTTP 数据闭环仍由 `test_stdio_workflow` 验证，需允许回环 TCP 监听。

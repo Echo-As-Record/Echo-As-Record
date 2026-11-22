@@ -263,3 +263,36 @@ def test_inbox_locator_ignores_date_directory(tmp_path: Path, make_evidence: Mak
     found = InboxAudioLocator(tmp_path).locate(capture)
     assert found is not None
     assert found.path.startswith("inbox/brain/ios-test/2026-10-27/")
+
+
+def test_late_context_receipt_after_audio_import(make_evidence, config, tmp_path):
+    import sqlite3
+    from contextlib import closing
+
+    evidence = make_evidence()
+    audio_only = {
+        **evidence,
+        "evidence": [
+            item
+            for item in evidence["evidence"]
+            if item["ref"]["type"]
+            not in {"context_snapshot", "context_event", "sensor_observation"}
+        ],
+    }
+    source = FakeSource({"cap-1": audio_only})
+    storage = MemoryStorage()
+    runner = _runner(storage, source, config)
+    runner.delivery_db = tmp_path / "delivery.sqlite3"
+    with closing(sqlite3.connect(runner.delivery_db)) as db:
+        db.execute("CREATE TABLE receipts(seq INTEGER PRIMARY KEY, capture_id TEXT)")
+        assert isinstance(runner.run_once().outcomes[0], Ingested)
+        assert runner.run_once().outcomes == []
+        reads = source.embedding_reads
+        source.captures["cap-1"] = evidence
+        db.execute("INSERT INTO receipts(capture_id) VALUES ('cap-1')")
+        db.commit()
+        outcome = runner.run_once().outcomes[0]
+        assert isinstance(outcome, Ingested)
+        assert set(outcome.written) == {"gps_point", "phone_info"}
+        assert source.embedding_reads == reads
+        assert isinstance(_runner(storage, source, config).run_once().outcomes[0], AlreadyIngested)
