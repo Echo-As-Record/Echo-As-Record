@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 
 const STATIC = path.join(__dirname, '..', '..', 'src', 'ear_api', 'static');
 const core = require(path.join(STATIC, 'core.js'));
@@ -50,7 +51,7 @@ function makeFetch(handler) {
     if (r.hang) return new Promise(function (_, rej) { init.signal.addEventListener('abort', function () { rej(new Error('aborted')); }); });
     const status = r.status === undefined ? 200 : r.status;
     const text = r.text !== undefined ? r.text : JSON.stringify(r.body === undefined ? {} : r.body);
-    return { ok: status >= 200 && status < 300, status: status, text: async function () { return text; } };
+    return { ok: status >= 200 && status < 300, status: status, text: async function () { return text; }, json: async function () { return JSON.parse(text); } };
   }
   fetchFn.calls = calls;
   return fetchFn;
@@ -350,8 +351,8 @@ function findButtons(root, label) {
   return out;
 }
 
-function makeDom() {
-  const html = read('index.html');
+function makeDom(file = 'index.html') {
+  const html = read(file);
   const nodes = new Map();
   const re = /<(\w+)([^>]*?)\sid="([^"]+)"([^>]*)>/g;
   let m;
@@ -411,7 +412,7 @@ test('page: 普通用户看不到管理界面，且不会发出任何管理请�
     return c.url === '/v1/me' ? { body: { subject: subject, role: 'user' } } : { status: 500 };
   });
   await connectAs(env);
-  assert.deepEqual(env.f.calls.map(function (c) { return c.url; }), ['/v1/me']);
+  assert.deepEqual(env.f.calls.map(function (c) { return c.url; }), ['/v1/session', '/v1/me']);
   assert.equal(env.dom.n('user-panel').hidden, false);
   assert.equal(env.dom.n('admin-area').hidden, true);
   assert.equal(env.dom.n('token-input').value, '');
@@ -420,7 +421,7 @@ test('page: 普通用户看不到管理界面，且不会发出任何管理请�
   await env.page.startSubmit({ action: 'status', module: 'demo' }, false);
   await env.page.loadTasks(true);
   await env.page.loadPlugins(true);
-  assert.equal(env.f.calls.length, 1);
+  assert.equal(env.f.calls.length, 2);
   assert.deepEqual(env.dom.stored, []);
 });
 
@@ -688,4 +689,157 @@ test('page: 历史补处理只填了一端时仍被拒绝，不会替用户补�
   assert.equal(env.dom.n('confirm-dialog').open, false);
   assert.equal(posts(), 0);
   assert.equal(env.dom.n('range-end').value, '');
+});
+
+test('page: test mode auto-connects ordinary user, hides login and explicitly disables admin without management requests', async () => {
+  const env = bootPage(c => c.url === '/v1/session' ? {body:{test_no_auth:true}} : {body:{subject:'local-test',role:'user'}});
+  await env.page.discovery; await settle();
+  assert.deepEqual(env.f.calls.map(c=>c.url), ['/v1/session','/v1/me']);
+  assert.ok(env.f.calls.every(c=>!c.headers.Authorization && c.method==='GET' && c.init.mode==='same-origin'));
+  assert.equal(env.dom.n('connect-form').hidden,true);
+  assert.equal(env.dom.n('auth-note').hidden,true);
+  assert.equal(env.dom.n('user-panel').hidden,false);
+  assert.equal(env.dom.n('admin-area').hidden,true);
+  assert.ok(env.dom.n('user-note').textContent.includes('插件管理不可用'));
+});
+
+test('page: explicit admin noauth auto-connects and reads real management routes without bearer or writes', async () => {
+  const env = bootPage(c => {
+    if (c.url === '/v1/session') return {body:{test_no_auth:true}};
+    if (c.url === '/v1/me') return {body:{subject:'fixed-admin',role:'admin'}};
+    if (c.url.startsWith('/v1/plugins')) return {body:PLUGIN_LIST};
+    return {body:{items:[],next_cursor:null}};
+  });
+  await env.page.discovery; await settle();
+  assert.equal(env.dom.n('connect-form').hidden,true);
+  assert.equal(env.dom.n('auth-note').hidden,true);
+  assert.equal(env.dom.n('user-panel').hidden,true);
+  assert.equal(env.dom.n('admin-area').hidden,false);
+  assert.match(env.dom.n('session-info').textContent,/管理请求使用管理员，业务数据使用普通用户/);
+  assert.doesNotMatch(env.dom.n('session-info').textContent,/无管理权限|插件管理不可用/);
+  assert.ok(env.f.calls.some(c=>c.url.startsWith('/v1/plugins')));
+  assert.ok(env.f.calls.some(c=>c.url.startsWith('/v1/management/results')));
+  assert.ok(env.f.calls.every(c=>c.method==='GET' && !c.headers.Authorization));
+});
+
+// ------------------------------------------------------------ Model settings (standalone page)
+
+function modelSettingsPage(handler) {
+  const dom = makeDom('model-settings.html');
+  const timers = makeTimers();
+  const fetch = makeFetch(handler);
+  const events = new Map();
+  dom.win.addEventListener = (name, callback) => events.set(name, callback);
+  vm.runInNewContext(read('model-settings.js'), {
+    document: dom.doc, window: dom.win, ...timers, fetch, AbortController, AbortSignal,
+  });
+  const { n } = dom;
+  return {
+    dom, fetch, events, n,
+    connect() { n('token-input').value = TOKEN; n('connect-form').dispatch('submit'); },
+    save(model) { n('model-input').value = model; n('model-form').dispatch('submit'); },
+  };
+}
+
+const initialModel = { model: 'gpt-6-luna', revision: 1 };
+
+test('model settings: standalone assets and local navigation comply with CSP', () => {
+  const html = read('model-settings.html');
+  assert.match(read('index.html'), /href="\/model-settings\/"/);
+  assert.match(html, /href="\/plugins\/"/);
+  assert.match(html, /<code>https:\/\/newapi\.hangjuan\.cn<\/code>/);
+  assert.match(html, /本次未调用模型|保存不会调用模型/);
+  assert.match(html, /下次启动/);
+  assert.doesNotMatch(html, /<style|\sstyle=|\son\w+=|\b(?:href|src)="https?:/i);
+  assert.deepEqual(Array.from(html.matchAll(/<script[^>]*>/gi), m => m[0]),
+    ['<script src="model-settings.js" defer>']);
+  assert.match(html, /href="model-settings.css"/);
+  assert.doesNotMatch(html, /<input[^>]*\sname=/i);
+  assert.doesNotMatch(read('model-settings.css'), /@import|url\(/i);
+  assert.doesNotMatch(read('model-settings.js'), /innerHTML|outerHTML|insertAdjacentHTML|eval\(|localStorage|sessionStorage|indexedDB|document\.cookie|console\./);
+});
+
+test('model settings: disabled in no-auth mode, including admin-style session', async () => {
+  const page = modelSettingsPage(() => ({ body: { test_no_auth: true } }));
+  await settle(2);
+  assert.equal(page.n('connect-form').hidden, true);
+  page.connect();
+  page.save('alternate');
+  await settle(2);
+  assert.equal(page.n('edit-area').hidden, true);
+  assert.match(page.n('status').textContent, /免登录测试模式不开放/);
+  assert.deepEqual(page.fetch.calls.map(c => c.url), ['/v1/session']);
+  assert.equal(page.fetch.calls[0].headers.Authorization, undefined);
+});
+
+test('model settings: bearer is memory only; same-origin CAS saves and does not retry', async () => {
+  let stored = initialModel;
+  let forceConflict = false;
+  const page = modelSettingsPage(c => {
+    if (c.url === '/v1/session') return { body: { test_no_auth: false } };
+    if (c.method === 'GET') return { body: stored };
+    if (forceConflict) return { status: 409, body: { code: 'model_settings_conflict' } };
+    stored = { model: c.body.model, revision: c.body.revision + 1 };
+    return { body: stored };
+  });
+  await settle(2);
+  page.connect();
+  await settle(2);
+  assert.match(page.n('status').textContent, /不是网关运行状态/);
+  assert.equal(page.n('token-input').value, '');
+  assert.equal(page.n('saved-model').textContent, 'gpt-6-luna');
+  page.save('https://other.invalid');
+  assert.match(page.n('status').textContent, /不要输入供应商地址/);
+  page.save('valid/model:variant@v1+latest');
+  await settle(2);
+  assert.equal(page.n('saved-model').textContent, stored.model);
+  assert.match(page.n('status').textContent, /下次启动.*未调用模型/);
+  assert.equal(page.n('saved-revision').textContent, '2');
+  const put = page.fetch.calls.find(c => c.method === 'PUT');
+  assert.deepEqual(put.body, { model: stored.model, revision: 1 });
+  assert.equal(put.url, '/v1/settings/model');
+  assert.equal(put.headers.Authorization, 'Bearer ' + TOKEN);
+  assert.equal(put.init.mode, 'same-origin');
+  assert.equal(put.init.redirect, 'error');
+  assert.equal(put.init.cache, 'no-store');
+  assert.equal(put.init.credentials, 'omit');
+  assert.equal(put.init.referrerPolicy, 'no-referrer');
+  forceConflict = true;
+  page.save('stale');
+  await settle(2);
+  assert.match(page.n('status').textContent, /修订已变化，未保存/);
+  assert.equal(page.n('model-form').hidden, true);
+  page.save('ignored');
+  assert.equal(page.fetch.calls.filter(c => c.method === 'PUT').length, 2);
+  page.n('reload-btn').dispatch('click');
+  await settle(2);
+  assert.equal(page.n('model-form').hidden, false);
+  page.events.get('pagehide')();
+  assert.equal(page.n('edit-area').hidden, true);
+  assert.equal(page.n('saved-model').textContent, '—');
+  assert.doesNotMatch(allText(page.dom), new RegExp(TOKEN));
+  assert.deepEqual(page.dom.stored, []);
+  const count = page.fetch.calls.length;
+  page.n('reload-btn').dispatch('click');
+  assert.equal(page.fetch.calls.length, count);
+});
+
+test('model settings: exact high revisions and fail-closed responses', async () => {
+  let roleDenied = false;
+  const page = modelSettingsPage(c => {
+    if (c.url === '/v1/session') return { body: { test_no_auth: false } };
+    return roleDenied ? { status: 403, text: '<b>untrusted upstream</b>' } :
+      { text: '{"model":"gpt-6-luna","revision":9007199254740993}' };
+  });
+  await settle(2);
+  page.connect();
+  await settle(2);
+  assert.equal(page.n('saved-revision').textContent, '9007199254740993');
+  roleDenied = true;
+  page.save('alternate');
+  await settle(2);
+  assert.match(page.fetch.calls.at(-1).init.body, /"revision":9007199254740993}/);
+  assert.equal(page.n('edit-area').hidden, true);
+  assert.match(page.n('status').textContent, /没有当前管理员权限/);
+  assert.doesNotMatch(allText(page.dom), /untrusted upstream/);
 });

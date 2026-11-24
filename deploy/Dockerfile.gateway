@@ -9,6 +9,8 @@ COPY libs/ear_storage_client/pyproject.toml libs/ear_storage_client/pyproject.to
 COPY services/storage/pyproject.toml services/storage/pyproject.toml
 COPY services/ingest/pyproject.toml services/ingest/pyproject.toml
 COPY services/adapters/pyproject.toml services/adapters/pyproject.toml
+COPY services/attribution/pyproject.toml services/attribution/pyproject.toml
+COPY services/dependency/pyproject.toml services/dependency/pyproject.toml
 COPY services/extraction/pyproject.toml services/extraction/pyproject.toml
 COPY services/api/pyproject.toml services/api/pyproject.toml
 COPY services/llm_gateway/pyproject.toml services/llm_gateway/pyproject.toml

@@ -7,27 +7,34 @@ from typing import Any
 
 from ear_contracts import SemanticRecord, VersionRef, new_id
 from ear_storage_client import (
+    AssertTypeRevision,
     Create,
     Reader,
     RegisterDependencies,
     Supersede,
+    TimeRange,
     Update,
     WriteOp,
 )
 
-from ear_extraction.artifacts import create_artifact, dependencies, validate_generated
+from ear_extraction.artifacts import dependencies, transcript_dependencies, validate_generated
 from ear_extraction.domain import (
     Blocked,
     Command,
     Generated,
     Interval,
     Rule,
-    Selection,
 )
 from ear_extraction.long_input import generate, segment
 from ear_extraction.persistence import range_of, records, semantic
+from ear_extraction.reevaluation import ReevaluationPlan, terminate, unavailable
 from ear_extraction.rules import eligible
-from ear_extraction.segmentation import check_refs, inputs
+from ear_extraction.segmentation import Inputs, inputs, raw_inputs, validate_anonymous_activity
+from ear_extraction.selection import (
+    create_selection,
+    load_rule_candidates,
+    validate_summary_rule_config,
+)
 from ear_extraction.suggestions import create_suggestion, pending_replacements
 
 Ask = Callable[[str, dict[str, Any], type], Any]
@@ -56,28 +63,60 @@ def preview_reextract(reader: Reader, interval: Interval) -> dict:
     }
 
 
+def _reextract_ops(reader: Reader, command: Command, interval: Interval) -> list[WriteOp]:
+    ops: list[WriteOp] = []
+    preview = preview_reextract(reader, interval)
+    if preview["versions"] != command.preview:
+        raise Blocked("reextract_preview_changed")
+    assert command.preview is not None
+    for id, version in command.preview.items():
+        r = reader.get(id)
+        assert isinstance(r, SemanticRecord)
+        ops.append(Supersede(r.data_type, id, version))
+    # Preserve the public preview's original version-set meaning (⑥ also
+    # computes it). Selections are internal derived state, not user edits;
+    # retire their current snapshot versions with CAS in this same batch.
+    activity_ids = {r.id for r in records(reader, "activity", interval)}
+    ops.extend(
+        Supersede("rule_selection", r.id, r.version)
+        for r in records(reader, "rule_selection")
+        if r.payload.get("activity_id") in activity_ids
+    )
+    return ops
+
+
 def extract_plan(
-    reader: Reader, command: Command, run_id: str, ask: Ask
+    reader: Reader,
+    command: Command,
+    run_id: str,
+    ask: Ask,
+    *,
+    transcript_only: bool = False,
+    transcript_summary_rule_id: str | None = None,
+    release_snapshot: Callable[[], None] | None = None,
 ) -> tuple[list[WriteOp], dict]:
+    validate_summary_rule_config(transcript_only, transcript_summary_rule_id)
     assert command.interval is not None
     interval = command.interval
-    data = inputs(reader, interval)
-    result = segment(ask, interval, data.raw)
-    ops: list[WriteOp] = []
-    if command.kind == "reextract":
-        preview = preview_reextract(reader, interval)
-        if preview["versions"] != command.preview:
-            raise Blocked("reextract_preview_changed")
-        assert command.preview is not None
-        for id, version in command.preview.items():
-            r = reader.get(id)
-            assert isinstance(r, SemanticRecord)
-            ops.append(Supersede(r.data_type, id, version))
-    rules = records(reader, "rule")
+    ops = (
+        _reextract_ops(reader, command, interval)
+        if transcript_only and command.kind == "reextract"
+        else []
+    )
+    raw = raw_inputs(reader, interval, transcript_only=transcript_only)
+    candidates = None
+    if transcript_only:
+        candidates = load_rule_candidates(reader, summary_rule_id=transcript_summary_rule_id)
+        # All reads (including any reextract CAS versions) are now materialized.
+        # A model call may outlast the snapshot lease; commit uses the captured guards.
+        if release_snapshot is not None:
+            release_snapshot()
+    result = segment(ask, interval, raw, transcript_only=transcript_only)
+    if not transcript_only and command.kind == "reextract":
+        ops = _reextract_ops(reader, command, interval)
     for activity in result.activities:
         # Keep segmentation independent from attribution and only validate its raw references.
-        if "[[" in activity.title_md + activity.description_md:
-            raise ValueError("segmentation_must_use_anonymous_titles")
+        validate_anonymous_activity(activity)
         aid = new_id()
         ops.append(
             Create(
@@ -88,36 +127,27 @@ def extract_plan(
                 event_end=activity.end,
             )
         )
-        current = inputs(reader, activity)
-        available = [r for r in rules if eligible(Rule.model_validate(r.payload), aid)]
-        if not available:
-            continue
-        selected: Selection = ask(
-            "selection",
-            {
-                "activity": activity.model_dump(mode="json"),
-                **{**current.public(), "evidence": []},
-                "rules": [r.model_dump(mode="json") for r in available],
-            },
-            Selection,
-        )
-        if len(set(selected.rule_ids)) != len(selected.rule_ids):
-            raise ValueError("duplicate_selected_rules")
-        by_id = {r.id: r for r in available}
-        if not set(selected.rule_ids) <= by_id.keys():
-            raise ValueError("unknown_selected_rule")
-        for rid in selected.rule_ids:
-            rule = by_id[rid]
-            generated = generate(
-                ask,
-                {
-                    "activity": activity.model_dump(mode="json"),
-                    "rule": rule.model_dump(mode="json"),
-                    **current.public(),
-                },
+        if transcript_only:
+            time = TimeRange(activity.start, activity.end)
+            current = Inputs(
+                [r for r in raw if time.overlaps(r.event_start, r.event_end)],
+                [],
+                [],
+                transcript_only=True,
             )
-            validate_generated(generated, Rule.model_validate(rule.payload), current, rejudge=False)
-            ops.extend(create_artifact(new_id(), aid, activity, rule, generated, current, run_id))
+            # Boundary placement and any merge used the entire segmentation input,
+            # not just the records cited in this activity or consumed by its rules.
+            deps = transcript_dependencies(raw)
+        else:
+            current = inputs(reader, activity)
+            deps = []
+        ops.append(RegisterDependencies("activity", aid, deps))
+        rules = candidates if candidates is not None else load_rule_candidates(reader)
+        ops.extend(create_selection(rules, aid, activity, current, run_id, ask))
+    # In this profile keep only outcome metadata, not free-form audit text that
+    # could contain the verbatim transcript. Product Markdown is still persisted.
+    if transcript_only:
+        return ops, {"activities": len(result.activities)}
     return ops, {"empty_reason": result.empty_reason, "activities": len(result.activities)}
 
 
@@ -164,6 +194,7 @@ def apply_plan(
                     "action_reason": result.action_reason,
                     "run_id": run_id,
                     "manual": True,
+                    "source": "manual",
                 },
                 event_start=interval.start,
                 event_end=interval.end,
@@ -171,14 +202,9 @@ def apply_plan(
             RegisterDependencies(
                 "artifact",
                 id,
-                [
-                    VersionRef(data_type="activity", id=activity.id, version=activity.version),
-                    VersionRef(data_type="rule", id=rule_id, version=version),
-                    *[
-                        VersionRef(data_type="attribution", id=a.id, version=a.version)
-                        for a in data.attributions
-                    ],
-                ],
+                dependencies(
+                    activity, VersionRef(data_type="rule", id=rule_id, version=version), data
+                ),
             ),
             *create_suggestion(id, 1, result, interval),
         ]
@@ -186,13 +212,23 @@ def apply_plan(
     return ops, {"artifact_id": id}
 
 
-def rejudge_plan(reader: Reader, command: Command, ask: Ask) -> tuple[list[WriteOp], dict]:
-    artifact = semantic(reader, command.target_id, "artifact")
-    activity = semantic(reader, artifact.payload["activity_id"], "activity")
-    rule = semantic(reader, artifact.payload["rule_id"], "rule")
-    if rule.version != artifact.payload["rule_version"]:
-        # Shared contract is intentionally not weakened here.
-        raise Blocked("historical_rule_dependency_unsupported")
+def rejudge_plan(reader: Reader, command: Command, ask: Ask) -> ReevaluationPlan:
+    artifact = reader.get(command.target_id) if command.target_id else None
+    if not isinstance(artifact, SemanticRecord):
+        return unavailable(None, "artifact_missing")
+    if artifact.superseded:
+        return unavailable(artifact, "artifact_terminated")
+    guard = AssertTypeRevision("rule", reader.type_revision("rule"))
+    rule = reader.get(artifact.payload["rule_id"])
+    if not isinstance(rule, SemanticRecord) or rule.superseded:
+        return terminate(
+            artifact, "rule_unavailable", [guard, *pending_replacements(reader, {artifact.id})]
+        )
+    activity = reader.get(artifact.payload["activity_id"])
+    if not isinstance(activity, SemanticRecord) or activity.superseded:
+        return terminate(
+            artifact, "activity_unavailable", [guard, *pending_replacements(reader, {artifact.id})]
+        )
     data = inputs(reader, range_of(activity))
     result: Generated = ask(
         "reevaluation",
@@ -206,27 +242,32 @@ def rejudge_plan(reader: Reader, command: Command, ask: Ask) -> tuple[list[Write
         Generated,
     )
     validate_generated(result, Rule.model_validate(rule.payload), data, rejudge=True)
-    changed = not result.unchanged and result.body_md != artifact.payload["body_md"]
-    ops: list[WriteOp] = []
-    if changed:
-        ops.append(
-            Update(
-                "artifact",
-                artifact.id,
-                artifact.version,
-                {
-                    **artifact.payload,
-                    "body_md": result.body_md,
-                    "evidence_ids": result.evidence_ids,
-                    "action_reason": result.action_reason,
-                },
-            )
+    rule_changed = rule.version != artifact.payload["rule_version"]
+    if result.unchanged and rule_changed:
+        # A new rule may change action policy while leaving Markdown identical.
+        # Require a complete result rather than copying old pending actions.
+        raise ValueError("changed_rule_requires_complete_result")
+    # Keep old evidence/text byte-for-byte when unchanged. No reverse parsing of
+    # legacy markers and no rewriting historical rows. Rule provenance is current.
+    payload = {**artifact.payload, "rule_version": rule.version}
+    body_changed = not result.unchanged and result.body_md != artifact.payload["body_md"]
+    if body_changed or (rule_changed and not result.unchanged):
+        payload.update(
+            body_md=result.body_md,
+            evidence_ids=result.evidence_ids,
+            action_reason=result.action_reason,
         )
+    changed = payload != artifact.payload
+    ops: list[WriteOp] = [guard, Update("artifact", artifact.id, artifact.version, payload)]
+    if changed:
         ops.extend(pending_replacements(reader, {artifact.id}))
         ops.extend(create_suggestion(artifact.id, artifact.version + 1, result, range_of(activity)))
-    else:
-        # A declared unchanged result cannot preserve now-invalid identity references.
-        check_refs(artifact.payload["body_md"], data.entities)
-        ops.append(Update("artifact", artifact.id, artifact.version, artifact.payload))
     ops.append(RegisterDependencies("artifact", artifact.id, dependencies(activity, rule, data)))
-    return ops, {"artifact_id": artifact.id, "outcome": "changed" if changed else "unchanged"}
+    outcome = "changed" if changed else "unchanged"
+    return ReevaluationPlan(
+        ops,
+        {"artifact_id": artifact.id, "outcome": outcome},
+        artifact.version,
+        artifact.version + int(changed),
+        outcome,
+    )

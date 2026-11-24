@@ -1,0 +1,19 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+  line-height: 1.6;
+}
+body { margin: 0; }
+main {
+  max-width: 42rem;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+form, section { margin-block: 1rem; }
+label { display: block; font-weight: 600; }
+input, button { font: inherit; margin-block: .25rem; padding: .4rem .65rem; }
+input { box-sizing: border-box; max-width: 100%; width: 22rem; }
+button { cursor: pointer; }
+button:disabled { cursor: default; }
+code { overflow-wrap: anywhere; }
+[hidden] { display: none !important; }

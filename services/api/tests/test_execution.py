@@ -396,6 +396,7 @@ def test_journal_is_protected_single_owner_and_corruption_fails_closed(tmp_path)
 def test_journal_refuses_insecure_directory_symlinks_hardlinks_and_other_schema(tmp_path):
     insecure = tmp_path / "insecure"
     insecure.mkdir(mode=0o755)
+    insecure.chmod(0o755)  # Exercise insecure mode even under an operator umask of 077.
     with pytest.raises(JournalUnavailable):
         ExecutionJournal(insecure / "journal.db")
     path = tmp_path / "journal.db"

@@ -1,4 +1,4 @@
-"""纯函数：一段录音的 Evidence → 统一输入格式的原始数据。
+"""纯函数：一段录音 → 统一输入格式的原始数据（旧 Evidence 或已校验的本地结果）。
 
 不读写 ①、不发网络请求、不读文件；需要的外部数据（声纹向量、音频文件位置）由 runtime 先取好传入。
 各类型 payload 的字段说明见 ai-docs/payloads.md。
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -129,9 +129,9 @@ def _digest(value: Any) -> str:
 
 
 class _Builder:
-    def __init__(self, capture: EarCapture, config: AdapterConfig) -> None:
+    def __init__(self, device_id: str, config: AdapterConfig) -> None:
         self.config = config
-        self.source = Source(device=capture.instance_id, channel=config.channel, user=config.user)
+        self.source = Source(device=device_id, channel=config.channel, user=config.user)
         self.records: list[NewRawRecord] = []
         self._keys: set[tuple[str, str]] = set()
 
@@ -172,55 +172,57 @@ def _span(items: Iterable[SpeechSegment]) -> tuple[datetime, datetime] | None:
     return min(s.started_at for s in items), max(s.ended_at for s in items)
 
 
-def capture_records(
-    evidence: CaptureEvidence,
+@dataclass(frozen=True, slots=True)
+class SpeakerResult:
+    """One local speaker. No embedding is a successful result with no usable vector."""
+
+    resolution_id: str
+    diarization_scope_id: str
+    local_speaker_id: str
+    evidence_segment_ids: tuple[str, ...]
+    embedding: Embedding | None = None
+    sample_quality: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AmbientEvent:
+    """An ambient detection, independent of ASR chunk boundaries."""
+
+    audio_event_id: str
+    started_at: datetime
+    ended_at: datetime
+    original_label: str
+    taxonomy: str
+    model_version: str
+
+
+def audio_records(
     *,
-    audio_file: FileRef,
-    embeddings: Mapping[str, Embedding],
     config: AdapterConfig,
+    device_id: str,
+    ckey: str,
+    started_at: datetime,
+    ended_at: datetime,
+    audio_file: FileRef,
+    media_type: str,
+    upstream: Mapping[str, Any],
+    chunks: Mapping[str, AudioChunk],
+    segments: Sequence[SpeechSegment],
+    resolutions: Sequence[SpeakerResult],
+    events: Sequence[AudioEvent | AmbientEvent],
 ) -> list[NewRawRecord]:
-    """把一段录音转成一批原始数据，顺序为 audio_ref、local_speaker、voiceprint、
-    transcript_segment、ambient_sound、gps_point、phone_info。
-
-    embeddings：resolution_id → 声纹向量，必须包含所有带 embedding_ref 的说话人结果。
-    """
-    state = readiness(evidence)
-    if not isinstance(state, Ready):
-        raise ValueError(f"录音尚不能导入：{state.reason}")
-    capture = state.capture
-    assert evidence.ended_at is not None
-    capture_end = capture.ended_at or evidence.ended_at
-    ckey = capture_key(capture)
-    b = _Builder(capture, config)
-
-    chunks = {c.audio_chunk_id: c for c in evidence.of_type("audio_chunk", AudioChunk)}
-    segments = sorted(
-        evidence.of_type("speech_segment", SpeechSegment),
-        key=lambda s: (s.started_at, s.speech_segment_id),
-    )
-    resolutions = sorted(
-        evidence.of_type("speaker_resolution", SpeakerResolution), key=lambda r: r.resolution_id
-    )
-    events = sorted(
-        evidence.of_type("audio_event", AudioEvent), key=lambda e: (e.started_at, e.audio_event_id)
-    )
+    """Pure conversion of prepared audio results; caller owns readiness/validation."""
+    b = _Builder(device_id, config)
+    segments = sorted(segments, key=lambda s: (s.started_at, s.speech_segment_id))
+    resolutions = sorted(resolutions, key=lambda r: r.resolution_id)
+    events = sorted(events, key=lambda e: (e.started_at, e.audio_event_id))
 
     audio_id = b.add(
         "audio_ref",
         ckey,
-        capture.started_at,
-        capture_end,
-        {
-            "file_ref": audio_file.to_json(),
-            "media_type": capture.audio_ref.media_type,
-            "upstream": {
-                "service": "ear",
-                "capture_id": capture.capture_id,
-                "record_id": capture.record_id,
-                "group_id": capture.group_id,
-                "pipeline_run_id": evidence.pipeline_run_id,
-            },
-        },
+        started_at,
+        ended_at,
+        {"file_ref": audio_file.to_json(), "media_type": media_type, "upstream": dict(upstream)},
     )
 
     # 局部说话人：只在一个分离作用域（旧 Ear 的音频块）内有意义。
@@ -236,9 +238,7 @@ def capture_records(
         span = _span(by_speaker.get((scope, label), ()))
         if span is None:
             chunk = chunks.get(scope)
-            span = (
-                (chunk.started_at, chunk.ended_at) if chunk else (capture.started_at, capture_end)
-            )
+            span = (chunk.started_at, chunk.ended_at) if chunk else (started_at, ended_at)
         speaker_ids[(scope, label)] = b.add(
             "local_speaker",
             f"{ckey}:speaker:{scope}:{label}",
@@ -262,11 +262,9 @@ def capture_records(
 
     voiceprint_by_speaker: dict[tuple[str, str], str] = {}
     for r in resolutions:
-        if r.embedding_ref is None:
-            continue  # 语音太少或质量不合格，旧 Ear 没有生成声纹
-        embedding = embeddings.get(r.resolution_id)
+        embedding = r.embedding
         if embedding is None:
-            raise ValueError(f"缺少声纹向量：{r.resolution_id}")
+            continue  # 语音太少或质量不合格，没有生成声纹
         speaker = (r.diarization_scope_id, r.local_speaker_id)
         span = _span(segment_by_id[i] for i in r.evidence_segment_ids if i in segment_by_id)
         if span is None:
@@ -334,14 +332,66 @@ def capture_records(
             },
         )
 
-    return b.records + context_records(evidence, capture, config)
+    return b.records
+
+
+def capture_records(
+    evidence: CaptureEvidence,
+    *,
+    audio_file: FileRef,
+    embeddings: Mapping[str, Embedding],
+    config: AdapterConfig,
+) -> list[NewRawRecord]:
+    """Convert complete old Ear Evidence, including its optional sensor/context data."""
+    state = readiness(evidence)
+    if not isinstance(state, Ready):
+        raise ValueError(f"录音尚不能导入：{state.reason}")
+    capture = state.capture
+    assert evidence.ended_at is not None
+    resolutions = []
+    for r in evidence.of_type("speaker_resolution", SpeakerResolution):
+        embedding = embeddings.get(r.resolution_id) if r.embedding_ref is not None else None
+        if embedding is None and r.embedding_ref is not None:
+            raise ValueError(f"缺少声纹向量：{r.resolution_id}")
+        resolutions.append(
+            SpeakerResult(
+                r.resolution_id,
+                r.diarization_scope_id,
+                r.local_speaker_id,
+                tuple(r.evidence_segment_ids),
+                embedding,
+                r.sample_quality,
+            )
+        )
+    device = capture.instance_id
+    audio = audio_records(
+        config=config,
+        device_id=device,
+        ckey=capture_key(capture),
+        started_at=capture.started_at,
+        ended_at=capture.ended_at or evidence.ended_at,
+        audio_file=audio_file,
+        media_type=capture.audio_ref.media_type,
+        upstream={
+            "service": "ear",
+            "capture_id": capture.capture_id,
+            "record_id": capture.record_id,
+            "group_id": capture.group_id,
+            "pipeline_run_id": evidence.pipeline_run_id,
+        },
+        chunks={c.audio_chunk_id: c for c in evidence.of_type("audio_chunk", AudioChunk)},
+        segments=evidence.of_type("speech_segment", SpeechSegment),
+        resolutions=resolutions,
+        events=evidence.of_type("audio_event", AudioEvent),
+    )
+    return audio + context_records(evidence, capture, config)
 
 
 def context_records(
     evidence: CaptureEvidence, capture: EarCapture, config: AdapterConfig
 ) -> list[NewRawRecord]:
-    b = _Builder(capture, config)
     device = capture.instance_id
+    b = _Builder(device, config)
     observations = sorted(
         evidence.of_type("sensor_observation", SensorObservation),
         key=lambda o: (o.observed_at, o.sensor_observation_id),

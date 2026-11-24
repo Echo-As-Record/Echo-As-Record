@@ -54,6 +54,7 @@ def test_phone_archive_without_preview(tmp_path, monkeypatch, capsys):
     capture["audio_ref"].update(
         checksum="sha256:" + hashlib.sha256(audio.getvalue()).hexdigest(),
         size_bytes=len(audio.getvalue()),
+        media_type="audio/wav",
     )
     storage = MemoryStorage()
     report = Runner(

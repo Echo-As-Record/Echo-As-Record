@@ -43,6 +43,8 @@ def main() -> None:
         "command",
         choices=(
             "init-identities",
+            "bootstrap-core",
+            "init-core-identities",
             "snapshot-sweep",
             "migrate",
             "bootstrap",
@@ -65,7 +67,21 @@ def main() -> None:
     if not dsn:
         parser.error("EAR_STORAGE_DSN is required (no .env or default database is read)")
     try:
-        if args.command == "init-identities":
+        if args.command == "bootstrap-core":
+            from ear_storage.core_deployment import bootstrap_core
+
+            created = bootstrap_core(dsn)
+            print(json.dumps({"status": "created" if created else "unchanged"}))
+        elif args.command == "init-core-identities":
+            from pathlib import Path
+
+            from ear_storage.core_deployment import init_core_identities
+
+            if not args.output:
+                parser.error("init-core-identities requires --output in a new private directory")
+            created = init_core_identities(dsn, Path(args.output))
+            print(json.dumps({"status": "created" if created else "unchanged"}))
+        elif args.command == "init-identities":
             from pathlib import Path
 
             from ear_storage.deployment import init_identities

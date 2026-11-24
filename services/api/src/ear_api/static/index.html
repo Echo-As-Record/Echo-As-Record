@@ -15,9 +15,10 @@
   </header>
 
   <main>
+    <nav aria-label="设置"><a href="/model-settings/">大模型设置</a></nav>
     <section class="panel" aria-labelledby="connect-title">
       <h2 id="connect-title">连接</h2>
-      <form id="connect-form" autocomplete="off">
+      <form id="connect-form" autocomplete="off" hidden>
         <label for="token-input">API 令牌（Bearer，43 位）</label>
         <div class="row">
           <input id="token-input" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="64" placeholder="粘贴后点“连接”">
@@ -26,7 +27,7 @@
         </div>
       </form>
       <p id="session-info" class="meta" role="status">未连接。</p>
-      <p class="meta">令牌只保存在本页内存里：不写入浏览器存储、地址栏或日志，刷新或关闭页面即丢失。页面显示的角色来自网关部署配置，最终授权由①逐次复核。</p>
+      <p id="auth-note" class="meta" hidden>令牌只保存在本页内存里：不写入浏览器存储、地址栏或日志，刷新或关闭页面即丢失。页面显示的角色来自网关部署配置，最终授权由①逐次复核。</p>
     </section>
 
     <div id="banner" class="banner" hidden></div>
@@ -34,7 +35,7 @@
 
     <section id="user-panel" class="panel" hidden>
       <h2>没有管理权限</h2>
-      <p>这个令牌是普通用户令牌，不能管理插件。本页不会向管理接口发送任何请求；请换用管理员令牌重新连接。</p>
+      <p id="user-note">这个令牌是普通用户令牌，不能管理插件。本页不会向管理接口发送任何请求；请换用管理员令牌重新连接。</p>
     </section>
 
     <section id="claim-panel" class="panel claim" hidden aria-labelledby="claim-title">

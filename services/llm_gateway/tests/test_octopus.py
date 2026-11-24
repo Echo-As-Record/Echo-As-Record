@@ -111,12 +111,13 @@ def replay(*, raw=None, status=200, headers=None, stream=None, **config):
     return adapter, requests, stream
 
 
-def test_source_pin_request_mapping_schema_and_unknown_usage(caplog):
+@pytest.mark.parametrize("timeout", [1, 120])
+def test_source_pin_request_mapping_schema_and_unknown_usage(caplog, timeout):
     adapter, requests, stream = replay()
     result = adapter.complete(
         call(data={"api_key": "UNTRUSTED", "base_url": "https://evil.invalid"}),
         model=MODEL,
-        timeout=1,
+        timeout=timeout,
     )
     assert SOURCE_COMMIT == "b3c7cd5dd950a79e94533b114619082a542eac66"
     assert result.output == {"answer": 7} and result.usage is None
@@ -137,7 +138,7 @@ def test_source_pin_request_mapping_schema_and_unknown_usage(caplog):
     }
     assert payload["provider"] == "litellm" and payload["model"] == MODEL
     assert payload["service"] == "synthetic/ear" and payload["stream"] is False
-    assert payload["timeout_secs"] == 1 and payload["max_tokens"] == 4096
+    assert payload["timeout_secs"] == timeout and payload["max_tokens"] == 4096
     assert json.loads(payload["messages"][-1]["content"])["data"]["api_key"] == "UNTRUSTED"
     assert SECRET not in repr(adapter) + caplog.text
     assert "SENSITIVE_PROMPT" not in caplog.text
@@ -271,11 +272,18 @@ def test_unsupported_schema_and_model_rejected_before_http(changes):
     assert not requests
 
 
-def test_request_limit_and_invalid_timeout_before_http():
+def test_request_limit_before_http():
     adapter, requests, _ = replay(max_request_bytes=1)
-    for timeout in [1, float("nan"), float("inf"), 0, 121]:
-        with pytest.raises(ProviderFailure):
-            adapter.complete(call(), model=MODEL, timeout=timeout)
+    with pytest.raises(ProviderFailure):
+        adapter.complete(call(), model=MODEL, timeout=1)
+    assert not requests
+
+
+@pytest.mark.parametrize("timeout", [float("nan"), float("inf"), 0, 121])
+def test_invalid_timeout_before_http(timeout):
+    adapter, requests, _ = replay()
+    with pytest.raises(ProviderFailure):
+        adapter.complete(call(), model=MODEL, timeout=timeout)
     assert not requests
 
 

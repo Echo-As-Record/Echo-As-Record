@@ -20,6 +20,7 @@ from ear_storage_client import AppendRaw, Context, Query, TimeRange
 from ear_storage_client.protocol import Reader
 from ear_storage_client.remote import RemoteStorageClient
 
+from ear_api.attribution_results import INTEGRATION, attribution_status
 from ear_api.config import Binding
 from ear_api.models import FeedbackInput
 from ear_api.upstream import GatewayError
@@ -27,15 +28,22 @@ from ear_api.upstream import GatewayError
 # The registry has no management flag; plugin feedback belongs to management APIs.
 MANAGEMENT_TYPES = frozenset({"plugin_management_feedback"})
 
+# Static core addition until the shipped core_mvp_registry profile is available.
+# This is NOT runtime registry discovery and never admits any plugin types.
+CORE_MVP_BUSINESS_ADDITIONS = frozenset({"rule_selection"})
+
 # Use only the shipped core registry, as MemoryStorage does by default.
 # Fetching /v1/registry or admitting dynamic plugin types is a future option
 # requiring a product decision, not part of business browsing today.
-BUSINESS_TYPES = frozenset(
-    name
-    for name, spec in DEFAULT_REGISTRY.data_types.items()
-    if name in DEFAULT_REGISTRY.core_types
-    and spec.kind in {"raw_record", "semantic", "rule"}
-    and name not in MANAGEMENT_TYPES
+BUSINESS_TYPES = (
+    frozenset(
+        name
+        for name, spec in DEFAULT_REGISTRY.data_types.items()
+        if name in DEFAULT_REGISTRY.core_types
+        and spec.kind in {"raw_record", "semantic", "rule"}
+        and name not in MANAGEMENT_TYPES
+    )
+    | CORE_MVP_BUSINESS_ADDITIONS
 )
 
 
@@ -60,6 +68,8 @@ def submit_feedback(
     command = body.normalized_command()
     fid, when = feedback_identity(binding.subject, body.request_id)
     payload: dict[str, Any] = {"module": body.module, "command": command}
+    # Persisted compatibility envelope: changing this legacy marker changes the
+    # canonical request fingerprint and breaks replay of already accepted writes.
     if body.module != "extraction":
         payload["integration"] = "pending_contract"
     raw = NewRawRecord(
@@ -75,26 +85,42 @@ def submit_feedback(
     result = client.write([AppendRaw(raw)], Context.feedback(fid), request_id=fid).check()
     if len(result.results) != 1 or result[0].id != fid:
         raise GatewayError(503, "acceptance_unknown_replay_identical_request")
+    # Projection support (including create_place) is not worker deployment or
+    # liveness. Admission always stays pending and does not probe/expand grants.
     return {
         "status": "accepted",
         "feedback_id": fid,
         "root_feedback_id": fid,
         "business_status": "pending",
-        "integration": "existing_command" if body.module == "extraction" else "pending_contract",
+        "integration": (
+            "existing_command"
+            if body.module == "extraction"
+            else INTEGRATION
+            if body.module == "attribution"
+            else "pending_contract"
+        ),
     }
 
 
 def feedback_status(client: RemoteStorageClient, fid: str) -> dict[str, Any]:
     record = client.get(fid)
-    if not isinstance(record, RawRecord) or record.data_type != "feedback":
+    if not isinstance(record, RawRecord) or record.data_type != "feedback" or record.id != fid:
         raise GatewayError(404, "not_found")
     result: dict[str, Any] = {
         "feedback_id": fid,
         "status": "pending",
         "completion_source": None,
         "status_scope": "feedback_processing_not_external_execution",
-        "integration": record.payload.get("integration", "existing_command"),
+        # Stored integration is a legacy request field, not public result metadata.
+        "integration": (
+            "existing_command"
+            if record.payload.get("module") == "extraction"
+            else "pending_contract"
+        ),
     }
+    if record.payload.get("module") == "attribution":
+        result.update(attribution_status(client, record))
+        return result
     if record.payload.get("module") != "extraction":
         return result
     runs = client.query(Query("extraction_run", where={"root_feedback_id": fid}, limit=2))

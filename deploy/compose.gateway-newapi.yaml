@@ -1,0 +1,32 @@
+# Opt in after compose.api-gateway.yaml, never combine with an Octopus/custom provider overlay.
+# Host bind paths only, never token values. Seed a private 0700 directory with 0600 settings.json.
+# On rootless hosts provision ownership as seen from the *container* UID 10001 before use.
+# No model gateway port is published. Only the gateway joins the isolated project's egress network.
+services:
+  api:
+    volumes:
+      - type: bind
+        source: ${EAR_MODEL_SETTINGS_DIR:?Explicit private model settings directory required}
+        target: /run/config/model-settings
+        bind:
+          create_host_path: false
+  gateway:
+    networks: [frontend, gateway-egress]
+    secrets:
+      - source: newapi_token
+        target: newapi-token
+    volumes:
+      - type: bind
+        source: ${EAR_MODEL_SETTINGS_DIR:?Explicit private model settings directory required}
+        target: /run/config/model-settings
+        read_only: true
+        bind:
+          create_host_path: false
+secrets:
+  newapi_token:
+    file: ${EAR_NEWAPI_TOKEN_FILE:?Explicit protected New API token file required}
+networks:
+  frontend:
+    internal: true
+  # Do not attach API/storage/other workers to gateway-egress; this is not a host firewall.
+  gateway-egress: {}

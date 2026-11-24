@@ -19,7 +19,7 @@ based-on: 设计 v1.2 第 9 节；信号补充；插件 MVP；工作分解 v1.2�
 | 文件 | 内容 |
 |---|---|
 | `models.py` | `CallRequest`（封闭模型；构造时用 `LLMCallRecord` 复核起因字段）、`ProviderResult(output, usage)`、`ProviderFailure(safe_to_retry)`、`Provider` 与 `RequestVerifier` 协议、`GatewayError(status, code)` |
-| `service.py` | `Gateway`（`complete`、`reconcile`、`stats`、`recover_batch`、`recover_pending`）、`RecoveryBatch(processed, saved, quarantined)`；构造参数默认：`global_rpm=60`、`caller_rpm=20`、`concurrency=4`、`attempts=2`（1–3）、`timeout=60`（≤120 秒）、`max_response_bytes=1 MiB`、`body_policy` 缺省为关闭、`verifier` 缺省用①SDK 预检 |
+| `service.py` | `Gateway`（`complete`、`reconcile`、`stats`、`recover_batch`、`recover_pending`）、`RecoveryBatch(processed, saved, quarantined)`；构造参数默认：`global_rpm=60`、`caller_rpm=20`、`concurrency=4`、`attempts=2`（1–3）、`timeout=60`（⑦通用上限 300 秒；Octopus 适配器仍为 120 秒）、`max_response_bytes=1 MiB`、`body_policy` 缺省为关闭、`verifier` 缺省用①SDK 预检 |
 | `journal.py` | `Journal`：SQLite（WAL）单 owner 持久栅栏；表 `calls(id, module, phase, request_id, record)` 与 `buckets(name, at, count)`；`reserve`、`pending`、`get`、`pending_ids`、`saved`、`quarantine`、`quarantined_count`、`close` |
 | `http.py` | `create_app(gateway, *, max_body_bytes=256 KiB, body_timeout=5)`：`BodyLimit` 中间件（413/415/408/400）、`GET /health/live`、`POST /v1/complete`、`POST /v1/calls/{id}/reconcile`、`GET /v1/stats`；无文档/OpenAPI；不回显请求体或异常 |
 | `client.py` | `GatewayClient(base_url, token, *, model, system, timeout=90, max_response_bytes=2 MiB)`：`complete`（只返回 `output`）、`reconcile`、`stats`；不读代理环境、不跟随重定向、不自动重试；`endpoint()` 校验根地址 |

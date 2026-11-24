@@ -40,6 +40,8 @@ from ear_storage_client.wire import encode_request, encode_result
 from fastapi.testclient import TestClient
 
 from .test_auth import env as env
+from .test_auth import scheduler_env as scheduler_env
+from .test_auth import scheduler_grants
 from .test_http import TestTransport
 from .test_snapshots import expire
 from .test_snapshots import seeded as seeded
@@ -139,19 +141,32 @@ def test_every_reader_roundtrip_and_snapshot(seeded):
         assert current is not None and current.payload["n"] == 100
 
 
-def test_live_all_commands_fields_numeric_and_request_identity(env):
-    _dsn, _store, service, operator = env
-    reads = ["activity", "person", "voiceprint", "extraction_run"]
+def test_live_all_commands_fields_numeric_and_request_identity(scheduler_env):
+    _dsn, _store, service, operator = scheduler_env
+    reads = ["activity", "artifact", "rule_selection", "person", "voiceprint", "extraction_run"]
     principals = {
         module: operator.issue_principal(
-            module, read_types=reads, subscribe_types=["person"] if module == "extraction" else []
+            module,
+            read_types=reads,
+            subscribe_types=["person", "activity", "artifact", "rule_selection"]
+            if module == "extraction"
+            else [],
         )
         for module in ("adapter", "attribution", "extraction", "dependency")
     }
+    reads_all, subscriptions = scheduler_grants(_store.registry)
+    operator.set_grants(
+        principals["dependency"].principal_id, read_types=reads_all, subscribe_types=subscriptions
+    )
+    operator.reserve_consumer_identity("dependency.changes", principals["dependency"].principal_id)
     operator.reserve_consumer_identity("extraction.http", principals["extraction"].principal_id)
     with live_server(service) as url:
         clients = {module: RemoteStorageClient(p.token, url) for module, p in principals.items()}
         try:
+            authority = clients["dependency"].scheduler_state()
+            assert authority["coverage_complete"] is True
+            assert authority["owners"]["extraction"]["enabled"] is True
+            assert authority["owners"]["extraction"]["can_receive"] is True
             source, target, system = (new_id() for _ in range(3))
             raw = make_raw("voiceprint", {"nested": [1, 1.0, True]}, start="2026-10-30T00:00:00Z")
             clients["adapter"].write([AppendRaw(raw)], SYS).check()

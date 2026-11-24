@@ -82,7 +82,7 @@ def server(client: httpx.Client) -> FastMCP:
 
     @mcp.tool()
     def feedback_status(feedback_id: Id) -> dict[str, Any]:
-        """Read processing status. pending_contract means the correction awaits a consumer."""
+        """Read processing status. Pending means no attribution result has been recorded yet."""
         return request("GET", f"/v1/feedback/{feedback_id}/status")
 
     return mcp

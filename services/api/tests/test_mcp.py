@@ -5,8 +5,9 @@ from pathlib import Path
 from typing import Any
 
 from ear_api.app import create_app
-from ear_contracts import new_id
-from ear_storage_client import AppendRaw, Context, Create
+from ear_api.attribution_results import INTEGRATION, RESULT_TYPE
+from ear_contracts import DEFAULT_REGISTRY, DataTypeSpec, new_id
+from ear_storage_client import AppendRaw, Context, Create, MemoryStorage
 from ear_storage_client.testing import make_raw
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -20,6 +21,13 @@ END = "2026-11-05T09:01:00Z"
 
 def test_stdio_workflow(gateway):
     http, fake, config = gateway
+    # Test-only registry capability; no ③ consumer is installed here.
+    fake.storage = MemoryStorage(
+        registry=DEFAULT_REGISTRY.extend_core(
+            DataTypeSpec(RESULT_TYPE, "system_record", "attribution")
+        )
+    )
+    fake.client = fake.storage.client("api")
     source = fake.storage.client("adapter")
     voice, audio, old, new = (new_id() for _ in range(4))
     source.write(
@@ -114,7 +122,7 @@ def test_stdio_workflow(gateway):
             accepted = await call("correct_attribution", **command)
             assert accepted == await call("correct_attribution", **command)
             status = await call("feedback_status", feedback_id=accepted["feedback_id"])
-            assert status["status"] == "pending" and status["integration"] == "pending_contract"
+            assert status["status"] == "pending" and status["integration"] == INTEGRATION
 
     with tcp_server(create_app(config)) as url:
         asyncio.run(workflow(url))

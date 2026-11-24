@@ -1,0 +1,131 @@
+# ONLY combine with compose.yaml, using tools/real_sample_runtime.py.
+# Fixed new project; no extraction, gateway, geocoder, source or action executor.
+# Helper uses explicit --no-deps initialization, NEVER the legacy bootstrap chain.
+# Secrets stay in private named volumes; env contains only this deployment's DB/broker secrets.
+x-real-worker: &real-worker
+  image: ${EAR_MVP_WORKER_IMAGE:?Explicit isolated worker image required}
+  user: '10001:10001'
+  restart: 'no'
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: ['/tmp:size=16m,noexec,nosuid,nodev']
+  mem_limit: 512m
+  cpus: 1.0
+  pids_limit: 128
+  logging:
+    driver: none
+  stop_grace_period: 5m
+  networks: [backend]
+  depends_on:
+    storage:
+      condition: service_healthy
+  deploy:
+    replicas: 1
+
+# Business request paths/errors may contain private IDs. Keep Docker logs off;
+# durable DB/journals remain authoritative. Only metadata health/status is exposed.
+services:
+  postgres:
+    pids_limit: 128
+    logging:
+      driver: none
+  nats:
+    pids_limit: 128
+    logging:
+      driver: none
+  storage:
+    logging:
+      driver: none
+  relay:
+    logging:
+      driver: none
+  manage-worker:
+    logging:
+      driver: none
+  bootstrap:
+    command: [bootstrap-core]
+  init-core-identities:
+    extends:
+      file: compose.yaml
+      service: init-identities
+    command: [init-core-identities, --output, /run/secrets/ear/core/identities.json]
+  real-sample-config:
+    extends:
+      file: compose.yaml
+      service: init-identities
+    # Root only for NEW config directories; never chmod/chown existing resources.
+    user: '0:0'
+    cap_add: [CHOWN, DAC_OVERRIDE]
+    entrypoint: [python, /opt/real_sample_runtime.py]
+    command: [container-config]
+    volumes:
+      - ${EAR_REAL_RUNTIME_SCRIPT:?Explicit runtime script required}:/opt/real_sample_runtime.py:ro
+      - identities:/run/secrets/ear
+      - real_api_config:/config/api
+      - real_attribution_config:/config/attribution
+      - real_dependency_config:/config/dependency
+    secrets:
+      - source: real_options
+        target: real-options.json
+  api:
+    image: ${EAR_API_IMAGE:?Explicit isolated API image required}
+    user: '10001:10001'
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ['/tmp:size=16m,noexec,nosuid,nodev']
+    mem_limit: 256m
+    cpus: 1.0
+    pids_limit: 128
+    logging:
+      driver: none
+    networks: [backend, frontend]
+    ports: ['127.0.0.1:${EAR_API_PORT:?Explicit loopback port required}:8086']
+    environment:
+      EAR_API_CONFIG: /private/runtime/config.json
+    volumes:
+      - real_api_config:/private:ro
+      - api_execution:/state
+    depends_on:
+      storage:
+        condition: service_healthy
+  mvp-attribution:
+    <<: *real-worker
+    command: [--config, /private/runtime/config.json]
+    volumes:
+      - real_attribution_config:/private:ro
+      - mvp_attribution_state:/state
+    healthcheck:
+      test: [CMD, python, /app/mvp_worker.py, --config, /private/runtime/config.json, --healthcheck]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+  mvp-dependency:
+    <<: *real-worker
+    command: [--config, /private/runtime/config.json]
+    volumes:
+      - real_dependency_config:/private:ro
+      - mvp_dependency_state:/state
+    healthcheck:
+      test: [CMD, python, /app/mvp_worker.py, --config, /private/runtime/config.json, --healthcheck]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+secrets:
+  real_options:
+    file: ${EAR_REAL_OPTIONS_FILE:?Explicit private options file required}
+volumes:
+  real_api_config:
+  real_attribution_config:
+  real_dependency_config:
+  api_execution:
+  mvp_attribution_state:
+  mvp_dependency_state:
+networks:
+  frontend:
+    internal: true

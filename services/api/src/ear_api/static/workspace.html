@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex">
+  <title>Ear 工作台</title>
+  <link rel="stylesheet" href="workspace.css">
+</head>
+<body>
+  <button id="skip-link" type="button" class="skip-link">跳到主要内容</button>
+
+  <header class="topbar">
+    <button id="nav-toggle" type="button" class="nav-toggle" aria-expanded="false" aria-controls="sidebar">菜单</button>
+    <div class="brand-block">
+      <h1 class="brand">Ear 工作台</h1>
+      <p class="lead">只读查看：证据时间线、人物、地点、活动、产物、规则、动作建议与追溯。</p>
+    </div>
+    <div class="topbar-tools">
+      <label for="zone-select" class="inline">时区</label>
+      <select id="zone-select">
+        <option value="local">本地时间</option>
+        <option value="utc">UTC</option>
+      </select>
+      <span id="session-badge" class="badge tone-muted">未连接</span>
+    </div>
+  </header>
+
+  <div class="shell">
+    <aside id="sidebar" class="sidebar" aria-label="侧边栏">
+      <section class="connect" aria-labelledby="connect-title">
+        <h2 id="connect-title">连接</h2>
+        <form id="connect-form" autocomplete="off" hidden>
+          <label for="token-input">API 令牌（Bearer，43 位）</label>
+          <input id="token-input" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="64" placeholder="粘贴后点“连接”">
+          <div class="row">
+            <button id="connect-btn" type="submit" class="primary">连接</button>
+            <button id="disconnect-btn" type="button" hidden>断开并清除</button>
+          </div>
+        </form>
+        <p id="session-info" class="meta" role="status">未连接。</p>
+        <p id="auth-note" class="meta" hidden>令牌只保存在本页内存：不写入浏览器存储、地址栏或日志，刷新或关闭页面即丢失。本页只发送只读（GET）请求。</p>
+      </section>
+
+      <nav id="nav" aria-label="工作台导航">
+        <ul id="nav-list" class="nav-list"></ul>
+      </nav>
+
+      <p class="side-links">
+        <a id="plugins-link" href="../plugins/">插件管理页（管理员）</a>
+      </p>
+    </aside>
+
+    <main id="main" tabindex="-1">
+      <div id="banner" class="banner" hidden role="alert"></div>
+      <p id="live-status" class="live" role="status" aria-live="polite"></p>
+      <div id="view-root"></div>
+      <noscript><p class="banner error">本页需要 JavaScript 才能工作；它不会加载任何外部脚本或资源。</p></noscript>
+    </main>
+  </div>
+
+  <script src="workspace.js" defer></script>
+</body>
+</html>

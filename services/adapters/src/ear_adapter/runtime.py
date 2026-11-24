@@ -8,13 +8,13 @@ import sqlite3
 import sys
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import closing
 from dataclasses import dataclass, field
 from itertools import batched
 from pathlib import Path
 
-from ear_contracts import SYSTEM, new_id
+from ear_contracts import SYSTEM, NewRawRecord, new_id
 from ear_storage_client import AppendRaw, Context, PermissionDenied, Query, StorageClient
 from ear_storage_client.remote import RemoteStorageClient
 from ear_storage_client.remote_errors import CommitUnknown, ResourceLimit, ServiceUnavailable
@@ -30,7 +30,8 @@ from ear_adapter.convert import (
     readiness,
 )
 from ear_adapter.ear_api import Capture, SpeakerResolution
-from ear_adapter.source import AudioLocator, EarSource, SourceUnavailable
+from ear_adapter.selection import capture_selection, validate_capture_id
+from ear_adapter.source import AudioLocator, EarSource, SourceProtocolError, SourceUnavailable
 
 logger = logging.getLogger("ear_adapter")
 # 旧 Ear 的固定输入类型；新增独立适配器不扩大本进程的权限要求。
@@ -85,11 +86,33 @@ def ingest_capture(
     locator: AudioLocator,
     config: AdapterConfig,
 ) -> Outcome:
+    validate_capture_id(capture_id)
+    try:
+        return _ingest_capture(
+            capture_id, source=source, storage=storage, locator=locator, config=config
+        )
+    except ValueError:
+        # 包括外层/内层 Pydantic 及转换校验；绝不输出 input_value/正文。
+        raise SourceProtocolError() from None
+
+
+def _ingest_capture(
+    capture_id: str,
+    *,
+    source: EarSource,
+    storage: StorageClient,
+    locator: AudioLocator,
+    config: AdapterConfig,
+) -> Outcome:
     try:
         evidence = source.read_capture(capture_id)
         captures = evidence.of_type("capture", Capture)
+        if evidence.capture_id != capture_id or any(c.capture_id != capture_id for c in captures):
+            raise SourceProtocolError()
+        # capture 数量仍由 readiness 判定；匹配校验先于任何音频/声纹读取及去重。
         if len(captures) == 1 and storage.get(audio_ref_id(captures[0], config)) is not None:
-            records = []
+            # 音频整批已导入：只补写迟到的 Context。
+            records: list[NewRawRecord] = []
             for batch in batched(context_records(evidence, captures[0], config), 100):
                 existing = storage.get_many([r.id for r in batch])
                 records.extend(r for r in batch if r.id not in existing)
@@ -118,6 +141,22 @@ def ingest_capture(
     except ServiceUnavailable:
         return Pending(capture_id, "① 暂时不可用")
 
+    return append_capture_batch(capture_id, records, storage=storage)
+
+
+def append_capture_batch(
+    capture_id: str,
+    records: Sequence[NewRawRecord],
+    *,
+    storage: StorageClient,
+    can_retry: Callable[[], bool] | None = None,
+    include_conflict_reason: bool = True,
+) -> Outcome:
+    """Submit one atomic batch; replay the same remote request on uncertain commit.
+
+    A replay can still cause the first commit. A supplied retry check must succeed
+    before resubmission; a failed check leaves the first commit's outcome unknown.
+    """
     ops = [AppendRaw(r) for r in records]
     context = Context.system()
     request_id = new_id()
@@ -134,6 +173,8 @@ def ingest_capture(
             if attempt == 2:
                 return Pending(capture_id, "① 提交结果仍未知；下一轮检查 audio_ref")
             time.sleep(0.25 * 2**attempt)
+            if can_retry is not None and not can_retry():
+                return Pending(capture_id, "① 提交结果未知；输入验证失败，未重放")
         except ServiceUnavailable:
             return Pending(capture_id, "① 暂时不可用")
         except ResourceLimit:
@@ -146,7 +187,10 @@ def ingest_capture(
     else:
         raise AssertionError("unreachable")
     if result.conflict is not None:
-        return Failed(capture_id, f"① 拒绝写入：{result.conflict.reason}")
+        reason = (
+            f"① 拒绝写入：{result.conflict.reason}" if include_conflict_reason else "① 拒绝写入"
+        )
+        return Failed(capture_id, reason)
     written = Counter(
         r.data_type for r in result.results if r.outcome == "written" and r.data_type is not None
     )
@@ -198,7 +242,13 @@ class Runner:
         self.receipt_cursor = 0
         self.recheck_at: dict[str, float] = {}
 
-    def run_once(self, *, should_stop: Callable[[], bool] = lambda: False) -> Report:
+    def run_once(
+        self,
+        *,
+        capture_ids: Sequence[str] | None = None,
+        should_stop: Callable[[], bool] = lambda: False,
+    ) -> Report:
+        selected = capture_selection(capture_ids)  # 冻结、去重、校验先于任何 IO。
         report = Report()
         try:
             for data_type in READ_TYPES:
@@ -209,7 +259,11 @@ class Runner:
             report.storage_error = "① 暂时不可用"
             return report
         try:
-            summaries = list(self.source.list_captures())
+            identifiers = (
+                [summary.capture_id for summary in self.source.list_captures()]
+                if selected is None
+                else selected
+            )
         except SourceUnavailable:
             report.source_error = "旧 Ear 暂时不可用"
             _log("source_unavailable", reason=report.source_error)
@@ -218,24 +272,21 @@ class Runner:
             try:
                 uri = self.delivery_db.resolve().as_uri() + "?mode=ro"
                 with closing(sqlite3.connect(uri, uri=True)) as db:
-                    for seq, capture_id in db.execute(
+                    for seq, received_id in db.execute(
                         "SELECT seq, capture_id FROM receipts WHERE seq > ? ORDER BY seq",
                         (self.receipt_cursor,),
                     ):
-                        self.done.discard(capture_id)
+                        self.done.discard(received_id)
                         self.receipt_cursor = seq
             except sqlite3.Error:
                 _log("delivery_receipts_unavailable")
-        for summary in summaries:
+        for capture_id in identifiers:
             if should_stop():
                 break
-            if (
-                summary.capture_id in self.done
-                and time.monotonic() < self.recheck_at[summary.capture_id]
-            ):
+            if capture_id in self.done and time.monotonic() < self.recheck_at[capture_id]:
                 continue
             outcome = ingest_capture(
-                summary.capture_id,
+                capture_id,
                 source=self.source,
                 storage=self.storage,
                 locator=self.locator,
@@ -243,10 +294,8 @@ class Runner:
             )
             report.outcomes.append(outcome)
             if isinstance(outcome, Ingested | AlreadyIngested):
-                self.done.add(summary.capture_id)
-                self.recheck_at[summary.capture_id] = time.monotonic() + (
-                    3600 if self.delivery_db else 300
-                )
+                self.done.add(capture_id)
+                self.recheck_at[capture_id] = time.monotonic() + (3600 if self.delivery_db else 300)
             _log_outcome(outcome)
         return report
 

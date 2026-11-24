@@ -64,6 +64,13 @@ from ear_storage.consumers import ConsumerPolicy, ConsumerService, approved_filt
 from ear_storage.reader import ConnectionBoundReader
 from ear_storage.relay import RelayConfig
 from ear_storage.repository import Limits, registry_from_db
+from ear_storage.scheduler_access import (
+    GRAPH_READS,
+    authorize_propagation_write,
+    authorize_publication,
+    guard_graph,
+    scheduler_state,
+)
 from ear_storage.schema import ProjectionLimit, check_schema, connection, writer
 from ear_storage.snapshots import (
     SnapshotLease,
@@ -347,6 +354,7 @@ class AuthenticatedClient(AuthorizedReaderMethods):
     @property
     def registry(self) -> Registry:
         with self._session() as (conn, principal, _reader):
+            guard_graph(conn, principal)
             registry = registry_from_db(conn)
             types = {
                 name: spec
@@ -359,6 +367,10 @@ class AuthenticatedClient(AuthorizedReaderMethods):
                 if principal.module in modules
             }
             return Registry(types, publishers, registry.core_types & frozenset(types))
+
+    def scheduler_state(self) -> dict[str, Any]:
+        with self._session() as (conn, principal, _reader):
+            return scheduler_state(conn, principal)
 
     def list_plugin_directory(self, *, limit: int = 50, after: str = "") -> dict[str, Any]:
         """Read-only control plane, independent of business registry/read grants.
@@ -490,6 +502,8 @@ class AuthenticatedClient(AuthorizedReaderMethods):
 
     def _read(self, method: str, *args: Any, **kwargs: Any) -> Any:
         with self._session() as (conn, principal, reader):
+            if method in GRAPH_READS:
+                guard_graph(conn, principal)
 
             def visible(ids: Sequence[str]) -> set[str]:
                 return {
@@ -583,6 +597,17 @@ class AuthenticatedClient(AuthorizedReaderMethods):
         with self._session() as (conn, principal, reader):
             from ear_storage.management import attach_feedback, prepare_feedback
 
+            # Scheduler state is executable input to a more privileged worker.
+            # Authenticate its writer before mutation OR idempotent receipt replay;
+            # no payload/schema/diagnostic exception can confer that authority.
+            if any(
+                isinstance(op, PutSystemRecord) and op.data_type == "propagation_record"
+                for op in ops
+            ):
+                authorize_propagation_write(conn, principal)
+            for op in ops:
+                if isinstance(op, PublishReevaluation):
+                    authorize_publication(conn, principal, op, context)
             prepare_feedback(conn, principal, ops)
             from ear_storage.history import guard_submission
 
@@ -736,7 +761,7 @@ class AuthenticatedClient(AuthorizedReaderMethods):
             yield self.read_snapshot(lease.snapshot_id)
         finally:
             # Revoked/expired leases are reclaimed by deployment-only sweeping.
-            with suppress(SnapshotUnavailable):
+            with suppress(PermissionDenied):
                 self.release_snapshot(lease.snapshot_id)
 
     def subscribe(self, *args, **kwargs):

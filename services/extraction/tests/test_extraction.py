@@ -6,7 +6,7 @@ import pytest
 from ear_contracts import Cause, new_id
 from ear_extraction.demo import DemoGateway, fixture, submit
 from ear_extraction.domain import Command, Interval, Rule
-from ear_extraction.orchestration import ExtractionService
+from ear_extraction.orchestration import ExtractionService, reevaluation_run_id
 from ear_extraction.persistence import records
 from ear_extraction.scheduler import uncovered
 from ear_storage_client import (
@@ -104,7 +104,7 @@ def rejudge(env, artifact, *, version=2):
     ).check()
     storage.run_until_idle()
     service.drain()
-    return event_id
+    return reevaluation_run_id(event_id)
 
 
 def test_manual_extraction_and_duplicate_delivery(env):
@@ -114,7 +114,7 @@ def test_manual_extraction_and_duplicate_delivery(env):
     assert len(items(env, "action_suggestion")) == 1
     artifact = items(env, "artifact")[0]
     deps = env[0].client("extraction").dependencies_of(artifact.id)
-    assert {d.depends_on.data_type for d in deps} == {"activity", "rule", "attribution"}
+    assert {d.depends_on.data_type for d in deps} == {"activity", "rule", "attribution", "person"}
     assert all(c.module == "extraction" and c.root_feedback_id != "system" for c in env[2].calls)
     env[4].drain()
     env[0].run_until_idle()
@@ -198,7 +198,7 @@ def test_rejudge_changed_preserves_activity_and_approved_suggestions(env):
     assert run(env, id).payload["detail"]["outcome"] == "changed"
     assert items(env, "activity")[0].id == activity.id
     assert items(env, "artifact")[0].version == 2
-    assert p2 in items(env, "artifact")[0].payload["body_md"]
+    assert "合成人物乙" in items(env, "artifact")[0].payload["body_md"]
     assert {r.payload["state"] for r in items(env, "action_suggestion")} == {"approved", "pending"}
 
 
@@ -215,10 +215,13 @@ def test_rejudge_unchanged_refreshes_dependencies(env):
     id = rejudge(env, artifact)
     assert run(env, id).payload["detail"]["outcome"] == "unchanged"
     assert items(env, "artifact")[0].version == 1
-    assert not storage.client("dependency").stale_dependencies([ids["attribution"]])
+    assert all(
+        d.dependent.data_type == "rule_selection"
+        for d in storage.client("dependency").stale_dependencies([ids["attribution"]])
+    )
 
 
-def test_historical_rule_conflict_is_explicit(env):
+def test_historical_rule_uses_current_version_without_eager_recompute(env):
     extract(env)
     rule = items(env, "rule")[0]
     submit(
@@ -233,8 +236,8 @@ def test_historical_rule_conflict_is_explicit(env):
     env[4].drain()
     assert items(env, "artifact")[0].version == 1
     id = rejudge(env, items(env, "artifact")[0])
-    assert run(env, id).payload["error"] == "historical_rule_dependency_unsupported"
-    assert items(env, "artifact")[0].version == 1
+    assert run(env, id).payload["status"] == "succeeded"
+    assert items(env, "artifact")[0].payload["rule_version"] == 2
 
 
 @pytest.mark.parametrize("kind", ["apply_rule", "extract_once"])
@@ -262,7 +265,8 @@ def test_reextract_failure_keeps_previous_results(env):
     env[2].failure = ValueError("bad model response")
     id = submit(env[0], Command(kind="reextract", interval=RANGE, preview=preview["versions"]))
     env[4].drain()
-    assert run(env, id).payload["status"] == "failed"
+    assert run(env, id).payload["status"] == "blocked"
+    assert run(env, id).payload["error"] == "gateway_outcome_unknown"
     assert items(env, "artifact")[0].id == artifact.id
 
 
@@ -323,15 +327,19 @@ def test_missing_attribution_waits_then_times_out(env):
     assert not items(env, "artifact")
 
 
-def test_transient_failure_retries_with_same_run(env):
+def test_gateway_timeout_is_blocked_not_transient_retry(env):
     env[2].failure = TimeoutError()
     id = extract(env)
-    assert run(env, id).payload["status"] == "retry_wait"
+    assert run(env, id).payload["status"] == "blocked"
+    assert run(env, id).payload["error"] == "gateway_outcome_unknown"
+    count = len(env[2].calls)
     env[2].failure = None
     env[3].advance()
     env[4].drain()
-    assert run(env, id).payload["status"] == "succeeded"
-    assert len(items(env, "artifact")) == 1
+    with pytest.raises(ValueError, match="gateway_outcome_unknown"):
+        env[4].retry(id)
+    assert len(env[2].calls) == count
+    assert not items(env, "artifact")
 
 
 def test_storage_conflict_does_not_publish_stale_artifact(env):
@@ -357,11 +365,16 @@ def test_storage_conflict_does_not_publish_stale_artifact(env):
 
     env[2].mutate = mutate
     id = extract(env)
-    assert run(env, id).payload["error"] == "storage_conflict"
+    assert run(env, id).payload["error"] == "gateway_result_not_committed"
+    assert run(env, id).payload["status"] == "blocked"
     assert not items(env, "activity")
+    count = len(env[2].calls)
     env[3].advance()
     env[4].drain()
-    assert run(env, id).payload["status"] == "succeeded"
+    with pytest.raises(ValueError, match="gateway_result_not_committed"):
+        env[4].retry(id)
+    assert len(env[2].calls) == count
+    assert not items(env, "artifact")
 
 
 def test_recovery_after_admission_and_expired_claim(env):
@@ -398,12 +411,15 @@ def test_schedule_reserves_pending_and_skips_success(env):
     assert env[4].schedule(RANGE) == []
 
 
-def test_failed_schedule_is_not_successful_coverage(env):
-    env[2].failure = ValueError()
-    id = env[4].schedule(RANGE)[0]
-    env[4].drain()
-    assert env[4].schedule(RANGE) == [id]
-    env[2].failure = None
+def test_failed_schedule_before_call_is_explicitly_retryable(env):
+    # Budget validation occurs before creating a call intent: this is safe to retry.
+    limited = ExtractionService(
+        env[0].client("extraction"), env[2], clock=env[3], max_input_chars=10
+    )
+    id = limited.schedule(RANGE)[0]
+    limited.drain()
+    assert run(env, id).payload["gateway_calls"] == []
+    assert limited.schedule(RANGE) == [id]
     env[4].retry(id)
     env[4].drain()
     assert run(env, id).payload["status"] == "succeeded"
