@@ -82,6 +82,8 @@ def write_config(tmp_path, value):
 
 @pytest.mark.parametrize("mode", [0o000, 0o400, 0o640, 0o644, 0o660, 0o700, 0o4600])
 def test_config_exact_0600(tmp_path, mode):
+    if mode == 0o4600 and sys.platform == "darwin":
+        pytest.skip("macOS chmod strips the setuid bit before it can be inspected")
     path = write_config(tmp_path, settings(tmp_path))
     path.chmod(mode)
     with pytest.raises((ValueError, OSError)):
