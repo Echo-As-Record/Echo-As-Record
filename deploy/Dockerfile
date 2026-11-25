@@ -11,6 +11,7 @@ COPY services/storage/pyproject.toml services/storage/pyproject.toml
 COPY services/ingest/pyproject.toml services/ingest/pyproject.toml
 COPY services/adapters/pyproject.toml services/adapters/pyproject.toml
 COPY services/attribution/pyproject.toml services/attribution/pyproject.toml
+COPY services/habit/pyproject.toml services/habit/pyproject.toml
 COPY services/dependency/pyproject.toml services/dependency/pyproject.toml
 COPY services/extraction/pyproject.toml services/extraction/pyproject.toml
 COPY services/api/pyproject.toml services/api/pyproject.toml
