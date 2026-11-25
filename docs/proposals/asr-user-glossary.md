@@ -31,7 +31,7 @@ based-on: docs/design/design-v1.2.md 3、7.1、7.2 节；docs/decisions/mvp-conf
    | `category` | `person` / `project` / `term` / `other`，只作提示 |
    | `note` | 可选说明，例如“项目名，读音同 ear” |
 
-   词条由用户维护：⑥提供增改删入口，写 `feedback`；④消费反馈并写词条（与“规则”同属④单写，见第 5 节待决 1）。词条有固定 id，修改追加新版本，删除为整体替代。
+   词条由用户维护：⑥提供增改删入口，写 `feedback`；④消费反馈并写词条（与“规则”同属④单写，见第 5 节待决 1）。词条有固定 id，修改追加新版本，删除为整体替代。登记时 `kind` 应为 `semantic` 而不是 `rule`，否则⑤会忽略词条修改，见[纠错提案](transcript-correction.md)第 2.4 节。
 
 2. **④在调用模型时附上相关词条**：只附 `canonical` 或任一 `variants` 出现在本次输入转写里的词条，加上数量有限的全局常用词条，避免整张表塞进提示。附上的词条要登记依赖（字段 `canonical`、`variants`）。
 
