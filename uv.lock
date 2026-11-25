@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -16,6 +16,7 @@ members = [
     "ear-contracts",
     "ear-dependency",
     "ear-extraction",
+    "ear-habit",
     "ear-ingest",
     "ear-llm-gateway",
     "ear-storage",
@@ -376,6 +377,25 @@ requires-dist = [
 ]
 
 [[package]]
+name = "ear-habit"
+version = "0.1.0"
+source = { editable = "services/habit" }
+dependencies = [
+    { name = "ear-attribution" },
+    { name = "ear-contracts" },
+    { name = "ear-storage-client" },
+    { name = "jieba" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "ear-attribution", editable = "services/attribution" },
+    { name = "ear-contracts", editable = "libs/ear_contracts" },
+    { name = "ear-storage-client", editable = "libs/ear_storage_client" },
+    { name = "jieba", specifier = "==0.42.1" },
+]
+
+[[package]]
 name = "ear-ingest"
 version = "0.1.0"
 source = { editable = "services/ingest" }
@@ -470,6 +490,7 @@ dev = [
     { name = "ear-contracts" },
     { name = "ear-dependency" },
     { name = "ear-extraction" },
+    { name = "ear-habit" },
     { name = "ear-ingest" },
     { name = "ear-llm-gateway" },
     { name = "ear-storage" },
@@ -491,6 +512,7 @@ dev = [
     { name = "ear-contracts", editable = "libs/ear_contracts" },
     { name = "ear-dependency", editable = "services/dependency" },
     { name = "ear-extraction", editable = "services/extraction" },
+    { name = "ear-habit", editable = "services/habit" },
     { name = "ear-ingest", editable = "services/ingest" },
     { name = "ear-llm-gateway", editable = "services/llm_gateway" },
     { name = "ear-storage", editable = "services/storage" },
@@ -621,6 +643,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/7c/1a/3c8edc664e06e6bd0
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7b/55/e5326141505c5d5e34c5e0935d2908a74e4561eca44108fbfb9c13d2911a/isoduration-20.11.0-py3-none-any.whl", hash = "sha256:b2904c2a4228c3d44f409c8ae8e2370eb21a26f7ac2ec5446df141dde3452042", size = 11321, upload-time = "2020-11-01T10:59:58.02Z" },
 ]
+
+[[package]]
+name = "jieba"
+version = "0.42.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c6/cb/18eeb235f833b726522d7ebed54f2278ce28ba9438e3135ab0278d9792a2/jieba-0.42.1.tar.gz", hash = "sha256:055ca12f62674fafed09427f176506079bc135638a14e23e25be909131928db2", size = 19214172, upload-time = "2020-01-20T14:27:23.5Z" }
 
 [[package]]
 name = "jsonpointer"

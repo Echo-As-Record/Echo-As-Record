@@ -1,0 +1,15 @@
+[project]
+name = "ear-habit"
+version = "0.1.0"
+description = "Ear 习惯扩展：说话习惯的桶级统计（L1）与多尺度聚合（L2）"
+requires-python = ">=3.12"
+dependencies = ["ear-contracts", "ear-storage-client", "ear-attribution", "jieba==0.42.1"]
+
+[tool.uv.sources]
+ear-contracts = { workspace = true }
+ear-storage-client = { workspace = true }
+ear-attribution = { workspace = true }
+
+[build-system]
+requires = ["uv_build>=0.8,<0.14"]
+build-backend = "uv_build"
