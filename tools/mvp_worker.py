@@ -3,7 +3,8 @@
 Private JSON keys: module (attribution/extraction/dependency), storage_url,
 storage_token, consumer, journal_namespace, state_dir (existing owned 0700).
 Consumers are fixed: attribution / extraction.jobs / dependency.changes.
-③ additionally requires cosine_threshold and gps_threshold_m. ④ requires
+③ additionally requires cosine_threshold and gps_threshold_m (and, when voice
+matching options are supplied, their complete set). ④ requires
 gateway_url and model; its storage identity authenticates at ⑦ too. Optional
 ④ gateway_timeout configures only the gateway client; omitted, it uses timeout
 as before. Optional schedule={start: RFC3339 UTC ending Z, every_seconds:
@@ -106,6 +107,16 @@ class Settings(SafeModel):
     max_records: int = Field(default=5000, strict=True, ge=1, le=10000)
     cosine_threshold: float | None = Field(default=None, strict=True, allow_inf_nan=False)
     gps_threshold_m: float | None = Field(default=None, strict=True, allow_inf_nan=False)
+    unnamed_margin: float | None = Field(default=None, strict=True, ge=0, allow_inf_nan=False)
+    named_threshold: float | None = Field(
+        default=None, strict=True, ge=-1, le=1, allow_inf_nan=False
+    )
+    named_margin: float | None = Field(default=None, strict=True, ge=0, allow_inf_nan=False)
+    aggregation: Literal["max", "top_k_mean"] | None = None
+    top_k: int | None = Field(default=None, strict=True, ge=1, le=100)
+    support_bonus: float | None = Field(default=None, strict=True, ge=0, allow_inf_nan=False)
+    score_mode: Literal["raw", "normalized"] | None = None
+    safe_anonymous_reuse: bool | None = Field(default=None, strict=True)
     gateway_url: str | None = Field(default=None, strict=True, repr=False)
     gateway_timeout: float | None = Field(
         default=None, strict=True, gt=0, le=MAX_CLIENT_TIMEOUT_SECONDS, allow_inf_nan=False
@@ -160,8 +171,28 @@ class Settings(SafeModel):
 
             if self.cosine_threshold is None or self.gps_threshold_m is None:
                 raise ValueError("explicit_thresholds_required")
-            MatchConfig(self.cosine_threshold, self.gps_threshold_m)
-        elif self.cosine_threshold is not None or self.gps_threshold_m is not None:
+            MatchConfig(
+                self.cosine_threshold, self.gps_threshold_m,
+                self.unnamed_margin, self.named_threshold, self.named_margin,
+                self.aggregation or "max", self.top_k or 2, self.support_bonus or 0.0,
+                self.score_mode or "raw",
+                self.safe_anonymous_reuse if self.safe_anonymous_reuse is not None else True,
+            )
+        elif any(
+            value is not None
+            for value in (
+                self.cosine_threshold,
+                self.gps_threshold_m,
+                self.unnamed_margin,
+                self.named_threshold,
+                self.named_margin,
+                self.aggregation,
+                self.top_k,
+                self.support_bonus,
+                self.score_mode,
+                self.safe_anonymous_reuse,
+            )
+        ):
             raise ValueError("unexpected_thresholds")
         if self.transcript_only:
             if (
@@ -625,7 +656,15 @@ def run(config: Settings, stop: Event) -> None:
                     )
                     worker = AttributionService.business(
                         client,
-                        config=MatchConfig(config.cosine_threshold, config.gps_threshold_m),
+                        config=MatchConfig(
+                            config.cosine_threshold, config.gps_threshold_m,
+                            config.unnamed_margin, config.named_threshold, config.named_margin,
+                            config.aggregation or "max", config.top_k or 2,
+                            config.support_bonus or 0.0, config.score_mode or "raw",
+                            config.safe_anonymous_reuse
+                            if config.safe_anonymous_reuse is not None
+                            else True,
+                        ),
                         journal=journal,
                     )
                     worker.subscribe(from_beginning=False)  # recovery MUST precede registration

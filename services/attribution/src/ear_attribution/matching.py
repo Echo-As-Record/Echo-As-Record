@@ -9,12 +9,23 @@ from ear_contracts import RawRecord, SemanticRecord, VersionRef
 from ear_storage_client import DependencyInput, Query, Reader, iter_query
 
 from ear_attribution.payloads import PAIRS, DomainError, raw_subject, references
+from ear_attribution.scoring import Reference, ScoreDiagnostic, decide, rank_identity_matches
 
 
 @dataclass(frozen=True)
 class MatchConfig:
     cosine_threshold: float
     gps_threshold_m: float
+    # ``None`` keeps source compatibility for library callers from the first
+    # slice.  The worker schema requires every voice setting explicitly.
+    unnamed_margin: float | None = None
+    named_threshold: float | None = None
+    named_margin: float | None = None
+    aggregation: str = "max"
+    top_k: int = 2
+    support_bonus: float = 0.0
+    score_mode: str = "raw"
+    safe_anonymous_reuse: bool = True
 
     def __post_init__(self) -> None:
         if (
@@ -29,6 +40,29 @@ class MatchConfig:
             or self.gps_threshold_m < 0
         ):
             raise ValueError("gps_threshold_m must be finite and nonnegative")
+        for name, value in (
+            ("unnamed_margin", self.unnamed_margin),
+            ("named_threshold", self.named_threshold),
+            ("named_margin", self.named_margin),
+            ("support_bonus", self.support_bonus),
+        ):
+            if value is not None and (
+                type(value) not in (int, float) or not math.isfinite(value) or value < 0
+            ):
+                raise ValueError(f"{name} must be finite and nonnegative")
+        if self.named_threshold is not None and not -1 <= self.named_threshold <= 1:
+            raise ValueError("named_threshold must be finite in [-1, 1]")
+        if self.aggregation not in {"max", "top_k_mean"} or self.score_mode not in {
+            "raw",
+            "normalized",
+        }:
+            raise ValueError("invalid voice scoring mode")
+        if (
+            type(self.top_k) is not int
+            or self.top_k < 1
+            or type(self.safe_anonymous_reuse) is not bool
+        ):
+            raise ValueError("invalid voice scoring options")
 
 
 def vector(record: RawRecord) -> tuple[str, tuple[float, ...]]:
@@ -93,6 +127,7 @@ def reference_dependency(record: SemanticRecord) -> DependencyInput:
 class Match:
     target_id: str | None
     dependencies: tuple[DependencyInput, ...]
+    diagnostic: ScoreDiagnostic | None = None
 
 
 def match(reader: Reader, subject: RawRecord, config: MatchConfig, unknown_id: str) -> Match:
@@ -126,9 +161,124 @@ def match(reader: Reader, subject: RawRecord, config: MatchConfig, unknown_id: s
             owners[id] = item.id
             raw_refs.append(raw)
         candidates.append((item, raw_refs))
+    # A local speaker's already attributed sibling in the same audio and
+    # diarization scope excludes that person.  Every field actually inspected
+    # is included as a dependency so a later correction can rejudge safely.
+    excluded: set[str] = set()
+    if kind == "person":
+        local_id = subject.payload.get("local_speaker_id")
+        audio_id = subject.payload.get("audio_ref_id")
+        if isinstance(local_id, str) and isinstance(audio_id, str):
+            local = reader.get(local_id)
+            if isinstance(local, RawRecord) and local.data_type == "local_speaker":
+                upstream = local.payload.get("upstream")
+                scope = upstream.get("diarization_scope_id") if isinstance(upstream, dict) else None
+                dependencies.append(
+                    DependencyInput(
+                        VersionRef(data_type="local_speaker", id=local.id, version=1),
+                        ("audio_ref_id", "upstream"),
+                    )
+                )
+                if isinstance(scope, str):
+                    for sibling in iter_query(
+                        reader,
+                        Query("local_speaker", where={"audio_ref_id": audio_id}, order="id"),
+                    ):
+                        if not isinstance(sibling, RawRecord) or sibling.id == local.id:
+                            continue
+                        sibling_upstream = sibling.payload.get("upstream")
+                        sibling_scope = (
+                            sibling_upstream.get("diarization_scope_id")
+                            if isinstance(sibling_upstream, dict)
+                            else None
+                        )
+                        dependencies.append(
+                            DependencyInput(
+                                VersionRef(data_type="local_speaker", id=sibling.id, version=1),
+                                ("audio_ref_id", "upstream"),
+                            )
+                        )
+                        if sibling_scope != scope:
+                            continue
+                        for sibling_voice in iter_query(
+                            reader,
+                            Query("voiceprint", where={"local_speaker_id": sibling.id}, order="id"),
+                        ):
+                            if not isinstance(sibling_voice, RawRecord):
+                                continue
+                            dependencies.append(
+                                DependencyInput(
+                                    VersionRef(
+                                        data_type="voiceprint", id=sibling_voice.id, version=1
+                                    ),
+                                    ("local_speaker_id", "audio_ref_id"),
+                                )
+                            )
+                            for attribution in iter_query(
+                                reader,
+                                Query(
+                                    "attribution",
+                                    where={"subject_id": sibling_voice.id},
+                                    order="id",
+                                ),
+                            ):
+                                if not isinstance(attribution, SemanticRecord):
+                                    continue
+                                target = attribution.payload.get("target_id")
+                                if isinstance(target, str):
+                                    excluded.add(target)
+                                    dependencies.append(
+                                        DependencyInput(
+                                            VersionRef(
+                                                data_type="attribution",
+                                                id=attribution.id,
+                                                version=attribution.version,
+                                            ),
+                                            ("subject_id", "target_id"),
+                                        )
+                                    )
+
     # Being a reference takes precedence over distance/similarity.
     if subject.id in owners:
         return Match(owners[subject.id], tuple(dependencies))
+    if excluded:
+        candidates = [(item, refs) for item, refs in candidates if item.id not in excluded]
+    if not candidates and kind == "person":
+        return Match(None, tuple(dependencies))
+    if kind == "person":
+        model, query = query_vector
+        scored: list[Reference] = []
+        for item, refs in candidates:
+            named = bool(item.payload.get("name"))
+            for raw in refs:
+                ref_model, values = vector(raw)
+                if ref_model == model and len(values) == len(query):
+                    scored.append(Reference(item.id, raw.id, values, named))
+        ranked = rank_identity_matches(
+            query,
+            scored,
+            aggregation=config.aggregation,
+            top_k=config.top_k,
+            support_bonus=config.support_bonus,
+            score_mode=config.score_mode,
+        )
+        diagnostic = decide(
+            ranked,
+            named_threshold=(
+                config.named_threshold
+                if config.named_threshold is not None
+                else config.cosine_threshold
+            ),
+            named_margin=config.named_margin if config.named_margin is not None else 0.0,
+            unnamed_threshold=config.cosine_threshold,
+            unnamed_margin=config.unnamed_margin if config.unnamed_margin is not None else 0.0,
+            safe_anonymous_reuse=config.safe_anonymous_reuse,
+        )
+        return Match(
+            diagnostic.best.identity_id if diagnostic.accepted and diagnostic.best else None,
+            tuple(dependencies),
+            diagnostic,
+        )
     best: tuple[float, str] | None = None
     for item, refs in candidates:
         for raw in refs:
