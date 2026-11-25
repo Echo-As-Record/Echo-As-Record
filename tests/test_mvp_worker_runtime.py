@@ -171,7 +171,16 @@ def worker_processes(rt):
                 "timeout": 35.0,
             }
             if module == "attribution":
-                config.update(cosine_threshold=0.9, gps_threshold_m=100.0)
+                config.update(
+                    cosine_threshold=0.9,
+                    gps_threshold_m=100.0,
+                    unnamed_margin=0.0,
+                    named_threshold=0.9,
+                    named_margin=0.0,
+                    aggregation="max",
+                    top_k=None,
+                    safe_anonymous_reuse=True,
+                )
             if module == "extraction":
                 # Callers select a configured alias, not a provider model identifier.
                 config.update(gateway_url=rt.gateway_url, model="default")

@@ -3,8 +3,7 @@
 Private JSON keys: module (attribution/extraction/dependency), storage_url,
 storage_token, consumer, journal_namespace, state_dir (existing owned 0700).
 Consumers are fixed: attribution / extraction.jobs / dependency.changes.
-③ additionally requires cosine_threshold and gps_threshold_m (and, when voice
-matching options are supplied, their complete set). ④ requires
+③ requires the complete explicit voice matching configuration. ④ requires
 gateway_url and model; its storage identity authenticates at ⑦ too. Optional
 ④ gateway_timeout configures only the gateway client; omitted, it uses timeout
 as before. Optional schedule={start: RFC3339 UTC ending Z, every_seconds:
@@ -114,8 +113,6 @@ class Settings(SafeModel):
     named_margin: float | None = Field(default=None, strict=True, ge=0, allow_inf_nan=False)
     aggregation: Literal["max", "top_k_mean"] | None = None
     top_k: int | None = Field(default=None, strict=True, ge=1, le=100)
-    support_bonus: float | None = Field(default=None, strict=True, ge=0, allow_inf_nan=False)
-    score_mode: Literal["raw", "normalized"] | None = None
     safe_anonymous_reuse: bool | None = Field(default=None, strict=True)
     gateway_url: str | None = Field(default=None, strict=True, repr=False)
     gateway_timeout: float | None = Field(
@@ -166,21 +163,31 @@ class Settings(SafeModel):
                 or url.raw_path != b"/"
             ):
                 raise ValueError("invalid_origin")
+        voice_fields = {
+            "cosine_threshold",
+            "gps_threshold_m",
+            "unnamed_margin",
+            "named_threshold",
+            "named_margin",
+            "aggregation",
+            "top_k",
+            "safe_anonymous_reuse",
+        }
         if self.module == "attribution":
             from ear_attribution.matching import MatchConfig
 
-            if self.cosine_threshold is None or self.gps_threshold_m is None:
+            if not voice_fields.issubset(self.model_fields_set):
                 raise ValueError("explicit_thresholds_required")
-            MatchConfig(
-                self.cosine_threshold, self.gps_threshold_m,
-                self.unnamed_margin, self.named_threshold, self.named_margin,
-                self.aggregation or "max", self.top_k or 2, self.support_bonus or 0.0,
-                self.score_mode or "raw",
-                self.safe_anonymous_reuse if self.safe_anonymous_reuse is not None else True,
+            assert (
+                self.cosine_threshold is not None
+                and self.gps_threshold_m is not None
+                and self.unnamed_margin is not None
+                and self.named_threshold is not None
+                and self.named_margin is not None
+                and self.aggregation is not None
+                and self.safe_anonymous_reuse is not None
             )
-        elif any(
-            value is not None
-            for value in (
+            MatchConfig(
                 self.cosine_threshold,
                 self.gps_threshold_m,
                 self.unnamed_margin,
@@ -188,11 +195,9 @@ class Settings(SafeModel):
                 self.named_margin,
                 self.aggregation,
                 self.top_k,
-                self.support_bonus,
-                self.score_mode,
                 self.safe_anonymous_reuse,
             )
-        ):
+        elif self.model_fields_set.intersection(voice_fields):
             raise ValueError("unexpected_thresholds")
         if self.transcript_only:
             if (
@@ -240,7 +245,7 @@ def private_file(info: os.stat_result) -> None:
     if (
         not stat.S_ISREG(info.st_mode)
         or info.st_uid != os.geteuid()
-        or stat.S_IMODE(info.st_mode) != 0o600
+        or info.st_mode & 0o7777 != 0o600
         or info.st_nlink != 1
     ):
         raise ValueError("unsafe_file")
@@ -263,7 +268,7 @@ def directory(path: Path, *, private: bool = False) -> tuple[int, tuple[tuple[in
             ):
                 raise ValueError("untrusted_ancestor")
             chain.append(identity(info))
-        if private and (info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700):
+        if private and (info.st_uid != os.geteuid() or info.st_mode & 0o7777 != 0o700):
             raise ValueError("unsafe_state_directory")
         return fd, tuple(chain)
     except BaseException:
@@ -652,18 +657,25 @@ def run(config: Settings, stop: Event) -> None:
                     journal = CommitJournal(state.path / "journal", namespace=namespace)
                     stack.callback(journal.close)
                     assert (
-                        config.cosine_threshold is not None and config.gps_threshold_m is not None
+                        config.cosine_threshold is not None
+                        and config.gps_threshold_m is not None
+                        and config.unnamed_margin is not None
+                        and config.named_threshold is not None
+                        and config.named_margin is not None
+                        and config.aggregation is not None
+                        and config.safe_anonymous_reuse is not None
                     )
                     worker = AttributionService.business(
                         client,
                         config=MatchConfig(
-                            config.cosine_threshold, config.gps_threshold_m,
-                            config.unnamed_margin, config.named_threshold, config.named_margin,
-                            config.aggregation or "max", config.top_k or 2,
-                            config.support_bonus or 0.0, config.score_mode or "raw",
-                            config.safe_anonymous_reuse
-                            if config.safe_anonymous_reuse is not None
-                            else True,
+                            config.cosine_threshold,
+                            config.gps_threshold_m,
+                            config.unnamed_margin,
+                            config.named_threshold,
+                            config.named_margin,
+                            config.aggregation,
+                            config.top_k,
+                            config.safe_anonymous_reuse,
                         ),
                         journal=journal,
                     )

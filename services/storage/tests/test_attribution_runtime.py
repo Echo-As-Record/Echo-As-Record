@@ -39,7 +39,16 @@ from .test_api_gateway_integration import Harness, loopback
 from .test_relay import reader
 
 pytestmark = [pytest.mark.postgres, pytest.mark.nats]
-CONFIG = MatchConfig(cosine_threshold=0.9, gps_threshold_m=100)
+CONFIG = MatchConfig(
+    cosine_threshold=0.9,
+    gps_threshold_m=100,
+    unnamed_margin=0.0,
+    named_threshold=0.9,
+    named_margin=0.0,
+    aggregation="max",
+    top_k=None,
+    safe_anonymous_reuse=True,
+)
 RAW_TYPES = {
     "audio_ref",
     "transcript_segment",

@@ -66,7 +66,16 @@ def synthetic_config(module="attribution"):
         "timeout": 3.0,
     }
     if module == "attribution":
-        value.update(cosine_threshold=0.9, gps_threshold_m=100.0)
+        value.update(
+            cosine_threshold=0.9,
+            gps_threshold_m=100.0,
+            unnamed_margin=0.0,
+            named_threshold=0.9,
+            named_margin=0.0,
+            aggregation="max",
+            top_k=None,
+            safe_anonymous_reuse=True,
+        )
     if module == "extraction":
         value.update(gateway_url="http://127.0.0.1:1", model="unused-synthetic")
     return value

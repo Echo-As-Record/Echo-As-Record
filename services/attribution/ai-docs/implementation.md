@@ -61,10 +61,10 @@ based-on: 设计 v1.2 第 6 节与信号补充 §3.2、§4（accepted，仅表�
 ## 4. 匹配
 
 - **已是参考者优先**：数据 id 已出现在某个人物或地点的 `references` 里，直接归该对象，不看相似度。一个 id 出现在两个对象的参考里，抛 `reference_owner_conflict`。
-- **声纹**：`payload.model_version`（非空字符串）和 `payload.embedding.values/shape`（一维、有限、非零）。向量先按最大绝对值缩放再归一化，只与同模型、同维度参考比较。`scoring.py` 先按人聚合（`max` 或 top-k 平均），参考不会先平均成模板；可选 `support_bonus` 只对额外参考作小幅加分。
-- **归一化模式**：`raw` 保留聚合余弦分；`normalized` 在每人至少两条参考时使用 `z_genuine - z_impostor`，即 `(s-μ_self)/(σ_self+1e-6) - (s-μ_other)/(σ_other+1e-6)`，参考不足退回 raw。诊断包含排名、第一/第二名、分差和接受原因，但不写入记录。
+- **声纹**：`payload.model_version`（非空字符串）和 `payload.embedding.values/shape`（一维、有限、非零）。向量先按最大绝对值缩放再归一化，只与同模型、同维度参考比较。`scoring.py` 先按人聚合（`max` 或 top-k 平均），参考不会先平均成模板。`normalized` 与 `support_bonus` 只供离线评估，未接入生产匹配。
+- **离线评分**：`normalized` 使用查询向量与该人的参考相似度分布作为 genuine、其他人的参考作为 impostor，公式为 `(s-μ_self)/(σ_self+1e-6) - (s-μ_other)/(σ_other+1e-6)`；只要任一候选少于两条参考或没有对照候选，整个排名退回 raw，并在诊断记录模式和原因。`support_bonus` 只按余弦达到显式 `support_min_score` 的参考数计数，raw/normalized 均一致。两者目前不进入生产配置。
 - **阈值与分差**：未命名和已命名人物分别使用 `cosine_threshold`/`unnamed_margin` 与 `named_threshold`/`named_margin`；第二名按不同人物计算，唯一候选不要求分差。已命名第一名分差不足会新建未命名人物；未命名第一名按 `safe_anonymous_reuse` 安全复用。所有新增 worker 配置项只能显式传入，非有限、越界值报错；阈值尚未校准。
-- **worker 配置形状**：attribution JSON 需提供 `cosine_threshold`、`gps_threshold_m`、`unnamed_margin`、`named_threshold`、`named_margin`、`aggregation`、`top_k`、`support_bonus`、`score_mode`、`safe_anonymous_reuse`；示例（数值由部署者填写）为：`{"module":"attribution","cosine_threshold":<c>,"gps_threshold_m":<m>,"unnamed_margin":<u>,"named_threshold":<n>,"named_margin":<d>,"aggregation":"max","top_k":2,"support_bonus":0,"score_mode":"raw","safe_anonymous_reuse":true}`。旧的两项构造仍只为已有库调用方兼容，不能作为新部署配置。
+- **worker 配置形状**：attribution JSON 必须显式提供 `cosine_threshold`（未命名人物接受阈值）、`gps_threshold_m`、`unnamed_margin`、`named_threshold`、`named_margin`、`aggregation`、`top_k` 和 `safe_anonymous_reuse`。`aggregation=max` 时 `top_k` 必须为 null；`top_k_mean` 时必须为正整数。示例：`{"module":"attribution","cosine_threshold":<c>,"gps_threshold_m":<m>,"unnamed_margin":<u>,"named_threshold":<n>,"named_margin":<d>,"aggregation":"max","top_k":null,"safe_anonymous_reuse":true}`。
 - **同段互斥**：沿 `voiceprint → local_speaker → audio_ref` 读取同一 `diarization_scope_id` 的局部说话人及当前归属，排除已被同段另一说话人占用的人物，并登记实际读取字段；排除后无候选走新建未命名人物。不同作用域不互斥。
 - **GPS**：`payload.latitude/longitude`（度，WGS84）。用 haversine 球面距离（平均地球半径 6371008.8 m），`<= gps_threshold_m` 才算候选。这是球面近似，不是椭球大地线，行为保持不变。
 - **认不出时**：声纹新建未命名人物（`name: null`、`references: [数据 id]`、单调递增的 `display_number`），并同批写归属；GPS 归全局唯一的未知地点（无参考、`is_unknown: true`，不参与匹配）。自动匹配本身不增加参考；只有新建未命名人物时把这条声纹设为其首个参考。

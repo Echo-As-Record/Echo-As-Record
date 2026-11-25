@@ -58,7 +58,16 @@ def settings(tmp_path, module="attribution", **changes):
         "timeout": 1,
     }
     if module == "attribution":
-        value.update(cosine_threshold=0.9, gps_threshold_m=100)
+        value.update(
+            cosine_threshold=0.9,
+            gps_threshold_m=100,
+            unnamed_margin=0.0,
+            named_threshold=0.9,
+            named_margin=0.0,
+            aggregation="max",
+            top_k=None,
+            safe_anonymous_reuse=True,
+        )
     if module == "extraction":
         value.update(gateway_url="http://synthetic-gateway.invalid", model="synthetic")
     return {**value, **changes}
@@ -190,6 +199,38 @@ def test_valid_configs_no_default_timer_or_history(tmp_path, module):
     cfg = worker.load_config(str(write_config(tmp_path, settings(tmp_path, module))))
     assert cfg.schedule is None and "from_beginning" not in cfg.model_fields_set
     assert SECRET not in repr(cfg)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "cosine_threshold",
+        "gps_threshold_m",
+        "unnamed_margin",
+        "named_threshold",
+        "named_margin",
+        "aggregation",
+        "top_k",
+        "safe_anonymous_reuse",
+    ],
+)
+def test_attribution_voice_configuration_is_explicit(tmp_path, field):
+    value = settings(tmp_path)
+    value.pop(field)
+    with pytest.raises(ValueError, match="explicit_thresholds_required"):
+        worker.Settings.model_validate(value)
+
+
+def test_attribution_top_k_matches_aggregation(tmp_path):
+    with pytest.raises(ValueError):
+        worker.Settings.model_validate(settings(tmp_path, aggregation="max", top_k=2))
+    cfg = worker.Settings.model_validate(settings(tmp_path, aggregation="top_k_mean", top_k=2))
+    assert cfg.top_k == 2
+
+
+def test_non_attribution_rejects_voice_configuration_even_null(tmp_path):
+    with pytest.raises(ValueError, match="unexpected_thresholds"):
+        worker.Settings.model_validate(settings(tmp_path, "dependency", cosine_threshold=None))
 
 
 @pytest.mark.parametrize("value", [0, 661, "330", True, float("inf"), float("nan")])

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Literal, cast
 
 from ear_contracts import RawRecord, SemanticRecord, VersionRef
 from ear_storage_client import DependencyInput, Query, Reader, iter_query
@@ -16,16 +17,12 @@ from ear_attribution.scoring import Reference, ScoreDiagnostic, decide, rank_ide
 class MatchConfig:
     cosine_threshold: float
     gps_threshold_m: float
-    # ``None`` keeps source compatibility for library callers from the first
-    # slice.  The worker schema requires every voice setting explicitly.
-    unnamed_margin: float | None = None
-    named_threshold: float | None = None
-    named_margin: float | None = None
-    aggregation: str = "max"
-    top_k: int = 2
-    support_bonus: float = 0.0
-    score_mode: str = "raw"
-    safe_anonymous_reuse: bool = True
+    unnamed_margin: float
+    named_threshold: float
+    named_margin: float
+    aggregation: str
+    top_k: int | None
+    safe_anonymous_reuse: bool
 
     def __post_init__(self) -> None:
         if (
@@ -42,27 +39,20 @@ class MatchConfig:
             raise ValueError("gps_threshold_m must be finite and nonnegative")
         for name, value in (
             ("unnamed_margin", self.unnamed_margin),
-            ("named_threshold", self.named_threshold),
             ("named_margin", self.named_margin),
-            ("support_bonus", self.support_bonus),
         ):
-            if value is not None and (
-                type(value) not in (int, float) or not math.isfinite(value) or value < 0
-            ):
+            if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
                 raise ValueError(f"{name} must be finite and nonnegative")
-        if self.named_threshold is not None and not -1 <= self.named_threshold <= 1:
+        if not -1 <= self.named_threshold <= 1:
             raise ValueError("named_threshold must be finite in [-1, 1]")
-        if self.aggregation not in {"max", "top_k_mean"} or self.score_mode not in {
-            "raw",
-            "normalized",
-        }:
-            raise ValueError("invalid voice scoring mode")
+        if self.aggregation not in {"max", "top_k_mean"}:
+            raise ValueError("invalid voice aggregation")
         if (
-            type(self.top_k) is not int
-            or self.top_k < 1
-            or type(self.safe_anonymous_reuse) is not bool
-        ):
-            raise ValueError("invalid voice scoring options")
+            self.aggregation == "top_k_mean" and (type(self.top_k) is not int or self.top_k < 1)
+        ) or (self.aggregation == "max" and self.top_k is not None):
+            raise ValueError("top_k must match aggregation")
+        if type(self.safe_anonymous_reuse) is not bool:
+            raise ValueError("safe_anonymous_reuse must be bool")
 
 
 def vector(record: RawRecord) -> tuple[str, tuple[float, ...]]:
@@ -161,6 +151,11 @@ def match(reader: Reader, subject: RawRecord, config: MatchConfig, unknown_id: s
             owners[id] = item.id
             raw_refs.append(raw)
         candidates.append((item, raw_refs))
+    # Being a reference takes precedence over distance/similarity and over
+    # mutual-exclusion reads.
+    if subject.id in owners:
+        return Match(owners[subject.id], tuple(dependencies))
+
     # A local speaker's already attributed sibling in the same audio and
     # diarization scope excludes that person.  Every field actually inspected
     # is included as a dependency so a later correction can rejudge safely.
@@ -175,7 +170,7 @@ def match(reader: Reader, subject: RawRecord, config: MatchConfig, unknown_id: s
                 scope = upstream.get("diarization_scope_id") if isinstance(upstream, dict) else None
                 dependencies.append(
                     DependencyInput(
-                        VersionRef(data_type="local_speaker", id=local.id, version=1),
+                        VersionRef(data_type="local_speaker", id=local.id, version=local.version),
                         ("audio_ref_id", "upstream"),
                     )
                 )
@@ -194,7 +189,11 @@ def match(reader: Reader, subject: RawRecord, config: MatchConfig, unknown_id: s
                         )
                         dependencies.append(
                             DependencyInput(
-                                VersionRef(data_type="local_speaker", id=sibling.id, version=1),
+                                VersionRef(
+                                    data_type="local_speaker",
+                                    id=sibling.id,
+                                    version=sibling.version,
+                                ),
                                 ("audio_ref_id", "upstream"),
                             )
                         )
@@ -209,7 +208,9 @@ def match(reader: Reader, subject: RawRecord, config: MatchConfig, unknown_id: s
                             dependencies.append(
                                 DependencyInput(
                                     VersionRef(
-                                        data_type="voiceprint", id=sibling_voice.id, version=1
+                                        data_type="voiceprint",
+                                        id=sibling_voice.id,
+                                        version=sibling_voice.version,
                                     ),
                                     ("local_speaker_id", "audio_ref_id"),
                                 )
@@ -238,14 +239,12 @@ def match(reader: Reader, subject: RawRecord, config: MatchConfig, unknown_id: s
                                         )
                                     )
 
-    # Being a reference takes precedence over distance/similarity.
-    if subject.id in owners:
-        return Match(owners[subject.id], tuple(dependencies))
     if excluded:
         candidates = [(item, refs) for item, refs in candidates if item.id not in excluded]
     if not candidates and kind == "person":
         return Match(None, tuple(dependencies))
     if kind == "person":
+        assert query_vector is not None
         model, query = query_vector
         scored: list[Reference] = []
         for item, refs in candidates:
@@ -257,22 +256,21 @@ def match(reader: Reader, subject: RawRecord, config: MatchConfig, unknown_id: s
         ranked = rank_identity_matches(
             query,
             scored,
-            aggregation=config.aggregation,
+            aggregation=cast(Literal["max", "top_k_mean"], config.aggregation),
             top_k=config.top_k,
-            support_bonus=config.support_bonus,
-            score_mode=config.score_mode,
+            support_bonus=0.0,  # production stays raw until offline calibration
+            support_min_score=1.0,  # bonus is disabled; this is an explicit sentinel
+            score_mode="raw",  # normalized/support bonus are offline-only
         )
         diagnostic = decide(
             ranked,
-            named_threshold=(
-                config.named_threshold
-                if config.named_threshold is not None
-                else config.cosine_threshold
-            ),
-            named_margin=config.named_margin if config.named_margin is not None else 0.0,
+            named_threshold=config.named_threshold,
+            named_margin=config.named_margin,
             unnamed_threshold=config.cosine_threshold,
-            unnamed_margin=config.unnamed_margin if config.unnamed_margin is not None else 0.0,
+            unnamed_margin=config.unnamed_margin,
             safe_anonymous_reuse=config.safe_anonymous_reuse,
+            score_mode_used="raw",
+            score_mode_reason="production_matching_uses_raw_only",
         )
         return Match(
             diagnostic.best.identity_id if diagnostic.accepted and diagnostic.best else None,

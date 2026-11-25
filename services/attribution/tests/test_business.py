@@ -41,6 +41,71 @@ def test_unknown_person_repeat_no_automatic_reference_growth():
     assert {d.depends_on.id for d in client.dependencies_of(a.id)} == {person.id}
 
 
+def test_same_audio_scope_excludes_sibling_owner_and_registers_dependencies():
+    storage, client, service = setup()
+    audio = new_id()
+    left = append(
+        storage,
+        "local_speaker",
+        {"audio_ref_id": audio, "upstream": {"diarization_scope_id": "scope"}},
+    )
+    right = append(
+        storage,
+        "local_speaker",
+        {"audio_ref_id": audio, "upstream": {"diarization_scope_id": "scope"}},
+    )
+    first = append(
+        storage, "voiceprint", {**voice(), "local_speaker_id": left.data_id, "audio_ref_id": audio}
+    )
+    second = append(
+        storage, "voiceprint", {**voice(), "local_speaker_id": right.data_id, "audio_ref_id": audio}
+    )
+    service.handle(first)
+    service.handle(second)
+    first_attr, second_attr = attr(client, first), attr(client, second)
+    assert first_attr.payload["target_id"] != second_attr.payload["target_id"]
+    deps = client.dependencies_of(second_attr.id)
+    assert {d.depends_on.data_type for d in deps} >= {"local_speaker", "voiceprint", "attribution"}
+    fields_by_type = {
+        d.depends_on.data_type: d.fields
+        for d in deps
+        if d.depends_on.data_type in {"local_speaker", "voiceprint", "attribution"}
+    }
+    assert set(fields_by_type["local_speaker"] or ()) == {"audio_ref_id", "upstream"}
+    assert set(fields_by_type["voiceprint"] or ()) == {"local_speaker_id", "audio_ref_id"}
+    assert set(fields_by_type["attribution"] or ()) == {"subject_id", "target_id"}
+
+
+def test_different_scope_and_same_local_speaker_are_not_mutually_exclusive():
+    storage, client, service = setup()
+    audio = new_id()
+    one = append(
+        storage,
+        "local_speaker",
+        {"audio_ref_id": audio, "upstream": {"diarization_scope_id": "one"}},
+    )
+    two = append(
+        storage,
+        "local_speaker",
+        {"audio_ref_id": audio, "upstream": {"diarization_scope_id": "two"}},
+    )
+    first = append(
+        storage, "voiceprint", {**voice(), "local_speaker_id": one.data_id, "audio_ref_id": audio}
+    )
+    same_local = append(
+        storage, "voiceprint", {**voice(), "local_speaker_id": one.data_id, "audio_ref_id": audio}
+    )
+    other_scope = append(
+        storage, "voiceprint", {**voice(), "local_speaker_id": two.data_id, "audio_ref_id": audio}
+    )
+    service.handle(first)
+    service.handle(same_local)
+    service.handle(other_scope)
+    target = attr(client, first).payload["target_id"]
+    assert attr(client, same_local).payload["target_id"] == target
+    assert attr(client, other_scope).payload["target_id"] == target
+
+
 def test_gps_unknown_singleton_restart_and_distance():
     storage, client, service = setup()
     first, second = append(storage, "gps_point"), append(storage, "gps_point")
@@ -98,7 +163,9 @@ def test_configurable_threshold_and_all_actual_candidates():
     service.handle(x)
     service.handle(y)
     z = append(storage, payload=voice((1, 1)))
-    relaxed = AttributionService.business(client, config=MatchConfig(0.7, 100))
+    relaxed = AttributionService.business(
+        client, config=MatchConfig(0.7, 100, 0.0, 0.7, 0.0, "max", None, True)
+    )
     relaxed.handle(z)
     deps = client.dependencies_of(attr(client, z).id)
     assert len(deps) == 2

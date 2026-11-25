@@ -23,7 +23,7 @@ from .support import CONFIG, append, attr, feedback, present, request, setup, vo
 )
 def test_configuration_rejects_unsafe_thresholds(cosine, gps):
     with pytest.raises(ValueError):
-        MatchConfig(cosine, gps)
+        MatchConfig(cosine, gps, 0.0, cosine, 0.0, "max", None, True)
 
 
 def test_existing_reference_wins_even_against_earlier_identical_candidate():
