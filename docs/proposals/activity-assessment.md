@@ -26,8 +26,7 @@ based-on: docs/design/design-v1.2.md 3.5、6、7.1、7.2、8.1 节；docs/decisi
 | `activity_id`、`activity_version` | 被评估的活动 |
 | `importance` | `high` / `normal` / `low` |
 | `reason` | 一两句理由，直接写名字，不存 id 引用标记（与[设计 §7.5](../design/design-v1.2.md) 一致） |
-| `evidence_ids` | 支撑判断的原始记录 id（各句证据的并集），过[结果审核](extraction-result-audit.md)的确定性检查 |
-| `evidence_index` | `reason` 中各句到证据 id 的索引，模型不输出原话，规则同结果审核提案第 3.3 节 |
+| `evidence_ids` | 支撑判断的原始记录 id，过[结果审核](extraction-result-audit.md)的确定性检查 |
 | `review` | 可选，`high` 时的独立复核结论，见结果审核提案第 4 节 |
 | `method` | 判定方法与版本 |
 
