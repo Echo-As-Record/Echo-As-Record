@@ -25,6 +25,7 @@ based-on: c5c31f8 的②实现与文档；工作区未提交的②改动（selec
 - [职责与验收](../../docs/design/work-breakdown-v1.2.md)（② 适配器一节）
 - [数据流、导入规则与验收方法](ai-docs/implementation.md)
 - [各类型 payload 字段](ai-docs/payloads.md)，供 ③④ 使用
+- [转写纠错提案](../../docs/proposals/transcript-correction.md)第 2.2 节（proposed，未采纳）：建议②在写入转写时附加确定性质量标记 `quality_flags`，只标记、不改写不删除；纠错本身由④做。
 
 当前状态：转换、导入规则、远程写入和常驻扫描已实现。`ear-adapter dry-run` 使用内存并模拟重启重扫（兼容 `--dry-run`）；`ear-adapter once` 向①导入一轮；`ear-adapter run --interval 60` 常驻扫描，SIGTERM/SIGINT 在当前录音处理结束后退出。①临时不可用、提交结果未知均留待下轮，配置/授权错误退出非零。首次音频导入保持一个原子批次，超限不会拆批；迟到 Context 独立追加。
 

@@ -18,6 +18,7 @@ based-on: 设计 v1.2；c5c31f8 的④实现；本轮负责人授权④直接依
 - [使用与接入](ai-docs/implementation.md)：演示命令、宿主注入示例、契约差距、首片的代码导航与限制（该文写于 v1.2 对齐之前，v1.2 部分以本文和源码为准，差距见[跑通交接第 8 节](../../ai-docs/plans/mvp-runtime-handoff.md)）。
 - [网页演示](ai-docs/web-demo.md)：合成数据和固定模型回复。
 - [MVP 跑通计划第 2 节](../../ai-docs/plans/mvp-runnable.md)与[MVP 运行时交接](../../ai-docs/plans/mvp-runtime-handoff.md)：工作区进展、验证来源与待补项。
+- 本轮提案（均为 proposed，未采纳，2026-11-25）：不依赖③、可先做的[转写纠错派生层](../../docs/proposals/transcript-correction.md)（含 C07 修订建议）、[结果确定性审核与独立复核](../../docs/proposals/extraction-result-audit.md)、⑦的 [Codex provider](../../docs/proposals/llm-gateway-codex-provider.md)；要等③匹配校准和 `person.is_self` 的[活动重要性评估骨架](../../docs/proposals/activity-assessment.md)。词表沿用[用户词表提案](../../docs/proposals/asr-user-glossary.md)。
 
 模型端口保留 `ModelGateway`，实际 HTTP 客户端统一使用 workspace 包 `ear-llm-gateway` 的 `GatewayClient`，构造时传④的 `SYSTEM`。客户端仍由⑦维护，协议见[⑦入口](../llm_gateway/README.md)。演示仍用测试替身；远程宿主见[交接第 4 节](../../ai-docs/plans/mvp-runtime-handoff.md)的统一 worker。
 
