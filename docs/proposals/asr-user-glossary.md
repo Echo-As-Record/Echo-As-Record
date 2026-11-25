@@ -22,7 +22,7 @@ based-on: docs/design/design-v1.2.md 3、7.1、7.2 节；docs/decisions/mvp-conf
 
 ## 2. 做法
 
-1. **新增数据类型 `glossary_entry`**（暂拟名），一条记录是一个词条：
+1. **新增数据类型 `transcript_human_correction`**（原暂名 `glossary_entry`，2026-11-25 改名，见[纠错提案](transcript-correction.md)第 2.3 节），一条记录是一个词条：
 
    | 字段 | 说明 |
    |---|---|

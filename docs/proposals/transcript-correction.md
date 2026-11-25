@@ -7,9 +7,9 @@ generated-at: 2026-11-25
 based-on: docs/design/design-v1.2.md 3.1、3.2、3.5、7.1、7.2 节；docs/decisions/mvp-confirmed-decisions.md C07；docs/proposals/asr-user-glossary.md（proposed，未采纳）；contracts/registry/data-types.json（origin/dev 5200899，transcript_segment 为②写的 raw_record）；services/extraction 源码（5200899）；PRTS pulse 分诊的纠错做法与统计（仓库外：312 段中 45 段有纠错，共 114 处，经 YijieYing 转达，原文不入库）；YijieYing 2026-11-22、11-25 对③④分工与“④纠错不差于 pulse 前 pulse 不停”的口头决定
 ---
 
-# 提案：转写纠错派生层（`transcript_correction`）
+# 提案：转写纠错（`transcript_human_correction` / `transcript_agent_correction`）
 
-> **状态：proposed，未采纳。** 本文提议新增④单写的语义类型 `transcript_correction`，并对 [C07](../decisions/mvp-confirmed-decisions.md) 补一句修订。两者都改动已采纳设计或公共契约，需负责人明确决定；新增类型与字段采纳后仍按[工作分解](../design/work-breakdown-v1.2.md)第 11 条由①负责人与 I 审核。本文不依赖③，可先于③的匹配校准实施。
+> **状态：proposed，未采纳。** 本文提议新增④单写的语义类型 `transcript_agent_correction`，并对 [C07](../decisions/mvp-confirmed-decisions.md) 补一句修订。两者都改动已采纳设计或公共契约，需负责人明确决定；新增类型与字段采纳后仍按[工作分解](../design/work-breakdown-v1.2.md)第 11 条由①负责人与 I 审核。本文不依赖③，可先于③的匹配校准实施。
 
 ## 1. 问题与现状
 
@@ -21,7 +21,7 @@ based-on: docs/design/design-v1.2.md 3.1、3.2、3.5、7.1、7.2 节；docs/deci
 
 ### 2.1 纠错是④写的派生记录，原文不变
 
-新增语义类型 `transcript_correction`（暂名），④单写，经①保存，一条转写一份当前记录：
+新增语义类型 `transcript_agent_correction`（暂名），④单写，经①保存，一条转写一份当前记录：
 
 | 字段 | 说明 |
 |---|---|
@@ -37,23 +37,23 @@ based-on: docs/design/design-v1.2.md 3.1、3.2、3.5、7.1、7.2 节；docs/deci
 | `start`、`end` | 原文中的字符位置，半开区间，按 Unicode 码点计 |
 | `original` | 原文片段，必须与 `text[start:end]` 逐字相同 |
 | `suggested` | 建议写法，不能与 `original` 相同 |
-| `basis` | `glossary`（附 `glossary_entry_id`）或 `context`（上下文推断，附一句理由） |
+| `basis` | `human`（附 `transcript_human_correction_id`）或 `context`（上下文推断，附一句理由） |
 
 规则：
 
 1. **原文不变。** 转写记录不改、不追加替换版本；⑥展示转写时以原文为主，纠错只作为旁注显示，不做替换。
 2. **消费者读“原文 + 纠错”。** ④在划分、选规则、生成时把原文和纠错列表一起交给模型，由模型使用建议写法；不把替换后的文本当作新的原始数据。引用原话时引用原文（见[结果审核提案](extraction-result-audit.md)）。
-3. **确定性校验后才写入。** `original` 对不上原文、位置越界或重叠、`basis=glossary` 却引用了未附上的词条，整条纠错结果视为非法输出，不写入。
+3. **确定性校验后才写入。** `original` 对不上原文、位置越界或重叠、`basis=human` 却引用了未附上的词条，整条纠错结果视为非法输出，不写入。
 4. **依赖。** 纠错记录依赖所纠正的转写版本和附上的词条（字段 `canonical`、`variants`）。转写只追加，实际会触发重判的只有词表变化：⑤请求重判后④按新词表重做，结果不变时不新增版本，仍提交完成记录。重做后这条转写不再需要纠错时（例如用户删掉了那个错写），④追加一个 `corrections` 为空的新版本，不删除记录；下游产物照常因此重判。④不会因重判而修改或删除用户的词条，词条只随用户的反馈变化。
-5. **谁触发。** ④在一次提取开始、划分之前，对范围内还没有当前纠错记录的转写先做纠错，再进入划分。纠错调用经⑦，`purpose` 为 `transcript_correction`，按窗口批量发送，一次调用可以产出多条转写的记录。
-6. **用词表。** 词表沿用[词表提案](asr-user-glossary.md)的 `glossary_entry` 及其附词规则（只附在本次转写里出现的词条和少量全局常用词），不另建词表。该提案仍是 proposed，且写入方未定；本提案依赖它先采纳，或至少先定写入方。
+5. **谁触发。** ④在一次提取开始、划分之前，对范围内还没有当前纠错记录的转写先做纠错，再进入划分。纠错调用经⑦，`purpose` 为 `transcript_agent_correction`，按窗口批量发送，一次调用可以产出多条转写的记录。
+6. **用词表。** 词表沿用[词表提案](asr-user-glossary.md)的 `transcript_human_correction` 及其附词规则（只附在本次转写里出现的词条和少量全局常用词），不另建词表。该提案仍是 proposed，且写入方未定；本提案依赖它先采纳，或至少先定写入方。
 7. **人名只是文字。** 纠错里的人名是对转写文字的更正，不对应③的人物 id，不影响归属。
 
 ### 2.2 C07 修订（需负责人决定）
 
 在[设计 §7.1](../design/design-v1.2.md) 第 4 条后补一句：
 
-> 活动划分、名称和描述还可以读取用户词表（`glossary_entry`）和转写纠错（`transcript_correction`）。二者分别是用户直接写下的输入和对原始转写的文字更正，不含人物、地点或归属推断；其中的名字只作文字使用，不猜人物地点 id。
+> 活动划分、名称和描述还可以读取用户词表（`transcript_human_correction`）和转写纠错（`transcript_agent_correction`）。二者分别是用户直接写下的输入和对原始转写的文字更正，不含人物、地点或归属推断；其中的名字只作文字使用，不猜人物地点 id。
 
 配套约定：词表或纠错变化不自动重划活动，与“改名不自动重划”一致；活动名称描述记录读过哪些纠错版本作为追溯，但不登记会触发活动重判的依赖。`rule_selection`、产物、建议读纠错时照常登记字段依赖，按依赖分析重判。
 
@@ -65,8 +65,8 @@ based-on: docs/design/design-v1.2.md 3.1、3.2、3.5、7.1、7.2 节；docs/deci
 
 | 类型（暂名） | `kind` | `writer` | 说明 |
 |---|---|---|---|
-| `glossary_entry` | `semantic` | `extraction` | 用户词条；⑥写反馈，④按反馈写入 |
-| `transcript_correction` | `semantic` | `extraction` | 一条转写一份纠错记录 |
+| `transcript_human_correction` | `semantic` | `extraction` | 用户词条；⑥写反馈，④按反馈写入 |
+| `transcript_agent_correction` | `semantic` | `extraction` | 一条转写一份纠错记录 |
 
 - **词条必须登记为 `semantic`，不能用 `rule`。** ⑤对 `rule` 类型的修改一律忽略（[设计 §7.4](../design/design-v1.2.md)“规则编辑不主动重算历史”，⑤代码按 `kind == "rule"` 跳过）。词条修改要能触发纠错和产物重判，所以用 `semantic`。
 - 两者都是不可变版本：id 固定，修改追加新版本，删除追加整体替代的终止版本；写入时①照常发“数据库被修改”事件。
@@ -75,6 +75,28 @@ based-on: docs/design/design-v1.2.md 3.1、3.2、3.5、7.1、7.2 节；docs/deci
   - 纠错记录 v1 → 词条 v2，`fields` 为 `["canonical", "variants"]`；
   - 产物 v1 → 纠错记录 v1，表示产物读过这份纠错。
 - **新增词条不会回头纠正旧转写，这是预期行为。** 词条是独立的节点，不挂在某条转写上；⑤只沿已有的依赖找过时结果，旧纠错没有依赖一个当时还不存在的词条，所以加词条只影响之后的提取（YijieYing 2026-11-25 确认合理）。修改或删除已有词条才会传播。要让历史转写也用上新词条，用户手动重新提取，或以后另提一个“按时间范围重新纠错”的反馈。
+
+- **命名**：两个类型按来源区分，`transcript_human_correction` 是用户写的词条（原暂名 `glossary_entry`），`transcript_agent_correction` 是④生成的纠错（原暂名 `transcript_correction`）。加 `transcript_` 前缀，是为了与③的纠正归属、以后直接编辑产物等其他“人工纠正”区分（YijieYing 2026-11-25 定）。
+
+### 2.4 加词条时顺带纠正一段历史
+
+用户最常在看到一份错笔记时加词条，但新词条与那份旧笔记没有依赖，⑤找不到它（第 2.3 节）。手动重新提取会整体替代整段活动和产物，代价过大。
+
+- 新增或修改词条的反馈可以带一个可选的时间范围，表示“也应用到这一段”。
+- ④处理这条反馈时，除写入词条外，对范围内的转写重新做纠错；纠错有变化时追加新版本，⑤再按已有依赖让相关产物重判。
+- 不重新划分活动，不碰范围外的数据；范围内已经确认或执行过的建议按[设计 §7.6](../design/design-v1.2.md) 不重做。
+- 先例：⑥给③的命令已有 `rejudge_history` 选项。
+
+### 2.5 以后：⑥传来自然语言
+
+[设计 §5.2](../design/design-v1.2.md) 规定自然语言纠正属于【以后】，要先解释为建议、用户确认后再执行。届时的路径：
+
+1. ⑥把用户原话写成只追加的 `feedback`。
+2. ④经⑦把原话解释成结构化草稿（正确写法、错写、类别、可选范围），存为待确认建议，不直接生效。
+3. ⑥展示草稿，用户确认或修改后，⑥写结构化的确认反馈。
+4. ④这时才写入 `transcript_human_correction`。
+
+模型的解释不能直接写进 human 类型，否则人写的记录里混入了模型推断；原话只保留在第 1 步的反馈里用于追溯。MVP 不做。
 
 ## 3. 为什么不放进②，也不改写原文
 
@@ -98,7 +120,7 @@ based-on: docs/design/design-v1.2.md 3.1、3.2、3.5、7.1、7.2 节；docs/deci
 
 - **④**：纠错步骤、纠错记录的写入与重判、消费“原文 + 纠错”；仅转写模式的调用上限（每次运行 5 次）要为纠错留出额度或单独计数。
 - **②**：不改。
-- **①、契约**：登记 `transcript_correction`（semantic，writer `extraction`，可重判）。只增不改义。
+- **①、契约**：登记 `transcript_human_correction`（semantic，writer `extraction`）和 `transcript_agent_correction`（semantic，writer `extraction`，可重判）。只增不改义。
 - **⑥**：转写展示纠错旁注（可后做）。
 - **⑤**：无新接口。
 - **③**：不受影响，不读纠错。
@@ -110,6 +132,7 @@ based-on: docs/design/design-v1.2.md 3.1、3.2、3.5、7.1、7.2 节；docs/deci
 3. 转写原文和⑥的原文展示不变。
 4. 改词条后，依赖它的纠错和下游产物被重判；活动划分不变。
 5. 结果不变时不新增纠错版本，但有完成记录。
+6. 带范围的加词条反馈：范围内的纠错和依赖它的产物被更新，活动不重划，范围外的数据不变。
 7. 本机对照：在 312 段上按第 4 节的方式与 pulse 比较，结果由用户判定。
 
 ## 7. 待决
@@ -119,4 +142,5 @@ YijieYing 2026-11-25 已表示同意本提案（含“④单写纠错”和第 2
 1. C07 修订采纳后，与[词表提案](asr-user-glossary.md)第 4 节选项 A 同步定下。
 2. 词表写入方：YijieYing 2026-11-25 定为④单写（⑥写反馈、④按反馈写词条，与规则相同；词表变化后的重判传播仍由⑤负责）。随词表提案一起正式采纳。
 3. 一条转写一份记录，还是一个提取窗口一份。本文建议按转写，依赖最细、重判最省。
-4. “不差于 pulse”的判定线由用户在看完第一次对照结果后定。
+4. 第 2.4 节可选范围的上限（例如最长一天），以及范围内纠错量过大时是否分批。
+5. “不差于 pulse”的判定线由用户在看完第一次对照结果后定。
