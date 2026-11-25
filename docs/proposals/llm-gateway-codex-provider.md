@@ -9,7 +9,7 @@ based-on: docs/design/design-v1.2.md 第 9 节；services/llm_gateway/README.md 
 
 # 提案：⑦ 的 Codex 本地 fallback
 
-> **状态：proposed，未采纳。** ⑦的正式渠道不变：默认 Octopus Manager，可选直连 New API。本文提议给⑦加一个调用用户本机 Codex 的 provider，**只作为本地部署的 fallback**（YijieYing 2026-11-25 定位），不作为正式渠道，也不进入非本地部署。provider 本身走⑦已有的 `provider_factory` 扩展点；但“主渠道确知未执行时改走 Codex”改变了⑦ README 现写的“没有模型回退”，需负责人决定（第 3 节）。具体代码交由实现者，本文只定行为。
+> **状态：proposed，未采纳。** ⑦的正式渠道不变：默认 Octopus Manager，可选直连 New API。本文提议给⑦加一个调用用户本机 Codex 的 provider，**只作为本地部署的 fallback**（YijieYing 2026-11-25 定位），不作为正式渠道，也不进入非本地部署。provider 本身走⑦已有的 `provider_factory` 扩展点；“主渠道确知未执行时改走 Codex”改变了⑦ README 现写的“没有模型回退”，YijieYing 2026-11-25 同意推翻这句（第 3 节）；README 在实现落地时同步修改。具体代码交由实现者，本文只定行为。
 
 ## 1. 为什么
 
@@ -23,14 +23,14 @@ based-on: docs/design/design-v1.2.md 第 9 节；services/llm_gateway/README.md 
 - 只能由本地部署的配置启用；默认 compose 和任何非本地部署都不带它。
 - 调用方（④等）不感知 provider，仍请求原来的别名。
 
-## 3. fallback 规则（需负责人决定）
+## 3. fallback 规则
 
 - ⑦内部把正式渠道和 Codex 组合成一个 provider：每次先走正式渠道；**只有正式渠道确知未执行**（`ProviderFailure(safe_to_retry=True)`，例如连接被拒、准入拒绝、未配置）且有限重试用完时，才改走 Codex。
 - 正式渠道**结果未知**（超时、断连、非 200、回复无法解析）时不改走 Codex：上游可能已经执行，换渠道等于重发。这与⑦“结果未知不重试”的规则一致。
 - 同一个 `call_id` 至多被一个渠道执行；`llm_call` 记录实际使用的模型名，以便按渠道统计。若需要单独的渠道字段，另提契约增补。
 - 切换后 Codex 只用本次调用剩余的超时预算；确知未执行的失败通常很快返回，但④的 `gateway_timeout` 仍要覆盖两段之和（见第 6 节）。
 - 也允许本地配置为“只用 Codex”（没有正式渠道时），这仍是本地部署的配置，不是正式渠道。
-- 备选：不做自动切换，只在本地手动改配置切到 Codex。更简单，但正式渠道短时不可用时④仍会停住。
+- 未采用的备选：不做自动切换，只在本地手动改配置切到 Codex。正式渠道短时不可用时④仍会停住。
 
 ## 4. 容器内怎么访问宿主机
 
@@ -100,9 +100,8 @@ Codex 登录凭据在宿主机用户目录里，`codex` 命令也装在宿主机
 
 ## 12. 待决
 
-已由 YijieYing 2026-11-25 定下（提案仍为 proposed，待正式采纳）：Codex 只作本地 fallback，不作正式渠道；在本地部署中经 Codex 发出转写可以接受。
+已由 YijieYing 2026-11-25 定下（提案仍为 proposed，待正式采纳）：Codex 只作本地 fallback，不作正式渠道；在本地部署中经 Codex 发出转写可以接受；采用第 3 节的自动 fallback，推翻⑦ README 的“没有模型回退”。
 
-1. 第 3 节：自动 fallback（主渠道确知未执行才切换）还是只能手动切换。前者改变⑦“没有模型回退”的现有说明。
-2. 本地部署里⑦在容器内经桥接调用，还是⑦直接在宿主机运行。
-3. Codex 用的模型名：沿用 pulse 的模型，还是另定。
-4. 与 pulse 共用 Codex 时的时段或串行安排。
+1. 本地部署里⑦在容器内经桥接调用，还是⑦直接在宿主机运行。
+2. Codex 用的模型名：沿用 pulse 的模型，还是另定。
+3. 与 pulse 共用 Codex 时的时段或串行安排。
