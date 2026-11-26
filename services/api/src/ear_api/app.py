@@ -32,6 +32,7 @@ from ear_api.business import (
     submit_feedback,
 )
 from ear_api.config import Binding, Settings
+from ear_api.effective_time import TimeProjection
 from ear_api.execution import (
     PROTOCOL_BLOCKER,
     ActionAdapter,
@@ -129,6 +130,7 @@ def create_app(
     upstream: Upstream | None = None,
     execution: ExecutionService | None = None,
     adapter: ActionAdapter | None = None,
+    time_projection: TimeProjection | None = None,
 ) -> FastAPI:
     remote = upstream or Upstream(settings)
     selection = (
@@ -317,15 +319,32 @@ def create_app(
         if not timedelta(0) < time.end - time.start <= timedelta(hours=48):
             raise GatewayError(422, "invalid_input")
         with remote.client(binding) as client:
-            page = client.query(Query("audio_ref", time=time, limit=limit, cursor=cursor))
+            page = (
+                client.query(Query("audio_ref", time=time, limit=limit, cursor=cursor))
+                if time_projection is None
+                else time_projection.page(
+                    client,
+                    "audio_ref",
+                    time,
+                    limit,
+                    cursor,
+                    subject=binding.subject,
+                    surface="recording-intervals",
+                )
+            )
         items = []
         for row in page.items:
             if not isinstance(row, RawRecord) or row.data_type != "audio_ref":
                 raise GatewayError(503, "storage_unavailable")
+            start, end = (
+                (row.event_start, row.event_end)
+                if time_projection is None
+                else time_projection.interval(row)
+            )
             items.append(
                 {
-                    "start": row.event_start.isoformat().replace("+00:00", "Z"),
-                    "end": row.event_end.isoformat().replace("+00:00", "Z"),
+                    "start": start.isoformat().replace("+00:00", "Z"),
+                    "end": end.isoformat().replace("+00:00", "Z"),
                 }
             )
         return response({"items": items, "next_cursor": page.next_cursor})
@@ -358,7 +377,11 @@ def create_app(
             dict(zip(("start", "end"), item.split("/"), strict=True)) for item in raw
         ]
         ranges = parse_days(days)
-        result = remote.week_coverage(binding, days)
+        result = (
+            remote.week_coverage(binding, days)
+            if time_projection is None
+            else remote.week_coverage(binding, days, shift=time_projection.coverage_shift())
+        )
         if (
             result.keys() != {"slot_seconds", "timeline", "activity"}
             or type(result["slot_seconds"]) is not int
@@ -406,7 +429,18 @@ def create_app(
         if limit > source_timeline.MAX_PAGE:
             raise GatewayError(422, "invalid_input")
         with remote.client(binding) as client:
-            return response(source_timeline.page(client, kind, time, source, limit, cursor))
+            return response(
+                source_timeline.page(
+                    client,
+                    kind,
+                    time,
+                    source,
+                    limit,
+                    cursor,
+                    projection=time_projection,
+                    subject=binding.subject,
+                )
+            )
 
     @app.get("/v1/timeline")
     def timeline(request: Request):

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import psycopg
-from ear_contracts import DataTypeSpec
+from ear_contracts import DataTypeSpec, is_id
 from ear_storage_client import InvalidRequest
 from psycopg import sql
 
@@ -18,6 +18,7 @@ from ear_storage.schema import table
 
 Day = tuple[datetime, datetime]
 SLOT_SECONDS = 300
+Shift = tuple[timedelta, dict[str, list[str]]]
 EVENT_TYPES = ("audio_ref", "transcript_segment")
 CHAT_TYPES = ("chat_session", "chat_message", "chat_attachment")
 _UTC_Z = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
@@ -48,11 +49,40 @@ def parse_days(value: Any) -> list[Day]:
     return days
 
 
+def parse_shift(value: Any) -> Shift | None:
+    """Accept only server-supplied scoped clock metadata on the internal wire."""
+    if value is None:
+        return None
+    if type(value) is not dict or value.keys() != {"seconds", "ids"}:
+        raise InvalidRequest("invalid coverage shift")
+    seconds, by_type = value["seconds"], value["ids"]
+    if (
+        type(seconds) is not int
+        or not 0 < abs(seconds) <= 86400
+        or (type(by_type) is not dict or not by_type or not by_type.keys() <= set(EVENT_TYPES))
+    ):
+        raise InvalidRequest("invalid coverage shift")
+    count = 0
+    for ids in by_type.values():
+        if (
+            type(ids) is not list
+            or not ids
+            or (count := count + len(ids)) > 10000
+            or (
+                any(not isinstance(rid, str) or not is_id(rid) for rid in ids)
+                or len(set(ids)) != len(ids)
+            )
+        ):
+            raise InvalidRequest("invalid coverage scope")
+    return timedelta(seconds=seconds), by_type
+
+
 def _vector(
     conn: psycopg.Connection,
     days: list[Day],
     parts: list[tuple[str, DataTypeSpec]],
     principal: Principal,
+    shift: Shift | None,
 ) -> list[str]:
     # Aggregate the ranges once, never send individual timestamps or record bodies
     # to the API. A one-microsecond domain point lights its own slot.
@@ -60,6 +90,28 @@ def _vector(
     args: list[Any] = []
     start, end = days[0][0], days[-1][1]
     for kind, spec in parts:
+        local_start, local_end = start, end
+        first, last = sql.SQL("r.event_start"), sql.SQL("r.event_end")
+        join = sql.SQL("")
+        if shift and (ids := shift[1].get(kind)):
+            delta = shift[0]
+            # Include all candidates in both original and translated time. Use
+            # the effective interval (not these widened bounds) for the bins.
+            try:
+                local_start = min(start, start - delta)
+                local_end = max(end, end - delta)
+            except OverflowError:
+                raise InvalidRequest("invalid shifted coverage bounds") from None
+            join = sql.SQL("LEFT JOIN unnest(%s::text[]) moved(id) ON moved.id=r.id")
+            # Keep this an elapsed-seconds shift even if PostgreSQL's session is
+            # in a timezone with DST; a calendar-day interval is not equivalent.
+            adjustment = sql.SQL(
+                "CASE WHEN moved.id IS NULL THEN interval '0' ELSE make_interval(secs => %s) END"
+            )
+            first = sql.SQL("r.event_start + ({})").format(adjustment)
+            last = sql.SQL("r.event_end + ({})").format(adjustment)
+            seconds = int(delta.total_seconds())
+            args.extend((seconds, seconds, ids))
         visible = [
             sql.SQL("r.data_type=%s"),
             sql.SQL("r.event_start < %s"),
@@ -74,15 +126,18 @@ def _vector(
             ]
         selects.append(
             sql.SQL("""
-            SELECT r.event_start AS first, r.event_end AS last
+            SELECT {first} AS first, {last} AS last
             FROM {table} r JOIN storage.identity i ON i.id=r.id AND i.current_seq=r.seq
-            WHERE {visible}
+            {join} WHERE {visible}
         """).format(
+                first=first,
+                last=last,
+                join=join,
                 table=table(spec.writer, table_name(spec.kind)),
                 visible=sql.SQL(" AND ").join(visible),
             )
         )
-        args.extend((kind, end, start, start))
+        args.extend((kind, local_end, local_start, local_start))
     args.extend(([d[0] for d in days], [d[1] for d in days]))
     query = sql.SQL("""
         WITH covered AS MATERIALIZED (
@@ -106,6 +161,7 @@ def project(
     principal: Principal,
     days: list[Day],
     include_chat: bool,
+    shift: Shift | None = None,
 ) -> dict[str, Any]:
     registry = registry_from_db(conn)
     expected = EVENT_TYPES + (CHAT_TYPES if include_chat else ())
@@ -123,6 +179,6 @@ def project(
         state = "ready" if len(parts) == len(requested) else "partial" if parts else "unavailable"
         tracks[track] = {
             "state": state,
-            "days": _vector(conn, days, parts, principal) if parts else [""] * len(days),
+            "days": _vector(conn, days, parts, principal, shift) if parts else [""] * len(days),
         }
     return {"slot_seconds": SLOT_SECONDS, **tracks}

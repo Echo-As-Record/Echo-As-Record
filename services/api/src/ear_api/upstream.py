@@ -190,18 +190,20 @@ class Upstream:
         except (httpx.HTTPError, ValueError, TypeError, RecursionError, OverflowError):
             raise GatewayError(503, unknown) from None
 
-    def week_coverage(self, binding: Binding, days: list[dict[str, str]]) -> dict[str, Any]:
+    def week_coverage(
+        self, binding: Binding, days: list[dict[str, str]], *, shift: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         self._verify(binding)
+        body: dict[str, Any] = {"days": days, "include_chat": self.settings.chat_evidence_read}
+        if shift is not None:
+            body["shift"] = shift
         try:
             with (
                 self._http(binding) as client,
                 client.stream(
                     "POST",
                     "/v1/coverage/week",
-                    json={
-                        "days": days,
-                        "include_chat": self.settings.chat_evidence_read,
-                    },
+                    json=body,
                 ) as response,
             ):
                 if response.status_code == 401:
