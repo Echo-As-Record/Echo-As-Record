@@ -11,6 +11,7 @@ based-on: 设计 v1.2 第 9 节、信号补充、插件 MVP、工作分解 v1.2�
 - [设计 v1.2](../../docs/design/design-v1.2.md)（第 9 节）、[模块间信号](../../docs/design/signals-supplement.md)、[动态插件 MVP](../../docs/design/plugins-mvp.md)（第 8 节）
 - [工作分解 v1.2](../../docs/design/work-breakdown-v1.2.md)（⑦一节，含验收标准）
 - [实现说明与验证记录](ai-docs/implementation.md)；[全局实施计划](../../ai-docs/plans/mvp-implementation.md)；[①当前状态](../storage/ai-docs/progress.md)；[①SDK 与预检接口](../storage/ai-docs/interface.md)；[⑥入口](../api/README.md)
+- [Codex 本地 fallback 提案](../../docs/proposals/llm-gateway-codex-provider.md)（proposed，未采纳）：正式渠道不变，只在本地部署中、正式渠道确知未执行时改走用户本机 Codex；含容器访问宿主机、用量、超时与串行。
 
 ## 1. 状态
 

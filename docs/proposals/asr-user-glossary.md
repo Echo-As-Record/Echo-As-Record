@@ -22,7 +22,7 @@ based-on: docs/design/design-v1.2.md 3、7.1、7.2 节；docs/decisions/mvp-conf
 
 ## 2. 做法
 
-1. **新增数据类型 `glossary_entry`**（暂拟名），一条记录是一个词条：
+1. **新增数据类型 `transcript_human_correction`**（原暂名 `glossary_entry`，2026-11-25 改名，见[纠错提案](transcript-correction.md)第 2.3 节），一条记录是一个词条：
 
    | 字段 | 说明 |
    |---|---|
@@ -31,7 +31,7 @@ based-on: docs/design/design-v1.2.md 3、7.1、7.2 节；docs/decisions/mvp-conf
    | `category` | `person` / `project` / `term` / `other`，只作提示 |
    | `note` | 可选说明，例如“项目名，读音同 ear” |
 
-   词条由用户维护：⑥提供增改删入口，写 `feedback`；④消费反馈并写词条（与“规则”同属④单写，见第 5 节待决 1）。词条有固定 id，修改追加新版本，删除为整体替代。
+   词条由用户维护：⑥提供增改删入口，写 `feedback`；④消费反馈并写词条（与“规则”同属④单写，见第 5 节待决 1）。词条有固定 id，修改追加新版本，删除为整体替代。登记时 `kind` 应为 `semantic` 而不是 `rule`，否则⑤会忽略词条修改，见[纠错提案](transcript-correction.md)第 2.3 节。
 
 2. **④在调用模型时附上相关词条**：只附 `canonical` 或任一 `variants` 出现在本次输入转写里的词条，加上数量有限的全局常用词条，避免整张表塞进提示。附上的词条要登记依赖（字段 `canonical`、`variants`）。
 
@@ -57,7 +57,7 @@ based-on: docs/design/design-v1.2.md 3、7.1、7.2 节；docs/decisions/mvp-conf
 
 ## 5. 待决
 
-1. 写入方：④单写（与规则一致，本文建议），还是新设由⑥直接写的用户配置类型。
+1. 写入方：④单写（与规则一致，本文建议），还是新设由⑥直接写的用户配置类型。YijieYing 2026-11-25 表态选④单写（见[纠错提案](transcript-correction.md)第 7 节），仍待正式采纳。
 2. 第 4 节选 A 还是 B。
 3. 每次附上的词条数量上限，和“全局常用词条”的选法。
 4. 初始词条是否支持从用户已有的纠错表批量导入（只在用户本机导入，不进仓库）。
