@@ -7,8 +7,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
-from ear_contracts import SemanticRecord, SystemRecord, is_id
+from ear_contracts import RawRecord, SemanticRecord, SystemRecord, is_id
 from ear_contracts.base import UtcDatetime
+from ear_contracts.optional_sources import CHAT_TYPES
 from ear_extraction.domain import Interval
 from ear_storage.management_input import ManagementInput
 from ear_storage_client import Query, TimeRange
@@ -218,7 +219,35 @@ def create_app(
     def session(request: Request):
         params(request, set())
         # Public capability discovery only; never expose bindings or credentials.
-        return response({"test_no_auth": settings.test_no_auth})
+        capabilities = {"test_no_auth": settings.test_no_auth}
+        if settings.chat_evidence_read:
+            capabilities["chat_evidence_read"] = True
+        return response(capabilities)
+
+    @app.get("/v1/source-evidence/{record_id}")
+    def source_evidence(record_id: str, request: Request):
+        if not settings.chat_evidence_read:
+            raise GatewayError(404, "not_found")
+        # Like other business reads, use the fixed ordinary binding in loopback test mode.
+        binding = authenticated(request)
+        valid_id(record_id)
+        params(request, set())
+        with remote.client(binding) as client:
+            record = client.get(record_id)
+        if not isinstance(record, RawRecord) or record.data_type not in CHAT_TYPES:
+            raise GatewayError(404, "not_found")
+        text = record.payload.get("title" if record.data_type == "chat_session" else "text")
+        if not isinstance(text, str):
+            raise GatewayError(404, "not_found")
+        return response(
+            {
+                "id": record.id,
+                "kind": record.data_type,
+                "start": record.event_start.isoformat().replace("+00:00", "Z"),
+                "end": record.event_end.isoformat().replace("+00:00", "Z"),
+                "text": text[:20000],
+            }
+        )
 
     @app.get("/v1/me")
     def me(request: Request):
