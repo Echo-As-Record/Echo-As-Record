@@ -24,8 +24,8 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
-      - name: Plugin management and workspace UI tests
-        run: node --test services/api/tests/ui/core.test.js services/api/tests/ui/page.test.js services/api/tests/ui/workspace-flat.test.js
+      - name: Plugin management, workspace and results UI tests
+        run: node --test services/api/tests/ui/core.test.js services/api/tests/ui/page.test.js services/api/tests/ui/results.test.js services/api/tests/ui/workspace-flat.test.js
 
       - name: Install
         run: uv sync --locked

@@ -45,6 +45,7 @@ from ear_storage.relay import RelayConfig
 from ear_storage.schema import ProjectionLimit, SchemaMismatch
 from ear_storage.service import StorageService
 from ear_storage.snapshots import SnapshotUnavailable
+from ear_storage.week_coverage import parse_days
 
 
 def json_response(value: Any, status: int = 200) -> Response:
@@ -298,6 +299,19 @@ def create_app(
         ops, context = decode_request(canonical_json(data))
         result = client.write(ops, context, request_id=request_id)
         return Response(encode_result(result), media_type="application/json")
+
+    @app.post("/v1/coverage/week")
+    def week_coverage(request: Request):
+        _token, client, _module = authenticated(request)
+        data = load_json(request.scope["ear.body"])
+        check_keys(data, {"days", "include_chat"})
+        if type(data.get("include_chat")) is not bool:
+            raise InvalidRequest("invalid coverage request")
+        days = parse_days(data.get("days"))
+        try:
+            return json_response(client.week_coverage(days, data["include_chat"]))
+        except psycopg.errors.QueryCanceled:
+            return failure(503, "unavailable", "storage unavailable")
 
     @app.post("/v1/read")
     def read(request: Request):

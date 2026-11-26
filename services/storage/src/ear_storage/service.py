@@ -15,6 +15,7 @@ import re
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import replace
+from datetime import datetime
 from typing import Any
 
 import psycopg
@@ -367,6 +368,17 @@ class AuthenticatedClient(AuthorizedReaderMethods):
                 if principal.module in modules
             }
             return Registry(types, publishers, registry.core_types & frozenset(types))
+
+    def week_coverage(
+        self,
+        days: list[tuple[datetime, datetime]],
+        include_chat: bool,
+    ) -> dict[str, Any]:
+        from ear_storage.week_coverage import project
+
+        with self._session() as (conn, principal, _reader):
+            conn.execute("SET LOCAL statement_timeout = '2000ms'")
+            return project(conn, principal, days, include_chat)
 
     def scheduler_state(self) -> dict[str, Any]:
         with self._session() as (conn, principal, _reader):

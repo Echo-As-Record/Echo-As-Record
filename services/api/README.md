@@ -51,7 +51,7 @@ HEAD **`84d2d0f` 已包含 `origin/dev ba36543`（PR #20）及此前GPS**；不�
 - 请求 Host 须与该 origin 的主机和端口一致，拒绝 DNS 重绑定主机；仅健康检查额外允许
   容器回环 `127.0.0.1:8086`。带 Origin 的请求仍须完全同源；跨站/同站非同源的
   Sec-Fetch-Site 被拒绝。所有非 GET/HEAD/OPTIONS 请求都须携带匹配的 Origin，命令行写请求亦然。
-- `GET /v1/session` 仍仅公开返回 `{"test_no_auth": true/false}`，不返回凭据、绑定或角色。
+- `GET /v1/session` 只公开 `test_no_auth` 及显式启用时的 `chat_evidence_read: true` 能力标志，不返回凭据、绑定或角色。
   `/workspace/` 和 `/plugins/` 自动连接后，根据重新验证的 `/v1/me` 显示角色；无令牌输入或登录提示。
   普通用户不发管理请求；管理员自动读取插件目录/管理结果，管理操作仍需手动提交及既有确认。
 - 免登录**不是只读 scope**：选定绑定原有的业务或管理写入口也不要求浏览器令牌。
@@ -69,6 +69,32 @@ HEAD **`84d2d0f` 已包含 `origin/dev ba36543`（PR #20）及此前GPS**；不�
 回执 `/tmp/ear-admin-noauth-20261118.json` 原样保留，不作为最终限制或验收通过依据。
 修复后已实测17类无Bearer业务读取全部200、插件目录与管理结果200，真实Chromium可浏览转写/历史并进入管理区；详细范围见[实现说明](ai-docs/implementation.md)。
 最终证据单独写入 `/tmp/ear-admin-noauth-final-20261118.json`，不改原初始化材料。
+
+### 只读活动与笔记
+
+启用静态页面时，`/` 跳转至 `/results/`。左侧固定图标栏用于滑动收起／恢复侧边栏；系统启用减少动态效果时直接切换。侧边栏显示该标签标题、上一周／下一周和七张始终保持缩略样式的日期卡，不显示周区间或时区行。点击上一周／下一周仅横向滑动日期卡，标题、按钮和来源筛选位置不变；减少动态效果时直接切周。周从周一到周日，日期按浏览器时区；默认选今天，翻至非当前周时选周一。日期卡没有展开态，选中后直接在主区显示当天的活动；窄屏上选日期后收起日期面板，图标可以再打开它。
+
+日期标题、时间轴和活动同处一块无框阅读区，一起滚动。每项活动的开始时间在标题左侧单独标记，标题或笔记换行时仍与该项对齐。按时间顺序连续阅读活动和关联的 Markdown 笔记；点时间标记可定位该项，滚动时高亮正在阅读的活动。笔记接近视口才读取，并按明确的活动 ID 关联。日期列表不混入已整体替代的对象，旧活动及版本深链接仍可打开，历史活动不混用当前笔记。阅读流不显示返回列表、依据、来源和历史列表；需进一步追溯时可由侧栏的「高级查看」进入 `/workspace/`。明暗主题实时跟随系统。
+
+日时间轴按活动排列，不按时长等比例拉伸。日期卡蓝轨表示全部可读时间线事件的分布，包含录音、转写、已启用的 LibreChat 会话、消息和附件；红轨表示当前可读活动的覆盖。两轨按浏览器自然日各自切成 5 分钟格，跨日分别裁切，夏令时使用实际日长。只要时段内有事件就点亮，瞬时消息也可见；蓝轨不是录音时长，且不随阅读区筛选改变。空白不等于处理失败，权限不全与读取故障分别标记。
+
+卡片用单次 `GET /v1/week-coverage` 获取七天两轨；Storage 在重新核对原授权后，只返回占用格，不传送正文，未选日期不预拉活动列表。`/v1/recording-intervals` 保留独立的录音时间区间兼容读取。覆盖按原始入库时间计算；不校正时间，也不反映提取状态。
+
+页面只发送同源 GET，不写反馈、不修改记录、不触发处理，也不加载笔记里的外部资源。普通认证模式令牌只在当前页内存中保留；显式本地免登录沿用原有绑定。**只读页面不限制既有管理端点的权限**，部署仍应保持原有回环隔离。
+
+开发检查：`node --test services/api/tests/ui/results.test.js`；真实 Chromium 合成测试可用 `EAR_WORKSPACE_BROWSER=1 node --test --test-name-pattern='results browser' services/api/tests/ui/workspace-flat-browser.test.js`，默认查找已安装的 Playwright Chromium headless shell，可用 `EAR_CHROME` 指定本地二进制。
+
+### 只读来源时间线
+
+「时间线」是结果页图标栏的独立视图（`/results/?view=timeline`）。沿用周一至周日的选日和无框滚动布局。事件使用紧凑间距，标题和来源尽量同排，正文摘录不折叠。按浏览器本地时间合并显示录音、转写、LibreChat 会话、消息及附件记录；不等待活动提取。来源选项为全部、旧 Ear 导入和 LibreChat。旧 Ear 录音依据已登记的旧服务来源识别，转写沿明确的录音引用核对来源；无法核实的条目仅在「全部来源」里显示。LibreChat 仅在原 `chat_evidence_read` 能力开启时可选，列表保留归档记录本来的时间和可读范围，不从 LibreChat 在线读取或下载附件。
+
+`GET /v1/source-timeline` 每页只投影一个固定事件类型，窗口最长 26 小时、每页最多 16 项；已有 Storage 类型授权每次重新核对。返回时间、类型、来源、短标题和有限文本摘录，不返回文件路径、附件原件、声纹、推理或工具调用。按流分页归并；滚动接近底部自动加载下一批，首批内容不满视口或过滤出空页时自动继续。权限不足与确实为空分别提示，读取失败才提供重试。实时归档过程中分页不保证快照一致性。已归档的 LibreChat 消息保留正文文本，但不保证保留源页面的排版、结构或可用的 Markdown 格式标志。时间线统一将用户和助手的消息摘录按安全 Markdown 渲染；不执行 HTML、不加载远程图片、不改变原始记录或摘录长度。其它事件仍按文字显示。
+
+### 结果页公式排版
+
+时间线的 LibreChat 消息、活动概述和笔记正文支持 `$...$`、`\(...\)` 行内公式，以及 `$$...$$`、`\[...\]` 独立公式。代码块、行内代码不解析；不支持、超限或不完整的公式保留原文。浏览器用本地 KaTeX 0.19.1（MIT）生成 MathML，不访问 CDN、不放宽 CSP、不加载公式中的链接或图片。`/workspace/` 不启用此扩展。
+
+本地资产 `src/ear_api/static/katex.min.js` 来自 npm `katex@0.19.1` 的 `dist/katex.min.js`；SHA-256 `fa140498b8cfc8302cbe5e7cb1bdbc1f952bc38b3fa258ede09e73edbf9a74bc`。同目录保留 npm 原始 `LICENSE`（`KaTeX-LICENSE.txt`），页面以 SRI 固定脚本内容。
 
 ### 工作台每个页面做什么
 
@@ -137,7 +163,8 @@ JSON 文件，必须是当前用户拥有的普通文件、权限不含 group/ot
 ```
 
 - `public_origin`：浏览器地址栏的来源必须与它完全一致，否则带 `Origin` 的请求得到 `cross_origin_denied`。
-- `static_dir`：默认使用随包的 `static/`（含 `/plugins/` 与 flat `/workspace/` 页面）；显式写 `null` 可关闭页面。
+- `static_dir`：默认使用随包的 `static/`（含 `/results/`、`/plugins/` 与 flat `/workspace/` 页面）；显式写 `null` 可关闭页面。
+- `chat_evidence_read`（严格布尔，默认 `false`）：允许结果页通过现有类型授权读取已归档的 LibreChat 事件摘录、并计入周覆盖。此开关不注册类型、不授予权限；没有启用的导入端时无需开启。
 - `execution_journal`：外部动作的私有恢复日志路径；不设则外部动作状态显示 `disabled`。
 - `execution_action_v2`（严格布尔，默认 `false`）：只有同时设了 `execution_journal`、且宿主在代码里把可信适配器传给 `create_app(settings, adapter=…)` 才启用 action-v2 的 HTTP；配置文件里写 `true` 并不会让 `ear-api serve` 获得适配器，推进类路径仍是 501。见第 3.6 节。
 - 可选：`timeout`（默认 10 秒，≤60）、`max_body_bytes`（默认 65536，上限 65536）、`body_timeout`（默认 10 秒，≤30）。
@@ -172,6 +199,9 @@ JSON 文件，必须是当前用户拥有的普通文件、权限不含 group/ot
 | `GET /v1/records/{type}` | 任一绑定 | 分页列出（`limit`、`cursor`、`start`、`end`、`include_superseded`）；类型按下述核心登记表规则推导，集合外返回 404 `not_found` |
 | `GET /v1/evidence/search` | 任一绑定 | 有界字面证据查询：`start`、`end`、`q`、`limit`、`cursor`；UTC Z非空≤24h，q长1–256，limit默认10且1–10；当前授权、live_best_effort与截断可见；不是硬deadline或完整搜索保证 |
 | `GET /v1/timeline` | 任一绑定 | 等同 activity 列表 |
+| `GET /v1/week-coverage` | 任一绑定，①逐类型复核 | `days` 为 1–7 个逗号分隔的 `start/end`（UTC Z 整秒），每段最长 26 小时、总范围最长 8 天；仅返回覆盖格和授权可用性 |
+| `GET /v1/source-timeline` | 任一绑定，①逐类型复核 | `start`、`end`、`kind`，可带 `source`、`limit`、`cursor`；单类型有界摘录 |
+| `GET /v1/recording-intervals` | 任一绑定，须有 `audio_ref` 读权限 | `start`、`end`（最长 48 小时）、`limit`、`cursor`；只返回录音区间 |
 | `GET /v1/records/{type}/{id}`（可加 `?version=`） | 任一绑定 | 单条 |
 | `GET /v1/records/{type}/{id}/history` | 任一绑定 | 版本历史（`after_version`、`limit`） |
 | `POST /v1/feedback` | 任一绑定 | 提交反馈，见下 |
@@ -184,6 +214,7 @@ JSON 文件，必须是当前用户拥有的普通文件、权限不含 group/ot
 | `POST /v1/management/credentials/{feedback_id}/claim` | 仅 admin | 一次性领取凭据，空请求体；第二次被拒 |
 | `GET /v1/management/results`、`/results/{id}`、`/history/jobs/{id}` | 仅 admin | 管理结果与历史补处理任务状态 |
 | `/plugins/` | 页面本身无需认证 | 插件管理页；必须带结尾斜杠，`/plugins` 返回 404 |
+| `/results/` | 页面本身无需认证；业务读取沿用现有绑定 | 活动与笔记阅读器；必须带结尾斜杠，启用静态页时 `/` 跳转到这里 |
 | `/workspace/` | 页面本身无需认证；默认业务读取须普通API令牌，测试模式自动连接 | flat三文件只读viewer；不加载旧workspace目录prototype；不提供写反馈或外部动作按钮 |
 
 可浏览业务类型从 `ear_contracts.DEFAULT_REGISTRY`（随代码发布的核心登记表，也是 `MemoryStorage` 的默认登记表）推导：仅纳入 `kind` 为 `raw_record`、`semantic`、`rule` 的核心类型，并排除 `plugin_management_feedback`。登记表暂无管理类型标志，⑥ 用 `MANAGEMENT_TYPES` 显式排除该类型，因为插件管理反馈走管理接口；所有 `system_record` 都不纳入。当前结果在原有15类基础上增加两类：静态核心补充 `rule_selection`（`CORE_MVP_BUSINESS_ADDITIONS`，不在随代码发布的登记表里，见 `business.py`）和 `gps_geocode`（见[已采纳 GPS 提案](../../docs/proposals/gps-reverse-geocoding.md)），共17类，列表、单条及历史接口共用此集合，权限仍由①检查。

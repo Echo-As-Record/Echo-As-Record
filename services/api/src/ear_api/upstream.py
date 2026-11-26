@@ -47,13 +47,13 @@ class Upstream:
             yield client
 
     @staticmethod
-    def _object(response: httpx.Response) -> dict[str, Any]:
+    def _object(response: httpx.Response, maximum: int = 4096) -> dict[str, Any]:
         raw = bytearray()
         for chunk in response.iter_bytes():
-            if len(raw) + len(chunk) > 4096:
+            if len(raw) + len(chunk) > maximum:
                 raise ValueError("response limit")
             raw.extend(chunk)
-        return load_json_object(raw, max_bytes=4096, authority=False)
+        return load_json_object(raw, max_bytes=maximum, authority=False)
 
     def _identity(self, binding: Binding) -> str | None:
         # Deployed wire-v1 exposes codec/module only. The protected deployment binding
@@ -189,6 +189,32 @@ class Upstream:
             return {key: data[key] for key in ("status", "feedback_id", "result_id")}
         except (httpx.HTTPError, ValueError, TypeError, RecursionError, OverflowError):
             raise GatewayError(503, unknown) from None
+
+    def week_coverage(self, binding: Binding, days: list[dict[str, str]]) -> dict[str, Any]:
+        self._verify(binding)
+        try:
+            with (
+                self._http(binding) as client,
+                client.stream(
+                    "POST",
+                    "/v1/coverage/week",
+                    json={
+                        "days": days,
+                        "include_chat": self.settings.chat_evidence_read,
+                    },
+                ) as response,
+            ):
+                if response.status_code == 401:
+                    raise AuthenticationError("unauthenticated")
+                if response.status_code == 403:
+                    raise PermissionDenied("forbidden")
+                if response.status_code != 200:
+                    raise ServiceUnavailable("coverage unavailable")
+                return self._object(response, maximum=8192)
+        except httpx.HTTPError:
+            raise ServiceUnavailable("coverage unavailable") from None
+        except (ValueError, TypeError, RecursionError, OverflowError):
+            raise ProtocolError("invalid coverage response") from None
 
     def ready(self) -> bool:
         try:

@@ -40,6 +40,7 @@ class Settings(BaseModel):
     execution_journal: Path | None = None
     model_settings_file: Path | None = None
     execution_action_v2: bool = Field(default=False, strict=True)
+    chat_evidence_read: bool = Field(default=False, strict=True)
     test_no_auth: bool = Field(default=False, strict=True)
     test_no_auth_role: Literal["user", "admin"] = "user"
     timeout: float = Field(default=10, strict=True, gt=0, le=60, allow_inf_nan=False)
