@@ -12,6 +12,7 @@ based-on: 设计 v1.2 第 6 节与信号补充 §3.2、§4（均 accepted，仅�
 
 - [实现说明](ai-docs/implementation.md)：代码导航、处理流程、反馈命令表、登记表与根配置要求、来源（provenance）、测试与验证记录、未实现项、实现选择与待确认项。
 - [MVP 跑通计划](../../ai-docs/plans/mvp-runnable.md)：T2a 任务、门槛与演练维度，工作区进展见该文第 2.1 节。
+- [提案：本人声音模型 + 未知声音按需识别](../../docs/proposals/attribution-self-model-and-lazy-identity.md)（proposed，未采纳）：拟改第 6.1 节“匹配失败新建未命名人物”，新增本人样本库、未知人物与提问。
 
 ## 状态
 
