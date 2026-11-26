@@ -1,7 +1,7 @@
 ---
 audience: ai
 doc-type: guide
-based-on: 用户 2026-11-26 对下游聊天证据集成的实施授权（提取侧显式默认关闭开关；纯聊天与聊天加录音混合在同一次处理中走现有通用流程、worker 与网关；每个对象取最高修订；助手内容按陈述而非完成处理；三类登记 writer 均为 adapter；先用隔离合成数据验证）；services/adapters/ai-docs/librechat-source.md 的 payload 约定与 convert.py 的实际输出；services/extraction 的 orchestration.py、planning.py、segmentation.py、selection.py、artifacts.py 当前源码；services/storage 的 core_deployment.py、health.py、schema.py 与 services/api 的 business.py（只读核对）；本轮合成测试（作者在本机运行，见“测试”一节）
+based-on: 用户 2026-11-26 对下游聊天证据集成的实施授权（提取侧显式默认关闭开关；纯聊天与聊天加录音混合在同一次处理中走现有通用流程、worker 与网关；每个对象取最高修订；助手内容按陈述而非完成处理；三类登记 writer 均为 adapter；先用隔离合成数据验证）；services/adapters/ai-docs/librechat-source.md 的 payload 约定与 convert.py 的实际输出；services/extraction 的 orchestration.py、planning.py、segmentation.py、selection.py、artifacts.py 当前源码；services/storage 的 core_deployment.py、health.py、schema.py 与 services/api 的 business.py（只读核对）；本轮合成测试（作者在本机运行，见“测试”一节）；a252033 与本轮授权的隔离 mixed_text 试跑
 ---
 
 # 聊天证据（`chat_evidence`）：提取侧接入
@@ -11,8 +11,8 @@ based-on: 用户 2026-11-26 对下游聊天证据集成的实施授权（提取�
 ## 范围
 
 - 数据来自 [LibreChat 源适配器](../../adapters/ai-docs/librechat-source.md) 写入 ① 的 `chat_session`、`chat_message`、`chat_attachment`（`writer=adapter`），提取只读。
-- 开关为宿主私有 JSON `chat_evidence: true`，由 `tools/mvp_worker.py` 传给 `ExtractionService`。默认关闭，只允许通用提取。
-- 开启后走**原有通用流程**（`extract_plan` 的 `else` 分支：`raw_inputs` → `segment` → `inputs` → `create_selection`）：同一个 `storage.snapshot()`、`DurableCalls`（调用意图、指纹、未知结果不重发）、同一个 `GatewayClient`/`ModelGateway`、同一批原子提交。没有新 worker、新模型端口或新存储路径。
+- 开关为宿主私有 JSON `chat_evidence: true`，由 `tools/mvp_worker.py` 传给 `ExtractionService`。默认关闭；通用提取或下文隔离的 `mixed_text` 计划可用。
+- 不配置 `mixed_text` 时走**原有通用流程**（`extract_plan` 的 `else` 分支：`raw_inputs` → `segment` → `inputs` → `create_selection`）：同一个 `storage.snapshot()`、`DurableCalls`（调用意图、指纹、未知结果不重发）、同一个 `GatewayClient`/`ModelGateway`、同一批原子提交。没有新 worker、新模型端口或新存储路径。
 
 ## 代码导航（路径相对 `src/ear_extraction/`）
 
@@ -42,7 +42,7 @@ based-on: 用户 2026-11-26 对下游聊天证据集成的实施授权（提取�
 
 - 聊天没有“导入完成”标记。定时提取可能在适配器同步之前处理区间并把它记为已覆盖，之后到达的聊天不会被处理；建议只对已同步的区间做手动 `extract`，或之后显式 `reextract`。
 - 附件不会因为后来的消息修订不再列出它而被剔除：记录只追加、没有墓碑，提取也不依赖适配器的扩展字段 `attachment_ids`，所以旧修订时挂上的附件仍按它自己的最高修订出现。源端删除同样看不到（适配器不同步删除）。
-- ⑥ 不添加页面。现有证据框可在 `chat_evidence_read: true` 且不免登录时回读被引用的聊天证据，数据库仍复核读权限；通用记录路由不开放聊天类型，回复不含文件路径或字节。
+- ⑥ 不添加页面。现有证据框可在 `chat_evidence_read: true` 且绑定主体获授权时回读被引用的聊天证据，数据库仍复核读权限；通用记录路由不开放聊天类型，回复不含文件路径或字节。
 - 过长文本不截断：单条消息超过 `max_input_chars` 时按时间边界拆分，仍放不下则 `InputBudgetExceeded`（运行失败），不发送部分正文。
 - 动作规则不受影响：聊天证据下同样可以生成外部动作建议（仍须用户审核，④不执行外部动作）。助手的“已发送/已创建”类陈述同样不是完成；只靠发给模型的提示约束，没有额外的程序级检查。
 - 真实 ① 的 PostgreSQL/NATS 联调、真实 LibreChat 数据、真实模型都**没有做**。
@@ -52,6 +52,28 @@ based-on: 用户 2026-11-26 对下游聊天证据集成的实施授权（提取�
 - 公共原始记录 Schema 增加三类可选 payload 和正例。`DEFAULT_REGISTRY` 不变；已初始化的实例显式运行 `ear-storage bootstrap-chat-source`，幂等地登记 `writer=adapter` 三类。隔离 PostgreSQL 验证了登记、默认就绪和拒绝隐式扩权。
 - 只对需要读取的运行身份授予类型，例如 adapter 去重、extraction 取证据，以及启用受保护证据入口时的 API 主体。严格调度配置有自己的覆盖验证，不能默认给依赖或网关扩权。
 - 对当前 `transcript_only` 实例不可原地打开 `chat_evidence`；先独立验证通用提取、录音归属就绪和部署的模型审计策略。
+
+## 混合文本隔离试跑（`mixed_text`）
+
+本机源码能力，不是部署、数据同步或运行授权。另起真正隔离的①/消费队列及⑦端点；不与线上实例共享数据库、消费者、宿主状态目录或模型写入端点。继续使用原 `extraction.jobs` 消费者名和 `GatewayClient`，类型登记、读授权、规则及审计策略须先在隔离实例核实。不要把试跑开关混入目前的 `transcript_only` / 课堂 / 自动时间线配置。不需要任何 API 或 viewer 改动。该试跑不属于已采纳的 v1.2 原始证据范围，不代表产品设计已更改。独占写入者是宿主前提；计划前和提交前两次重叠查询不能替代存储事务内的排他性保证。
+
+1. 先建立隔离 consumer 并确认已注册、可从新事件开始接收；仅预留 consumer identity 不是注册。可用既有 SDK 注册而不拉取。然后提交准确范围的普通用户 `extract`，把返回的**原始反馈记录 UUIDv7**（不是事件／运行 ID）填入下列私有 `0600` JSON 片段。确认队列无其他提取作业；试跑遇到非目标提取反馈或相关重判会 NACK 并退出，不会替它写失败结果。不要监督自动重启。
+2. 核对这段转写与聊天均已完成导入、最新修订已可见；试跑没有同步完成标记，也不回填。确认没有重叠活动、成功范围或未核清提取运行。完成导入不代表能跑整天：预检行数、内容大小与快照限额，只选完整且可独立判断的时段；不要剪断转写行或绕过旧运行保护。先以合成数据和假网关验证。
+3. `tools/mvp_worker.py --config <私有配置>` 选择试跑分支；只拉取到目标反馈被持久化为止，再按反馈 ID 查该运行，运行到终态退出。未收到目标反馈的轮询窗口为 60 秒。终态退出并不等于成功，检查 `extraction_run.status` / `error`。重启只继续同一已标记的运行；不把普通运行转换成试跑，也不把试跑转换成普通运行。
+
+```json
+{
+  "chat_evidence": true,
+  "mixed_text": {
+    "feedback_id": "<已提交的 feedback UUIDv7>",
+    "interval": {"start": "2026-11-22T14:00:00Z", "end": "2026-11-22T14:30:00Z"}
+  }
+}
+```
+
+这是示例范围，不是已批准业务数据或已提交反馈。其他连接键见[运行时交接](../../../ai-docs/plans/mvp-runtime-handoff.md)。`schedule` 必须省略或为 `null`。最多 1,000 条匹配原始行（含去重前修订）、每次模型输入沿用 100,000 字符上限且编码请求最多 256 KiB、整个任务最多 5 次模型调用。超限不切窗、不截断、不提交部分业务。五次调用的租约为 `5 × (ceil(gateway_timeout) + 2 × ceil(timeout)) + 250` 秒（未设 `gateway_timeout` 时用 `timeout`）；健康窗口至少覆盖一次调用、两次 Storage 往返和 30 秒裕量。
+
+`SnapshotReader` 每次从租约还原并复核当前授权；`transcript_extraction` 仅对可信 extraction 身份开放，类型注册、修订和记录仍按完整授权子集捕获，不按查询时段或“转写”名称过滤。其四个依赖图读取操作明确拒绝。新建活动的文本计划只做 `query` / `type_revision`，选择和生成都用已物化的数据，提交经实时 Storage 重新检查版本、授权、依赖和 DAG。通用重判的 `discover_rules` 会调用 `dependencies_of`，普通重提取还有整家族预览、保护和替代职责：均不走这条试跑路径。租约仍可能因整个授权集的历史记录／字节超限；不能提高线上限额或把权限拒绝解释为空数据。若预检失败，先缩小**隔离数据集**和独立处理范围，或另行设计真正范围化的快照和同步就绪合同；在此之前不启定时、不对旧结果自动重算。原始文本记录仍为通用证据引用、不登记原始依赖，类型修订守护提交但不代表完成源端同步。
 
 ## 测试
 
@@ -65,4 +87,4 @@ uv run pytest libs tests/test_contracts.py services/extraction/tests services/ap
 - 变异检查（临时、不入库）：删除或改坏 15 处关键行为（最高修订、落地守卫、投影、白名单、互斥、授权处理、关闭状态守卫、提示、审计去正文、冲突检测、单点检查、孤立会话等），测试全部能发现；首轮有两处存活，据此补了测试。
 - 另用隔离 PostgreSQL 验证三类的显式登记、读取授权和写入归属；未进行生产 NATS 或真实模型验收。
 
-不要在回环免认证模式接入会进入派生产物的真实会话。
+个人实例可在用户授权的回环免登录模式下回读，须保留精确回环监听和现有 Host／Origin 条件；内部按类型授权不变。

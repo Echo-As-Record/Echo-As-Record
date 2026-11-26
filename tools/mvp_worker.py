@@ -7,7 +7,8 @@ Consumers are fixed: attribution / extraction.jobs / dependency.changes.
 gateway_url and model; its storage identity authenticates at ⑦ too. Optional
 ④ gateway_timeout configures only the gateway client; omitted, it uses timeout
 as before. Optional schedule={start: RFC3339 UTC ending Z, every_seconds:
-positive integer} is the ONLY timer opt-in. No history registration, memory
+positive integer} is the ONLY timer opt-in. Optional mixed_text is a one-shot,
+feedback-pinned text pilot for isolated deployments. No history registration, memory
 fallback or provider factory.
 
 Keep the state directory/namespace with the same deployment and identity across
@@ -65,10 +66,11 @@ from ear_extraction.course_reextract import (
     SchemaDiscardAttestation,
     validate_timeline_windows,
 )
-from ear_extraction.domain import Interval
+from ear_extraction.domain import Interval, MixedTextScope
 from ear_extraction.model_io import SYSTEM
 from ear_extraction.orchestration import (
     DEFAULT_TRANSCRIPT_MAX_CALLS,
+    MIXED_TEXT_MAX_CALLS,
     TERMINAL,
     TRANSCRIPT_LEASE_OVERHEAD_SECONDS,
     ExtractionService,
@@ -93,6 +95,7 @@ FILE_FLAGS = os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 MAX_CONFIG = 65536
 TRANSCRIPT_LEASE_FLOOR_SECONDS = 1900
 COURSE_HEALTH_MARGIN_SECONDS = 30
+MIXED_TEXT_ADMISSION_SECONDS = 60
 COURSE_NOTE_SYSTEM = """
 For generation, write one grounded Chinese Markdown note per final activity, with
 clear sections for the main points, supporting examples or discussion, and any explicitly
@@ -157,6 +160,7 @@ class Settings(SafeModel):
         le=MAX_ACTIVITY_MIN_DURATION_MINUTES,
     )
     chat_evidence: bool = Field(default=False, strict=True)
+    mixed_text: MixedTextScope | None = None
     transcript_only: bool = Field(default=False, strict=True)
     transcript_course_sessions: bool = Field(default=False, strict=True)
     transcript_course_reextract: bool = Field(default=False, strict=True)
@@ -203,6 +207,10 @@ class Settings(SafeModel):
 
     @property
     def extraction_lease_seconds(self) -> int:
+        if self.mixed_text is not None:
+            return (
+                MIXED_TEXT_MAX_CALLS * self.course_call_seconds + TRANSCRIPT_LEASE_OVERHEAD_SECONDS
+            )
         if not self.transcript_only:
             return 900
         if self.transcript_course_sessions:
@@ -284,6 +292,14 @@ class Settings(SafeModel):
             )
         if self.chat_evidence and (self.module != "extraction" or self.transcript_only):
             raise ValueError("chat_evidence_requires_general_extraction")
+        if self.mixed_text is not None:
+            if not self.chat_evidence or self.module != "extraction" or self.schedule is not None:
+                raise ValueError("mixed_text_requires_chat_extraction_without_schedule")
+            if (
+                self.health_max_age_seconds
+                < self.course_call_seconds + COURSE_HEALTH_MARGIN_SECONDS
+            ):
+                raise ValueError("health_max_age_seconds_below_mixed_text_call_budget")
         if self.transcript_course_sessions and not self.transcript_only:
             raise ValueError("transcript_course_sessions_requires_transcript_only")
         if self.transcript_only:
@@ -608,7 +624,7 @@ class PumpStorage(RemoteStorageClient):
                             },
                         )
             raise
-        if self.state.config.transcript_course_sessions:
+        if self.state.config.transcript_course_sessions or self.state.config.mixed_text is not None:
             # Successful authenticated Storage progress (including intent/return
             # CAS exchanges) keeps the local pump healthy. Never touch it while a
             # stalled call is in flight, and don't store any response data.
@@ -619,7 +635,9 @@ class PumpStorage(RemoteStorageClient):
         config = self.state.config
         if config.module == "attribution":
             profile = "attribution"
-        elif config.module == "extraction" and config.transcript_only:
+        elif config.module == "extraction" and (config.transcript_only or config.mixed_text):
+            # Despite its legacy name, the profile omits only dependency groups/edges.
+            # Mixed text uses it only for an exact fresh plan, never for rejudgment.
             profile = "transcript_extraction"
         elif profile == "transcript_extraction":
             raise ValueError("transcript_extraction_profile_requires_transcript_only")
@@ -687,6 +705,7 @@ class BoundedExtraction(ExtractionService):
             *args,
             activity_min_duration_minutes=config.activity_min_duration_minutes,
             chat_evidence=config.chat_evidence,
+            mixed_text=config.mixed_text,
             transcript_only=config.transcript_only,
             transcript_course_sessions=config.transcript_course_sessions,
             course_blocks=config.transcript_course_sessions,
@@ -740,7 +759,11 @@ class BoundedExtraction(ExtractionService):
                 break
             status = run.payload["status"]
             deadline = run.payload.get("lease_until" if status == "running" else "retry_at")
-            if status in TERMINAL or (deadline and datetime.fromisoformat(deadline) > self.clock()):
+            if (
+                status in TERMINAL
+                or not self._owns_mixed_text_pin(run)
+                or (deadline and datetime.fromisoformat(deadline) > self.clock())
+            ):
                 continue
             self.state.health("busy")
             self.process(run.id)
@@ -748,6 +771,40 @@ class BoundedExtraction(ExtractionService):
             if processed >= self.config.max_jobs_per_tick:
                 break
         self.state.health("ready")
+
+
+def serve_mixed_text(service: BoundedExtraction, stop: Event) -> None:
+    """One pinned feedback on an isolated store/consumer; never drain other runs."""
+    scope = service.mixed_text
+    assert scope is not None
+    query = Query("extraction_run", where={"root_feedback_id": scope.feedback_id}, limit=2)
+    pin = scope.model_dump(mode="json")
+    subscribed = False
+    admit_until = time.monotonic() + MIXED_TEXT_ADMISSION_SECONDS
+    while not stop.is_set():
+        page = service.storage.query(query)
+        if page.next_cursor is not None or len(page.items) > 1:
+            raise RuntimeError("mixed_text_ambiguous_run")
+        if page.items:
+            run = page.items[0]
+            if not isinstance(run, SystemRecord) or run.payload.get("mixed_text") != pin:
+                raise RuntimeError("mixed_text_feedback_already_admitted")
+            if run.payload["status"] in TERMINAL:
+                return
+            service.process(run.id)
+            # Once admitted, stop polling deliveries. Durable receipts and the
+            # pinned run, not the consumer backlog, determine recovery.
+        else:
+            if time.monotonic() >= admit_until:
+                raise RuntimeError("mixed_text_feedback_not_delivered")
+            if not subscribed:
+                service.subscribe()
+                subscribed = True
+            poll = getattr(service.storage, "poll_once", None)
+            if not callable(poll):
+                raise RuntimeError("mixed_text_requires_remote_consumer")
+            poll(CONSUMERS["extraction"])
+        stop.wait(service.config.poll_seconds)
 
 
 @contextmanager
@@ -814,12 +871,15 @@ def run(config: Settings, stop: Event) -> None:
                 )
                 stack.callback(gateway.close)
                 service = BoundedExtraction(client, gateway, config=config, stop=stop, state=state)
-                serve(
-                    service,
-                    stop,
-                    schedule=config.schedule.schedule() if config.schedule else None,
-                    poll_seconds=config.poll_seconds,
-                )
+                if config.mixed_text is not None:
+                    serve_mixed_text(service, stop)
+                else:
+                    serve(
+                        service,
+                        stop,
+                        schedule=config.schedule.schedule() if config.schedule else None,
+                        poll_seconds=config.poll_seconds,
+                    )
             else:
                 if config.module == "attribution":
                     from ear_attribution.matching import MatchConfig

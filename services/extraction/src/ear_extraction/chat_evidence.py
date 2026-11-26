@@ -173,7 +173,9 @@ def latest_revisions(records: Iterable[RawRecord]) -> list[RawRecord]:
     return sorted(chosen, key=lambda r: (r.event_start, r.id))
 
 
-def read_chat_evidence(reader: Reader, interval: Interval) -> list[RawRecord]:
+def read_chat_evidence(
+    reader: Reader, interval: Interval, *, max_records: int | None = None
+) -> list[RawRecord]:
     """Query the three chat types over [start, end) with the caller's own grants.
 
     A missing read grant is a visible block, never an empty result: absence of rows
@@ -186,6 +188,8 @@ def read_chat_evidence(reader: Reader, interval: Interval) -> list[RawRecord]:
             for record in iter_query(reader, Query(kind, time=time)):
                 if not isinstance(record, RawRecord) or record.data_type != kind:
                     raise Blocked("chat_evidence_invalid")
+                if max_records is not None and len(found) >= max_records:
+                    raise Blocked("mixed_text_raw_row_budget_exceeded")
                 found.append(record)
     except SnapshotUnavailable:
         raise  # An expired snapshot is a transient read failure, not a missing grant.

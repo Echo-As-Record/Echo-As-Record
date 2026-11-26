@@ -82,6 +82,7 @@ from ear_extraction.domain import (
     Call,
     Command,
     Interval,
+    MixedTextScope,
     SessionCoverageBlocked,
     Waiting,
     now_utc,
@@ -106,6 +107,7 @@ logger = logging.getLogger(__name__)
 CONSUMER = "extraction.jobs"
 COMPLETION_CONSUMER = "extraction.completion"
 DEFAULT_TRANSCRIPT_MAX_CALLS = 5
+MIXED_TEXT_MAX_CALLS = 5
 COURSE_MAX_CALLS_PER_WINDOW = 5  # At most 120 across the validated 24-window allowlist.
 TRANSCRIPT_LEASE_OVERHEAD_SECONDS = 250
 # Match the existing hosted gateway's default ingress body limit, in UTF-8 bytes.
@@ -295,6 +297,7 @@ class ExtractionService:
         transcript_automatic_timeline_gaps: tuple[ExactInterval, ...] = (),
         transcript_automatic_timeline_asr_gaps: tuple[ExactInterval, ...] = (),
         chat_evidence: bool = False,
+        mixed_text: MixedTextScope | None = None,
     ):
         if type(transcript_only) is not bool:
             raise ValueError("transcript_only_must_be_bool")
@@ -321,6 +324,10 @@ class ExtractionService:
             # audio-only flows (transcript-only, course sessions, automatic timeline and
             # their historical replacement) keep their own scope checks and never read chat.
             raise ValueError("chat_evidence_requires_general_flow")
+        if mixed_text is not None and (
+            not isinstance(mixed_text, MixedTextScope) or not chat_evidence
+        ):
+            raise ValueError("mixed_text_requires_chat_evidence")
         validate_summary_rule_config(transcript_only, transcript_summary_rule_id)
         if type(transcript_max_calls) is not int or transcript_max_calls <= 0:
             raise ValueError("transcript_max_calls_must_be_positive_int")
@@ -360,6 +367,7 @@ class ExtractionService:
         self.activity_min_duration_minutes = activity_min_duration_minutes
         self.transcript_only = transcript_only
         self.chat_evidence = chat_evidence
+        self.mixed_text = mixed_text
         self.transcript_summary_rule_id = transcript_summary_rule_id
         self.transcript_max_calls = transcript_max_calls
         self.transcript_allowed_windows = transcript_allowed_windows
@@ -863,11 +871,17 @@ class ExtractionService:
             ):
                 return
             raw = feedback.payload.get("command", {})
+            if self.mixed_text is not None:
+                if feedback.id != self.mixed_text.feedback_id:
+                    raise Blocked("mixed_text_unexpected_feedback")
+                self._check_mixed_text_command(raw)
             # Feedback is the root, independent of a caller's self-reported envelope.
             context = Context.feedback(feedback.id)
         elif isinstance(event, ReevaluationRequested):
             if event.target_type not in {"artifact", "rule_selection"}:
                 return
+            if self.mixed_text is not None:
+                raise Blocked("mixed_text_reevaluation_unsupported")
             context = Context.of(event)
             if self.storage.get_reevaluation_result(event.event_id) is not None:
                 return
@@ -898,6 +912,31 @@ class ExtractionService:
             request_cause=event.cause if isinstance(event, ReevaluationRequested) else None,
         )
 
+    def _check_mixed_text_command(self, raw: dict) -> None:
+        assert self.mixed_text is not None
+        try:
+            command = Command.model_validate(raw)
+        except ValidationError:
+            raise Blocked("mixed_text_requires_exact_extract") from None
+        if command != Command(kind="extract", interval=self.mixed_text.interval):
+            raise Blocked("mixed_text_requires_exact_extract")
+
+    @staticmethod
+    def _refuse_mixed_text_overlap(reader: Reader, interval: Interval, run_id: str) -> None:
+        time = TimeRange(interval.start, interval.end)
+        if reader.query(Query("activity", time=time, include_superseded=True, limit=1)).items:
+            raise Blocked("mixed_text_activity_overlap")
+        for other in iter_query(reader, Query("extraction_run", time=time)):
+            if not isinstance(other, SystemRecord) or other.id == run_id:
+                continue
+            p = other.payload
+            if p["command"].get("kind") not in {"extract", "reextract"}:
+                continue
+            if p["status"] == "succeeded":
+                raise Blocked("mixed_text_success_overlap")
+            if p["status"] not in TERMINAL or _retry_barrier(other):
+                raise Blocked("overlapping_unresolved_model_call")
+
     def _admit(
         self,
         id: str,
@@ -915,8 +954,22 @@ class ExtractionService:
                 and run.payload.get("event_id") == event_id
                 and run.payload.get("request_event_id") == context.request_event_id
                 and run.payload.get("scheduled") == scheduled
+                and (
+                    self.mixed_text is None
+                    or run.payload.get("mixed_text") == self.mixed_text.model_dump(mode="json")
+                )
             )
 
+        if self.mixed_text is not None:
+            self._check_mixed_text_command(raw)
+            if (
+                scheduled
+                or request_time is not None
+                or request_cause is not None
+                or event_id != id
+                or context != Context.feedback(self.mixed_text.feedback_id)
+            ):
+                raise Blocked("mixed_text_requires_manual_feedback")
         existing = self.storage.get_system_record(id)
         if existing:
             if matches(existing):
@@ -946,6 +999,8 @@ class ExtractionService:
             "model_calls": [],
             "gateway_calls": [],
         }
+        if self.mixed_text is not None:
+            payload["mixed_text"] = self.mixed_text.model_dump(mode="json")
         if self.automatic_timeline is not None and command.get("kind") in {"extract", "reextract"}:
             payload["automatic_timeline_scope_sha256"] = self.automatic_timeline.scope_sha256
         if request_cause is not None:
@@ -979,6 +1034,8 @@ class ExtractionService:
         ]
 
     def schedule(self, interval: Interval) -> list[str]:
+        if self.mixed_text is not None:
+            raise Blocked("mixed_text_requires_manual_feedback")
         if self.transcript_course_sessions:
             raise Blocked("transcript_course_sessions_manual_extract_only")
         runs = self.runs()
@@ -1013,6 +1070,8 @@ class ExtractionService:
         return ids
 
     def preview_reextract(self, interval: Interval) -> dict:
+        if self.mixed_text is not None:
+            raise Blocked("mixed_text_reextract_unsupported")
         if self.transcript_course_sessions:
             windows = self._course_reextract_windows(interval)
             targets = (
@@ -1026,6 +1085,8 @@ class ExtractionService:
 
     def retry(self, run_id: str) -> None:
         run = self.storage.get_system_record(run_id)
+        if self.mixed_text is not None or (run is not None and "mixed_text" in run.payload):
+            raise ValueError("mixed_text_requires_new_feedback")
         if (
             run is None
             or run.data_type != "extraction_run"
@@ -1104,10 +1165,14 @@ class ExtractionService:
             "response_recoverable": False,
         }
 
+    def _owns_mixed_text_pin(self, run: SystemRecord) -> bool:
+        scope = self.mixed_text
+        return run.payload.get("mixed_text") == (scope.model_dump(mode="json") if scope else None)
+
     def drain(self) -> None:
         for run in self.runs():
             status = run.payload["status"]
-            if status in TERMINAL:
+            if status in TERMINAL or not self._owns_mixed_text_pin(run):
                 continue
             deadline = run.payload.get("lease_until" if status == "running" else "retry_at")
             if deadline and datetime.fromisoformat(deadline) > self.clock():
@@ -1171,6 +1236,19 @@ class ExtractionService:
         run = self.storage.get_system_record(run_id)
         if run is None or run.data_type != "extraction_run" or run.payload["status"] in TERMINAL:
             return
+        mixed_text = self.mixed_text
+        if not self._owns_mixed_text_pin(run):
+            # Do not reinterpret a durable job in another mode, or consume jobs for
+            # another feedback. The host runs this pilot on an isolated consumer.
+            return
+        if mixed_text is not None:
+            if (
+                run.payload.get("event_id") != run.id
+                or run.payload.get("scheduled") is not False
+                or self._context(run) != Context.feedback(mixed_text.feedback_id)
+            ):
+                raise Blocked("mixed_text_requires_manual_feedback")
+            self._check_mixed_text_command(run.payload["command"])
         deadline = run.payload.get(
             "lease_until" if run.payload["status"] == "running" else "retry_at"
         )
@@ -1267,7 +1345,9 @@ class ExtractionService:
 
         def check_lease() -> None:
             if self.clock() >= lease_until:
-                raise Blocked("session_run_lease_expired")
+                raise Blocked(
+                    "mixed_text_run_lease_expired" if mixed_text else "session_run_lease_expired"
+                )
 
         # The claim revision is the fencing token; another recovery cannot commit our results.
         tracker = DurableCalls(
@@ -1277,9 +1357,9 @@ class ExtractionService:
             payload,
             run.revision + 1,
             context,
-            max_calls=course_max_calls,
-            max_request_bytes=COURSE_MAX_REQUEST_BYTES if session_windows else None,
-            check_lease=check_lease if session_windows else None,
+            max_calls=MIXED_TEXT_MAX_CALLS if mixed_text else course_max_calls,
+            max_request_bytes=COURSE_MAX_REQUEST_BYTES if session_windows or mixed_text else None,
+            check_lease=check_lease if session_windows or mixed_text else None,
         )
         calls = []
 
@@ -1341,12 +1421,20 @@ class ExtractionService:
                 # Feed the compiler its empty result locally. Empty/blank windows
                 # still block the whole plan; sending them cannot recover evidence.
                 return model.model_validate({"fragments": []})
+            if mixed_text is not None:
+                data = {
+                    **data,
+                    "supplemental_instructions": (
+                        "Use only the supplied text evidence. Do not infer identity, location, "
+                        "silence or continuity from missing evidence. Do not propose actions."
+                    ),
+                }
             output = model.model_validate(
                 tracker.complete(
                     make_call(purpose, with_policy(data) if self.chat_evidence else data, model)
                 )
             )
-            if not self.transcript_only:
+            if not self.transcript_only and mixed_text is None:
                 calls.append(
                     {
                         "purpose": purpose,
@@ -1408,6 +1496,8 @@ class ExtractionService:
                     if session_windows and scoped_transcript_guard is None:
                         self._refuse_course_overlaps(reader, session_windows)
                         self._refuse_course_replay(reader, session_windows, run.id)
+                    if mixed_text is not None:
+                        self._refuse_mixed_text_overlap(reader, mixed_text.interval, run.id)
                     ops, detail = extract_plan(
                         reader,
                         command,
@@ -1428,6 +1518,7 @@ class ExtractionService:
                         timeline_review_wave=review_wave,
                         timeline_review_concurrency=self.transcript_window_review_concurrency,
                         chat_evidence=self.chat_evidence,
+                        mixed_text=mixed_text is not None,
                     )
                 elif command.kind in {"apply_rule", "extract_once"}:
                     ops, detail = apply_plan(
@@ -1513,6 +1604,12 @@ class ExtractionService:
                 else:
                     ops, detail = suggestion_operations(reader, command), {}
             business_ready = True
+            if mixed_text is not None:
+                # The isolated host is the single activity writer; also recheck
+                # live before creating any new activities. Raw/rule revisions
+                # and the run's durable receipt CAS are checked in the batch.
+                self._refuse_mixed_text_overlap(self.storage, mixed_text.interval, run.id)
+                check_lease()
             if session_windows:
                 # Storage's collection guards must also match AFTER the batch,
                 # so it cannot assert an activity revision and create activities
@@ -1603,7 +1700,14 @@ class ExtractionService:
         except Blocked as exc:
             status, error = "blocked", str(exc)
         except TranscriptCallLimitExceeded:
-            status, error = "failed", "transcript_max_calls_exceeded"
+            status, error = (
+                "failed",
+                (
+                    "mixed_text_max_calls_exceeded"
+                    if mixed_text
+                    else "transcript_max_calls_exceeded"
+                ),
+            )
         except Exception as exc:
             # No exception bodies: model responses can contain private evidence or credentials.
             status = "failed" if isinstance(exc, (ValueError, ValidationError)) else "retry_wait"

@@ -27,11 +27,16 @@ Ask = Callable[[str, dict[str, Any], type], Any]
 
 
 def segment(
-    ask: Ask, interval: Interval, evidence: list[RawRecord], *, transcript_only: bool = False
+    ask: Ask,
+    interval: Interval,
+    evidence: list[RawRecord],
+    *,
+    transcript_only: bool = False,
+    mixed_text: bool = False,
 ) -> Segmentation:
     data = {
         "interval": interval.model_dump(mode="json"),
-        "evidence": evidence_rows(evidence, transcript_only=transcript_only),
+        "evidence": evidence_rows(evidence, transcript_only=transcript_only, mixed_text=mixed_text),
     }
     try:
         result = ask("segmentation", data, Segmentation)
@@ -41,6 +46,8 @@ def segment(
                 validate_anonymous_activity(activity)
         return result
     except InputBudgetExceeded:
+        if mixed_text:
+            raise
         # Do not cut through speech. Single oversized records require upstream chunking.
         boundaries = sorted(
             {

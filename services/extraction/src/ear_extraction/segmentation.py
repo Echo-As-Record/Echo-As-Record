@@ -29,11 +29,12 @@ class Inputs:
     attributions: list[SemanticRecord]
     entities: list[SemanticRecord]
     transcript_only: bool = False
+    mixed_text: bool = False
 
     def public(self, *, anonymous: bool = False, link_ids: bool = True) -> dict:
         if self.transcript_only:
             return {"evidence": evidence_rows(self.raw, transcript_only=True, link_ids=link_ids)}
-        data = {"evidence": evidence_rows(self.raw)}
+        data = {"evidence": evidence_rows(self.raw, mixed_text=self.mixed_text)}
         if not anonymous:
             data["attributions"] = [r.model_dump(mode="json") for r in self.attributions]
             # Only names are semantic entity inputs; references never reach the model.
@@ -50,9 +51,13 @@ class Inputs:
 
 
 def evidence_rows(
-    raw: list[RawRecord], *, transcript_only: bool = False, link_ids: bool = True
+    raw: list[RawRecord],
+    *,
+    transcript_only: bool = False,
+    link_ids: bool = True,
+    mixed_text: bool = False,
 ) -> list[dict]:
-    if not transcript_only:
+    if not transcript_only and not mixed_text:
         # Chat rows only exist here when a chat-enabled service read them; they get a
         # closed projection instead of the full record dump.
         return [
@@ -60,6 +65,9 @@ def evidence_rows(
         ]
     rows = []
     for r in raw:
+        if mixed_text and r.data_type in CHAT_TYPES:
+            rows.append(chat_row(r))
+            continue
         text = r.payload.get("text")
         if r.data_type != "transcript_segment" or not isinstance(text, str):
             raise Blocked("transcript_evidence_invalid")
@@ -68,6 +76,8 @@ def evidence_rows(
             "event_end": format_utc(r.event_end),
             "text": text,
         }
+        if mixed_text:
+            row["data_type"] = r.data_type
         if link_ids:
             row["id"] = r.id
         rows.append(row)

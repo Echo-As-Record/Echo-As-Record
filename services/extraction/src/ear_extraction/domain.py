@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Literal, Self
 
 from ear_contracts.base import Id, UtcDatetime
@@ -22,6 +22,19 @@ class Interval(Model):
     def valid_range(self) -> Self:
         if self.end <= self.start:
             raise ValueError("empty_or_reversed_interval")
+        return self
+
+
+class MixedTextScope(Model):
+    """Private host pin for exactly one fresh, user-requested extraction."""
+
+    feedback_id: Id
+    interval: Interval
+
+    @model_validator(mode="after")
+    def bounded(self) -> Self:
+        if self.interval.end - self.interval.start > timedelta(days=1):
+            raise ValueError("mixed_text_window_too_long")
         return self
 
 
