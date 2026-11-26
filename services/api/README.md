@@ -52,7 +52,7 @@ HEAD **`84d2d0f` 已包含 `origin/dev ba36543`（PR #20）及此前GPS**；不�
 - 请求 Host 须与该 origin 的主机和端口一致，拒绝 DNS 重绑定主机；仅健康检查额外允许
   容器回环 `127.0.0.1:8086`。带 Origin 的请求仍须完全同源；跨站/同站非同源的
   Sec-Fetch-Site 被拒绝。所有非 GET/HEAD/OPTIONS 请求都须携带匹配的 Origin，命令行写请求亦然。
-- `GET /v1/session` 仍仅公开返回 `{"test_no_auth": true/false}`，不返回凭据、绑定或角色。
+- `GET /v1/session` 公开返回 `test_no_auth` 布尔值；仅在启用免登录模型设置时附带 `test_no_auth_model_settings: true`。不返回凭据、绑定或角色。
   `/workspace/` 和 `/plugins/` 自动连接后，根据重新验证的 `/v1/me` 显示角色；无令牌输入或登录提示。
   普通用户不发管理请求；管理员自动读取插件目录/管理结果，管理操作仍需手动提交及既有确认。
 - 免登录**不是只读 scope**：选定绑定原有的业务或管理写入口也不要求浏览器令牌。
@@ -119,7 +119,7 @@ HEAD **`84d2d0f` 已包含 `origin/dev ba36543`（PR #20）及此前GPS**；不�
 ### 3.1 前置条件
 
 - ① 服务在线，并已为本服务签发 `api` 模块的凭据：普通用户绑定用普通 `api` 凭据；管理员绑定必须是①里带可信管理员角色的 `api` 凭据。凭据怎么签发、怎么授权，见[①部署指南](../storage/ai-docs/deployment.md)。⑥ 不创建身份、不迁移数据库、不读 `.env`。
-- 每个绑定有两个互不相同的 43 位令牌：给调用 ⑥ 的人用的 API 令牌，和 ⑥ 调用①用的 `storage_token`。生成方式：`python3 -c "import secrets; print(secrets.token_urlsafe(32))"`。所有令牌必须两两不同。
+- 每个绑定都需要 43 位 `storage_token`（⑥ 调用①使用）；正常认证还需要 43 位客户端 API `token`（仅在 `test_no_auth` 模式可省略）。生成方式：`python3 -c "import secrets; print(secrets.token_urlsafe(32))"`。所有令牌必须两两不同。
 
 ### 3.2 配置文件
 
@@ -168,7 +168,7 @@ JSON 文件，必须是当前用户拥有的普通文件、权限不含 group/ot
 | 方法与路径 | 谁可用 | 说明 |
 |---|---|---|
 | `GET /health/live`、`GET /health/ready` | 无需认证 | 存活；就绪（范围仅为 ⑥ 到 ① 的连通） |
-| `GET /v1/session` | 无需认证 | 最小测试模式标志，无凭据/身份信息 |
+| `GET /v1/session` | 无需认证 | 最小测试能力标志，无凭据/身份信息 |
 | `GET /v1/me` | 任一绑定 | 当前主体与角色（会先向①复核身份） |
 | `GET /v1/records/{type}` | 任一绑定 | 分页列出（`limit`、`cursor`、`start`、`end`、`include_superseded`）；类型按下述核心登记表规则推导，集合外返回 404 `not_found` |
 | `GET /v1/evidence/search` | 任一绑定 | 有界字面证据查询：`start`、`end`、`q`、`limit`、`cursor`；UTC Z非空≤24h，q长1–256，limit默认10且1–10；当前授权、live_best_effort与截断可见；不是硬deadline或完整搜索保证 |
