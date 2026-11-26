@@ -110,7 +110,12 @@ class GatewayClient:
         values.setdefault("system", self.system)
         checked = CallRequest.model_validate(values)
         data = self._request("POST", "/v1/complete", checked.model_dump(mode="json"))
-        if not data.get("record_saved") or not isinstance(data.get("output"), dict):
+        # The HTTP envelope, never the model output, identifies the synchronous reply.
+        if (
+            data.get("call_id") != checked.call_id
+            or data.get("record_saved") is not True
+            or not isinstance(data.get("output"), dict)
+        ):
             raise GatewayError(502, "invalid_gateway_response")
         return data["output"]
 

@@ -362,7 +362,7 @@ class ReadRequest(ClosedModel):
     snapshot_id: Id | None = None
 
 
-SnapshotProfile = Literal["attribution"]
+SnapshotProfile = Literal["attribution", "transcript_extraction"]
 
 
 class SnapshotRequest(ClosedModel):
