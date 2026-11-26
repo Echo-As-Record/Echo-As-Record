@@ -43,6 +43,7 @@ class Settings(BaseModel):
     execution_journal: Path | None = None
     model_settings_file: Path | None = None
     execution_action_v2: bool = Field(default=False, strict=True)
+    chat_evidence_read: bool = Field(default=False, strict=True)
     test_no_auth: bool = Field(default=False, strict=True)
     test_no_auth_role: Literal["user", "admin"] = "user"
     test_no_auth_model_settings: bool = Field(default=False, strict=True)

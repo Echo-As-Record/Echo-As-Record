@@ -15,6 +15,7 @@ from ear_contracts import (
     Source,
     SystemRecord,
 )
+from ear_contracts.optional_sources import CHAT_TYPES
 from ear_extraction.domain import Interval
 from ear_storage_client import AppendRaw, Context, Query, TimeRange
 from ear_storage_client.protocol import Reader
@@ -27,6 +28,13 @@ from ear_api.upstream import GatewayError
 
 # The registry has no management flag; plugin feedback belongs to management APIs.
 MANAGEMENT_TYPES = frozenset({"plugin_management_feedback"})
+
+# Registered raw types that stay OUT of the generic record routes until a product decision
+# admits them. Chat records hold whole private conversations plus adapter extras (reasoning,
+# tool output, private-volume file references), so the registry-derived allowlist below must
+# not widen to them silently. Admitting them is a deliberate change: remove them here, extend
+# the allowlist test, and decide what a viewer may show of them.
+UNBROWSABLE_TYPES = frozenset(CHAT_TYPES)
 
 # Static core addition until the shipped core_mvp_registry profile is available.
 # This is NOT runtime registry discovery and never admits any plugin types.
@@ -42,6 +50,7 @@ BUSINESS_TYPES = (
         if name in DEFAULT_REGISTRY.core_types
         and spec.kind in {"raw_record", "semantic", "rule"}
         and name not in MANAGEMENT_TYPES
+        and name not in UNBROWSABLE_TYPES
     )
     | CORE_MVP_BUSINESS_ADDITIONS
 )
