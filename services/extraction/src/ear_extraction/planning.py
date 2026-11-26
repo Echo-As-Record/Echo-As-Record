@@ -31,6 +31,7 @@ from ear_extraction.automatic_timeline import (
     ReviewWave,
     segment_automatic_timeline,
 )
+from ear_extraction.chat_evidence import chat_counts, has_grounding, refuse_unreadable_chat
 from ear_extraction.course_blocks import segment_course_blocks
 from ear_extraction.course_reextract import (
     CourseDraftGuard,
@@ -134,8 +135,21 @@ def extract_plan(
     timeline_max_calls: int | None = None,
     timeline_review_wave: ReviewWave | None = None,
     timeline_review_concurrency: int = 1,
+    chat_evidence: bool = False,
 ) -> tuple[list[WriteOp], dict]:
     validate_summary_rule_config(transcript_only, transcript_summary_rule_id)
+    if chat_evidence and (
+        transcript_only
+        or transcript_summary_rule_id is not None
+        or session_windows
+        or course_blocks
+        or course_draft_guard is not None
+        or scoped_transcript_guard is not None
+        or automatic_timeline is not None
+    ):
+        # Separate strict guard: the audio-only guarded flows (transcript-only, course
+        # sessions, automatic timeline and their historical replacement) never read chat.
+        raise Blocked("chat_evidence_requires_general_flow")
     assert command.interval is not None
     interval = command.interval
     minimum = timedelta(minutes=activity_min_duration_minutes)
@@ -209,7 +223,9 @@ def extract_plan(
         if scoped_transcript_guard is not None:
             scoped_transcript_guard.raw_counts = tuple(counts)
     else:
-        raw = raw_inputs(reader, interval, transcript_only=transcript_only)
+        raw = raw_inputs(
+            reader, interval, transcript_only=transcript_only, chat_evidence=chat_evidence
+        )
     if old is not None:
         old.check_evidence(raw)
     candidates = None
@@ -222,6 +238,9 @@ def extract_plan(
     session = None
     draft_spans = course_draft_guard.spans if course_draft_guard is not None else None
     detail = {}
+    if chat_evidence:
+        # Counts only (no text/ids): shows whether this run was pure chat or mixed.
+        detail["chat_evidence"] = chat_counts(raw)
     if automatic_timeline is not None:
         assert old is not None and timeline_max_calls is not None
         assert timeline_review_wave is not None
@@ -281,11 +300,20 @@ def extract_plan(
         activity_deps = transcript_dependencies(raw) if transcript_only else []
         kept: list[Activity] = []
         short: list[Activity] = []
+        claim_only: list[Activity] = []
         for activity in result.activities:
             validate_anonymous_activity(activity)
-            (kept if meets_activity_floor(activity, by_id, minimum) else short).append(activity)
+            if not has_grounding(activity.evidence_ids, by_id):
+                # Only assistant claims or session labels: not an observed activity.
+                claim_only.append(activity)
+            elif meets_activity_floor(activity, by_id, minimum):
+                kept.append(activity)
+            else:
+                short.append(activity)
         detail.update(duration_audit(short))
-        if short:
+        if claim_only:
+            detail["claim_only_candidates"] = len(claim_only)
+        if short or claim_only:
             result = result.model_copy(
                 update={
                     "activities": kept,
@@ -298,7 +326,11 @@ def extract_plan(
         # Generic preview permits whole-family retirement, but here there is no
         # successor/citation guard. Keep all old objects if any proposed fragment
         # was withheld or if the replacement is empty; don't partially retire.
-        if ops and (not result.activities or "below_min_duration_candidates" in detail):
+        if ops and (
+            not result.activities
+            or "below_min_duration_candidates" in detail
+            or "claim_only_candidates" in detail
+        ):
             raise SessionCoverageBlocked(
                 "reextract_incomplete_activity_replacement",
                 detail.get("below_min_duration_rows", 0),
@@ -331,7 +363,7 @@ def extract_plan(
             # not just the records cited in this activity or consumed by its rules.
             deps = activity_deps
         else:
-            current = inputs(reader, activity)
+            current = inputs(reader, activity, chat_evidence=chat_evidence)
             deps = []
         ops.append(RegisterDependencies("activity", aid, deps))
         rules = candidates if candidates is not None else load_rule_candidates(reader)
@@ -359,11 +391,13 @@ def extract_plan(
 
 
 def apply_plan(
-    reader: Reader, command: Command, run_id: str, ask: Ask
+    reader: Reader, command: Command, run_id: str, ask: Ask, *, chat_evidence: bool = False
 ) -> tuple[list[WriteOp], dict]:
     activity = semantic(reader, command.target_id, "activity")
     interval = range_of(activity)
-    data = inputs(reader, interval)
+    data = inputs(reader, interval, chat_evidence=chat_evidence)
+    if not chat_evidence:
+        refuse_unreadable_chat(reader, activity.payload.get("evidence_ids"), data.raw)
     ops: list[WriteOp] = []
     if command.kind == "extract_once":
         assert command.rule is not None
@@ -419,7 +453,9 @@ def apply_plan(
     return ops, {"artifact_id": id}
 
 
-def rejudge_plan(reader: Reader, command: Command, ask: Ask) -> ReevaluationPlan:
+def rejudge_plan(
+    reader: Reader, command: Command, ask: Ask, *, chat_evidence: bool = False
+) -> ReevaluationPlan:
     artifact = reader.get(command.target_id) if command.target_id else None
     if not isinstance(artifact, SemanticRecord):
         return unavailable(None, "artifact_missing")
@@ -436,7 +472,17 @@ def rejudge_plan(reader: Reader, command: Command, ask: Ask) -> ReevaluationPlan
         return terminate(
             artifact, "activity_unavailable", [guard, *pending_replacements(reader, {artifact.id})]
         )
-    data = inputs(reader, range_of(activity))
+    data = inputs(reader, range_of(activity), chat_evidence=chat_evidence)
+    if not chat_evidence:
+        # Never rewrite notes from a flow that cannot see the chat rows they cite.
+        refuse_unreadable_chat(
+            reader,
+            [
+                *(activity.payload.get("evidence_ids") or []),
+                *(artifact.payload.get("evidence_ids") or []),
+            ],
+            data.raw,
+        )
     result: Generated = ask(
         "reevaluation",
         {

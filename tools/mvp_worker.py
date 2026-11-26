@@ -156,6 +156,7 @@ class Settings(SafeModel):
         ge=1,
         le=MAX_ACTIVITY_MIN_DURATION_MINUTES,
     )
+    chat_evidence: bool = Field(default=False, strict=True)
     transcript_only: bool = Field(default=False, strict=True)
     transcript_course_sessions: bool = Field(default=False, strict=True)
     transcript_course_reextract: bool = Field(default=False, strict=True)
@@ -281,6 +282,8 @@ class Settings(SafeModel):
                 asr_gaps=self.transcript_automatic_timeline_asr_gaps,
                 activity_min_duration_minutes=self.activity_min_duration_minutes,
             )
+        if self.chat_evidence and (self.module != "extraction" or self.transcript_only):
+            raise ValueError("chat_evidence_requires_general_extraction")
         if self.transcript_course_sessions and not self.transcript_only:
             raise ValueError("transcript_course_sessions_requires_transcript_only")
         if self.transcript_only:
@@ -683,6 +686,7 @@ class BoundedExtraction(ExtractionService):
         super().__init__(
             *args,
             activity_min_duration_minutes=config.activity_min_duration_minutes,
+            chat_evidence=config.chat_evidence,
             transcript_only=config.transcript_only,
             transcript_course_sessions=config.transcript_course_sessions,
             course_blocks=config.transcript_course_sessions,

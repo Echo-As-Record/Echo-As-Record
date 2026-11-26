@@ -82,8 +82,8 @@ def fixture_registry() -> Registry:
     )
 
 
-def fixture() -> tuple[MemoryStorage, dict[str, str]]:
-    storage = MemoryStorage(fixture_registry(), duplicate_delivery=True)
+def fixture(*, registry: Registry | None = None) -> tuple[MemoryStorage, dict[str, str]]:
+    storage = MemoryStorage(registry or fixture_registry(), duplicate_delivery=True)
     person, voice, transcript, attribution = [new_id() for _ in range(4)]
     adapter = storage.client("adapter")
     adapter.write(

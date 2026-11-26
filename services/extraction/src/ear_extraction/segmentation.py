@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from ear_contracts import RawRecord, SemanticRecord, format_utc
 from ear_storage_client import Query, Reader, TimeRange, iter_query
 
+from ear_extraction.chat_evidence import CHAT_TYPES, chat_row, read_chat_evidence
 from ear_extraction.domain import Activity, Blocked, Interval, Segmentation, Waiting
 from ear_extraction.persistence import records, semantic
 
@@ -52,7 +53,11 @@ def evidence_rows(
     raw: list[RawRecord], *, transcript_only: bool = False, link_ids: bool = True
 ) -> list[dict]:
     if not transcript_only:
-        return [r.model_dump(mode="json") for r in raw]
+        # Chat rows only exist here when a chat-enabled service read them; they get a
+        # closed projection instead of the full record dump.
+        return [
+            chat_row(r) if r.data_type in CHAT_TYPES else r.model_dump(mode="json") for r in raw
+        ]
     rows = []
     for r in raw:
         text = r.payload.get("text")
@@ -76,8 +81,12 @@ def raw_inputs(
     transcript_only: bool = False,
     allow_empty_transcript: bool = False,
     max_transcript_records: int | None = None,
+    chat_evidence: bool = False,
 ) -> list[RawRecord]:
     time = TimeRange(interval.start, interval.end)
+    if chat_evidence and transcript_only:
+        # Chat belongs to the native general flow only; the guarded audio-only flows stay as is.
+        raise Blocked("chat_evidence_requires_general_flow")
     if transcript_only:
         raw = []
         for r in iter_query(reader, Query("transcript_segment", time=time)):
@@ -101,12 +110,16 @@ def raw_inputs(
         for r in iter_query(reader, Query(kind, time=time))
         if isinstance(r, RawRecord)
     ]
+    if chat_evidence:
+        # Same interval, same snapshot, same point-event overlap rule as every other
+        # raw type. Attribution/geocode readiness above still gates mixed runs.
+        raw.extend(read_chat_evidence(reader, interval))
     raw.sort(key=lambda r: (r.event_start, r.id))
     return raw
 
 
-def inputs(reader: Reader, interval: Interval) -> Inputs:
-    raw = raw_inputs(reader, interval)
+def inputs(reader: Reader, interval: Interval, *, chat_evidence: bool = False) -> Inputs:
+    raw = raw_inputs(reader, interval, chat_evidence=chat_evidence)
     attrs = records(reader, "attribution", interval)
     entities = {}
     for a in attrs:

@@ -18,6 +18,7 @@ from ear_storage_client import (
 from pydantic import ValidationError
 
 from ear_extraction.artifacts import create_artifact, input_dependencies, validate_generated
+from ear_extraction.chat_evidence import refuse_unreadable_chat
 from ear_extraction.domain import Activity, Blocked, Rule, Selection
 from ear_extraction.long_input import generate
 from ear_extraction.persistence import range_of, records, ref
@@ -188,7 +189,9 @@ def create_selection(
     return ops
 
 
-def reselect_plan(reader: Reader, id: str, run_id: str, ask: Ask) -> ReevaluationPlan:
+def reselect_plan(
+    reader: Reader, id: str, run_id: str, ask: Ask, *, chat_evidence: bool = False
+) -> ReevaluationPlan:
     selection = reader.get(id)
     if not isinstance(selection, SemanticRecord):
         return unavailable(None, "selection_missing")
@@ -198,7 +201,10 @@ def reselect_plan(reader: Reader, id: str, run_id: str, ask: Ask) -> Reevaluatio
     if not isinstance(activity, SemanticRecord) or activity.superseded:
         return terminate(selection, "activity_unavailable", [])
     model = Activity.model_validate(activity.payload)
-    data = inputs(reader, range_of(activity))
+    data = inputs(reader, range_of(activity), chat_evidence=chat_evidence)
+    if not chat_evidence:
+        # Never re-select or generate from a flow that cannot see the chat rows cited.
+        refuse_unreadable_chat(reader, activity.payload.get("evidence_ids"), data.raw)
     candidates = load_rule_candidates(reader)
     selected = choose(candidates, model, activity.id, data, ask)
     old = set(selection.payload["rule_ids"])

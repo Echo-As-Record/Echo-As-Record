@@ -5299,3 +5299,15 @@ def test_automatic_timeline_activity_floor_preserves_old_artifact_only_citation(
     assert [c["purpose"] for c in host.gateway_calls] == [_AUTO_PURPOSE] * 2
     assert all(host.semantic(id).version == 1 for id in targets)
     assert b.id in host.semantic(targets[1]).payload["evidence_ids"]
+
+
+def test_chat_evidence_default_off_and_only_supported_in_general_extraction(tmp_path):
+    general = settings(tmp_path, "extraction")
+    assert worker.Settings.model_validate(general).chat_evidence is False
+    assert worker.Settings.model_validate(general | {"chat_evidence": True}).chat_evidence is True
+    with pytest.raises(ValueError, match="chat_evidence_requires_general_extraction"):
+        worker.Settings.model_validate(
+            general | transcript_only_settings() | {"chat_evidence": True}
+        )
+    with pytest.raises(ValueError, match="chat_evidence_requires_general_extraction"):
+        worker.Settings.model_validate(settings(tmp_path, "attribution", chat_evidence=True))

@@ -62,6 +62,7 @@ from ear_extraction.automatic_timeline import (
     PURPOSE as WINDOW_REVIEW_PURPOSE,
 )
 from ear_extraction.call_safety import DurableCalls, TranscriptCallLimitExceeded
+from ear_extraction.chat_evidence import audit_input, with_policy
 from ear_extraction.course_reextract import (
     MAX_COURSE_DRAFT_SPANS,
     MAX_COURSE_REEXTRACT_PREDECESSORS,
@@ -293,9 +294,33 @@ class ExtractionService:
         transcript_automatic_timeline_prewrite_pins: tuple[AutomaticPredecessorPin, ...] = (),
         transcript_automatic_timeline_gaps: tuple[ExactInterval, ...] = (),
         transcript_automatic_timeline_asr_gaps: tuple[ExactInterval, ...] = (),
+        chat_evidence: bool = False,
     ):
         if type(transcript_only) is not bool:
             raise ValueError("transcript_only_must_be_bool")
+        if type(chat_evidence) is not bool:
+            raise ValueError("chat_evidence_must_be_bool")
+        if chat_evidence and (
+            transcript_only
+            or transcript_summary_rule_id is not None
+            or transcript_course_sessions
+            or course_blocks
+            or transcript_allowed_windows
+            or transcript_course_reextract
+            or transcript_course_reextract_draft_sha256 is not None
+            or transcript_course_reextract_reconciled_run_ids
+            or transcript_course_reextract_draft_spans is not None
+            or transcript_course_reextract_schema_discard_attestations
+            or transcript_course_reextract_timeline is not None
+            or transcript_automatic_timeline is not None
+            or transcript_automatic_timeline_prewrite_pins
+            or transcript_automatic_timeline_gaps
+            or transcript_automatic_timeline_asr_gaps
+        ):
+            # Strict separation: chat belongs to the native general flow. The guarded
+            # audio-only flows (transcript-only, course sessions, automatic timeline and
+            # their historical replacement) keep their own scope checks and never read chat.
+            raise ValueError("chat_evidence_requires_general_flow")
         validate_summary_rule_config(transcript_only, transcript_summary_rule_id)
         if type(transcript_max_calls) is not int or transcript_max_calls <= 0:
             raise ValueError("transcript_max_calls_must_be_positive_int")
@@ -334,6 +359,7 @@ class ExtractionService:
         validate_activity_min_duration(activity_min_duration_minutes)
         self.activity_min_duration_minutes = activity_min_duration_minutes
         self.transcript_only = transcript_only
+        self.chat_evidence = chat_evidence
         self.transcript_summary_rule_id = transcript_summary_rule_id
         self.transcript_max_calls = transcript_max_calls
         self.transcript_allowed_windows = transcript_allowed_windows
@@ -1315,10 +1341,19 @@ class ExtractionService:
                 # Feed the compiler its empty result locally. Empty/blank windows
                 # still block the whole plan; sending them cannot recover evidence.
                 return model.model_validate({"fragments": []})
-            output = model.model_validate(tracker.complete(make_call(purpose, data, model)))
+            output = model.model_validate(
+                tracker.complete(
+                    make_call(purpose, with_policy(data) if self.chat_evidence else data, model)
+                )
+            )
             if not self.transcript_only:
                 calls.append(
-                    {"purpose": purpose, "input": data, "output": output.model_dump(mode="json")}
+                    {
+                        "purpose": purpose,
+                        # Chat text is not copied into the run audit; see chat_evidence.
+                        "input": audit_input(data) if self.chat_evidence else data,
+                        "output": output.model_dump(mode="json"),
+                    }
                 )
             return output
 
@@ -1392,9 +1427,12 @@ class ExtractionService:
                         timeline_max_calls=course_max_calls,
                         timeline_review_wave=review_wave,
                         timeline_review_concurrency=self.transcript_window_review_concurrency,
+                        chat_evidence=self.chat_evidence,
                     )
                 elif command.kind in {"apply_rule", "extract_once"}:
-                    ops, detail = apply_plan(reader, command, run.id, ask)
+                    ops, detail = apply_plan(
+                        reader, command, run.id, ask, chat_evidence=self.chat_evidence
+                    )
                 elif command.kind == "reevaluate":
                     request_id = context.request_event_id
                     assert request_id is not None and command.target_id is not None
@@ -1435,9 +1473,15 @@ class ExtractionService:
                         )
                     if command.target_type == "rule_selection":
                         assert command.target_id is not None
-                        plan = reselect_plan(reader, command.target_id, run.id, ask)
+                        plan = reselect_plan(
+                            reader,
+                            command.target_id,
+                            run.id,
+                            ask,
+                            chat_evidence=self.chat_evidence,
+                        )
                     else:
-                        plan = rejudge_plan(reader, command, ask)
+                        plan = rejudge_plan(reader, command, ask, chat_evidence=self.chat_evidence)
                     ops, detail = plan.ops, plan.detail
                     ops.extend(
                         [
