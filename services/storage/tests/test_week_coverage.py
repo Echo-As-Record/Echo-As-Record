@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 from ear_api.app import create_app as api_app
+from ear_api.effective_time import TimeProjection
 from ear_contracts import DEFAULT_REGISTRY, DataTypeSpec, Registry, new_id
 from ear_storage import PostgresStorage, bootstrap, migrate
 from ear_storage.auth import AuthOperator
@@ -97,6 +98,7 @@ def test_week_projection_real_storage_and_fresh_grants(pg_dsn):
     }
     own = auth.issue_principal("api", read_types=grants)
     other = auth.issue_principal("api", admin=True)
+    adapter = auth.issue_principal("adapter", read_types={"audio_ref"})
     seq = store.commit_seq
     with loopback(storage_app(StorageService(pg_dsn))) as origin:
         body = {
@@ -105,7 +107,16 @@ def test_week_projection_real_storage_and_fresh_grants(pg_dsn):
             "shift": {"seconds": 1800, "ids": {"audio_ref": [audio.id]}},
         }
         with httpx.Client(base_url=origin, trust_env=False, headers=headers_for(own.token)) as wire:
+            shifted = wire.post("/v1/coverage/week", json=body)
+            assert shifted.status_code == 200, shifted.text
+            assert shifted.json()["timeline"]["days"] == ["0" * 17 + "111" + "0000"]
+            body["shift"] = {"seconds": 1800, "ids": {"chat_message": [audio.id]}}
             assert wire.post("/v1/coverage/week", json=body).status_code == 422
+        with httpx.Client(
+            base_url=origin, trust_env=False, headers=headers_for(adapter.token)
+        ) as wire:
+            body["shift"] = {"seconds": 1800, "ids": {"audio_ref": [audio.id]}}
+            assert wire.post("/v1/coverage/week", json=body).status_code == 403
         config = settings(origin, chat_evidence_read=True)
         bindings = tuple(
             binding.model_copy(
@@ -163,6 +174,24 @@ def test_week_projection_real_storage_and_fresh_grants(pg_dsn):
                 and after["timeline"]["days"][0] == "0" * 299 + "1"
             )
             assert after["activity"] == {"state": "unavailable", "days": ["", ""]}
+            auth.set_grants(own.principal_id, read_types=grants)
+            projection = TimeProjection(1800, {"audio_ref": [audio.id]})
+            with TestClient(api_app(config, time_projection=projection)) as corrected:
+                on = corrected.get(path, params=query, headers=headers())
+                assert on.status_code == 200, on.text
+                assert on.json() == {
+                    **data,
+                    "timeline": {
+                        "state": "ready",
+                        "days": ["0" * 24 + "1" + "0" * 275, "0" * 5 + "111" + "0" * 4],
+                    },
+                }
+                auth.set_grants(own.principal_id, read_types=grants - {"audio_ref"})
+                without_audio = corrected.get(path, params=query, headers=headers())
+                assert without_audio.json()["timeline"] == {
+                    "state": "partial",
+                    "days": ["0" * 24 + "1" + "0" * 275, "0" * 12],
+                }
             auth.revoke(own.principal_id)
             assert api.get(path, params=query, headers=headers()).status_code == 401
     assert store.commit_seq == seq

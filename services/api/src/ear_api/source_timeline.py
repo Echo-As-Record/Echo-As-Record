@@ -9,7 +9,10 @@ from ear_storage_client import PermissionDenied, Query, TimeRange
 from ear_storage_client.protocol import Reader
 from ear_storage_client.remote_errors import ProtocolError
 
-RECORDINGS = ("audio_ref", "transcript_segment")
+from ear_api.effective_time import KINDS, TimeProjection
+
+RECORDINGS = KINDS
+
 CHAT = ("chat_session", "chat_message", "chat_attachment")
 SOURCES = ("all", "legacy-ear", "librechat")
 MAX_PAGE = 16
@@ -39,9 +42,23 @@ def _audio_source(row: RawRecord) -> str:
 
 
 def page(
-    reader: Reader, kind: str, time: TimeRange, source: str, limit: int, cursor: str | None
+    reader: Reader,
+    kind: str,
+    time: TimeRange,
+    source: str,
+    limit: int,
+    cursor: str | None,
+    *,
+    projection: TimeProjection | None = None,
+    subject: str = "",
 ) -> dict[str, Any]:
-    result = reader.query(Query(kind, time=time, limit=limit, cursor=cursor))
+    result = (
+        reader.query(Query(kind, time=time, limit=limit, cursor=cursor))
+        if projection is None
+        else projection.page(
+            reader, kind, time, limit, cursor, subject=subject, surface=f"source-timeline/{source}"
+        )
+    )
     if len(result.items) > limit or (
         result.next_cursor is not None
         and (
@@ -52,11 +69,12 @@ def page(
     items: list[dict[str, Any]] = []
     audio_sources: dict[str, str] = {}
     for row in result.items:
-        if (
-            not isinstance(row, RawRecord)
-            or row.data_type != kind
-            or not time.overlaps(row.event_start, row.event_end)
-        ):
+        if not isinstance(row, RawRecord) or row.data_type != kind:
+            raise ProtocolError("invalid_source_record")
+        start, end = (
+            (row.event_start, row.event_end) if projection is None else projection.interval(row)
+        )
+        if not time.overlaps(start, end):
             raise ProtocolError("invalid_source_record")
         payload = row.payload
         if kind in CHAT:
@@ -92,8 +110,8 @@ def page(
                 "id": row.id,
                 "kind": kind,
                 "source": origin,
-                "start": row.event_start.isoformat().replace("+00:00", "Z"),
-                "end": row.event_end.isoformat().replace("+00:00", "Z"),
+                "start": start.isoformat().replace("+00:00", "Z"),
+                "end": end.isoformat().replace("+00:00", "Z"),
                 "title": title[:240]
                 if kind in ("chat_session", "chat_attachment") and isinstance(title, str)
                 else "",
