@@ -234,7 +234,7 @@ if __name__ == "__main__":
     main()
 ```
 
-`complete` 只在成功信封的 `call_id` 匹配此次请求、`record_saved` 为字面 `true` 且 `output` 是对象时返回 `output`。`GatewayClient` 把所有非 200 都折叠成 `gateway_request_failed`（只保留 HTTP 状态），把传输失败折叠成 503 `gateway_outcome_unknown`，所以拿不准时一律先 `reconcile`。`call_id` 的生成与保存建议：
+`complete` 只返回 `output`；`GatewayClient` 把所有非 200 都折叠成 `gateway_request_failed`（只保留 HTTP 状态），把传输失败折叠成 503 `gateway_outcome_unknown`，所以拿不准时一律先 `reconcile`。`call_id` 的生成与保存建议：
 
 1. **生成**：用 `ear_contracts.base.new_id()`（UUIDv7，小写，格式见 `ID_PATTERN`）。`complete` 在没给 `call_id` 时也会自己 `new_id()`，但那样你拿不到 id，无法对账——可恢复的流程必须自己生成。
 2. **一次业务操作一个 id**：把 `call_id` 与你的业务键绑定；重试同一个业务操作要复用它，不要在重试循环里调用 `new_id()`。

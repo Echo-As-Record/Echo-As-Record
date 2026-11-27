@@ -44,37 +44,9 @@ from typing import Any, Literal, Self
 
 import httpx
 from ear_contracts import SystemRecord, is_id
-from ear_extraction.activity_duration import (
-    DEFAULT_ACTIVITY_MIN_DURATION_MINUTES,
-    MAX_ACTIVITY_MIN_DURATION_MINUTES,
-)
-from ear_extraction.automatic_timeline import (
-    DEFAULT_WINDOW_REVIEW_CONCURRENCY,
-    MAX_ASR_GAPS,
-    MAX_WINDOW_REVIEW_CONCURRENCY,
-    AutomaticPredecessorPin,
-    AutomaticTimeline,
-)
-from ear_extraction.course_blocks import COURSE_BLOCK_SYSTEM
-from ear_extraction.course_reextract import (
-    MAX_COURSE_DRAFT_SPANS,
-    MAX_COURSE_REEXTRACT_PREDECESSORS,
-    MAX_SCHEMA_DISCARD_ATTESTATIONS,
-    CourseDraftSpan,
-    ReviewedTimelineDraft,
-    SchemaDiscardAttestation,
-    validate_timeline_windows,
-)
 from ear_extraction.domain import Interval
 from ear_extraction.model_io import SYSTEM
-from ear_extraction.orchestration import (
-    DEFAULT_TRANSCRIPT_MAX_CALLS,
-    TERMINAL,
-    TRANSCRIPT_LEASE_OVERHEAD_SECONDS,
-    ExtractionService,
-    validate_course_reextract_config,
-)
-from ear_extraction.reextract_preflight import ExactInterval, PreflightInput
+from ear_extraction.orchestration import DEFAULT_TRANSCRIPT_MAX_CALLS, TERMINAL, ExtractionService
 from ear_extraction.worker import Schedule, serve
 from ear_llm_gateway.client import MAX_CLIENT_TIMEOUT_SECONDS
 from ear_storage_client import Query
@@ -92,15 +64,7 @@ DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 FILE_FLAGS = os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 MAX_CONFIG = 65536
 TRANSCRIPT_LEASE_FLOOR_SECONDS = 1900
-COURSE_HEALTH_MARGIN_SECONDS = 30
-COURSE_NOTE_SYSTEM = """
-For generation, write one grounded Chinese Markdown note per final activity, with
-clear sections for the main points, supporting examples or discussion, and any explicitly
-stated conclusions or follow-ups, as applicable. Keep technical terms and formulas where
-useful. For consolidation, combine the partial notes into that same single note, not a list of
-window notes. Follow the supplied fixed rule, do not invent missing material, cite only
-supplied evidence IDs, and leave action null, action_reason empty, and unchanged false.
-"""
+TRANSCRIPT_LEASE_OVERHEAD_SECONDS = 250
 ERROR_METADATA = (
     '{"module":"mvp_worker","event_id":null,"root_feedback_id":"system",'
     '"depth":0,"code":"mvp_worker_unavailable"}'
@@ -150,63 +114,18 @@ class Settings(SafeModel):
     )
     model: str | None = Field(default=None, strict=True, min_length=1, max_length=128)
     schedule: Timer | None = None
-    activity_min_duration_minutes: int = Field(
-        default=DEFAULT_ACTIVITY_MIN_DURATION_MINUTES,
-        strict=True,
-        ge=1,
-        le=MAX_ACTIVITY_MIN_DURATION_MINUTES,
-    )
     transcript_only: bool = Field(default=False, strict=True)
-    transcript_course_sessions: bool = Field(default=False, strict=True)
-    transcript_course_reextract: bool = Field(default=False, strict=True)
-    transcript_course_reextract_draft_sha256: str | None = Field(default=None, strict=True)
-    transcript_course_reextract_reconciled_run_ids: tuple[str, ...] = Field(
-        default=(), max_length=MAX_COURSE_REEXTRACT_PREDECESSORS
-    )
-    transcript_course_reextract_draft_spans: tuple[CourseDraftSpan, ...] | None = Field(
-        default=None, min_length=1, max_length=MAX_COURSE_DRAFT_SPANS, repr=False
-    )
-    transcript_course_reextract_schema_discard_attestations: tuple[
-        SchemaDiscardAttestation, ...
-    ] = Field(default=(), max_length=MAX_SCHEMA_DISCARD_ATTESTATIONS, repr=False)
-    transcript_course_reextract_timeline: ReviewedTimelineDraft | None = Field(
-        default=None, repr=False
-    )
-    transcript_automatic_timeline: PreflightInput | None = Field(default=None, repr=False)
-    transcript_window_review_concurrency: int = Field(
-        default=DEFAULT_WINDOW_REVIEW_CONCURRENCY,
-        strict=True,
-        ge=1,
-        le=MAX_WINDOW_REVIEW_CONCURRENCY,
-    )
-    transcript_automatic_timeline_prewrite_pins: tuple[AutomaticPredecessorPin, ...] = Field(
-        default=(), max_length=MAX_COURSE_REEXTRACT_PREDECESSORS, repr=False
-    )
-    transcript_automatic_timeline_gaps: tuple[ExactInterval, ...] = Field(
-        default=(), max_length=23, repr=False
-    )
-    transcript_automatic_timeline_asr_gaps: tuple[ExactInterval, ...] = Field(
-        default=(), max_length=MAX_ASR_GAPS, repr=False
-    )
     transcript_summary_rule_id: str | None = Field(default=None, strict=True)
-    transcript_windows: tuple[Interval, ...] = Field(default=(), max_length=24)
+    transcript_windows: tuple[Interval, ...] = Field(default=(), max_length=3)
 
     @property
     def effective_gateway_timeout(self) -> float:
         return self.timeout if self.gateway_timeout is None else self.gateway_timeout
 
     @property
-    def course_call_seconds(self) -> int:
-        # One serial gateway call plus the sending and returned Storage CAS writes.
-        return math.ceil(self.effective_gateway_timeout) + 2 * math.ceil(self.timeout)
-
-    @property
     def extraction_lease_seconds(self) -> int:
         if not self.transcript_only:
             return 900
-        if self.transcript_course_sessions:
-            # The service sizes the actual durable lease from the selected cohort.
-            return TRANSCRIPT_LEASE_FLOOR_SECONDS
         # Size for all serial calls, plus storage and local processing overhead.
         return max(
             TRANSCRIPT_LEASE_FLOOR_SECONDS,
@@ -246,43 +165,6 @@ class Settings(SafeModel):
             MatchConfig(self.cosine_threshold, self.gps_threshold_m)
         elif self.cosine_threshold is not None or self.gps_threshold_m is not None:
             raise ValueError("unexpected_thresholds")
-        validate_course_reextract_config(
-            self.transcript_course_sessions,
-            self.transcript_course_reextract,
-            self.transcript_course_reextract_draft_sha256,
-            self.transcript_course_reextract_reconciled_run_ids,
-            self.transcript_course_reextract_draft_spans,
-            self.transcript_course_reextract_schema_discard_attestations,
-            self.transcript_course_reextract_timeline,
-        )
-        if self.transcript_course_reextract_timeline is not None:
-            validate_timeline_windows(self.transcript_windows)
-        if (
-            self.transcript_automatic_timeline is None
-            and self.transcript_automatic_timeline_prewrite_pins
-        ):
-            raise ValueError("automatic_timeline_prewrite_pins_require_scope")
-        if self.transcript_automatic_timeline is None and self.transcript_automatic_timeline_gaps:
-            raise ValueError("automatic_timeline_gaps_require_scope")
-        if (
-            self.transcript_automatic_timeline is None
-            and self.transcript_automatic_timeline_asr_gaps
-        ):
-            raise ValueError("automatic_timeline_asr_gaps_require_scope")
-        if self.transcript_automatic_timeline is not None:
-            AutomaticTimeline.configure(
-                self.transcript_automatic_timeline,
-                self.transcript_windows,
-                course_blocks=self.transcript_course_sessions,
-                course_reextract=self.transcript_course_reextract,
-                summary_rule_id=self.transcript_summary_rule_id,
-                prewrite_pins=self.transcript_automatic_timeline_prewrite_pins,
-                gaps=self.transcript_automatic_timeline_gaps,
-                asr_gaps=self.transcript_automatic_timeline_asr_gaps,
-                activity_min_duration_minutes=self.activity_min_duration_minutes,
-            )
-        if self.transcript_course_sessions and not self.transcript_only:
-            raise ValueError("transcript_course_sessions_requires_transcript_only")
         if self.transcript_only:
             if (
                 self.module != "extraction"
@@ -296,27 +178,13 @@ class Settings(SafeModel):
                 raise ValueError("transcript_windows_overlap")
             if any(w.end - w.start > timedelta(minutes=15) for w in ordered):
                 raise ValueError("transcript_window_too_long")
-            if self.transcript_course_sessions:
-                if tuple(ordered) != self.transcript_windows:
-                    raise ValueError("transcript_course_sessions_requires_ordered_windows")
-                # Health advances on Storage progress, not a blind timer. A single
-                # in-flight model call and its Storage bookkeeping must fit.
-                if (
-                    self.health_max_age_seconds
-                    < self.course_call_seconds + COURSE_HEALTH_MARGIN_SECONDS
-                ):
-                    raise ValueError("health_max_age_seconds_below_course_call_budget")
-            else:
-                # Preserve the old probe behavior while process() is running.
-                lease = self.extraction_lease_seconds
-                if lease > TRANSCRIPT_LEASE_FLOOR_SECONDS and self.health_max_age_seconds < lease:
-                    raise ValueError("health_max_age_seconds_below_transcript_lease")
+            # Long jobs get no heartbeat while process() is running. Preserve the
+            # old probe behavior unless the timeout extends the transcript lease.
+            lease = self.extraction_lease_seconds
+            if lease > TRANSCRIPT_LEASE_FLOOR_SECONDS and self.health_max_age_seconds < lease:
+                raise ValueError("health_max_age_seconds_below_transcript_lease")
         elif self.transcript_summary_rule_id is not None or self.transcript_windows:
             raise ValueError("unexpected_transcript_only_settings")
-        if self.module != "extraction" and (
-            self.activity_min_duration_minutes != DEFAULT_ACTIVITY_MIN_DURATION_MINUTES
-        ):
-            raise ValueError("activity_min_duration_minutes_requires_extraction")
         if self.module == "extraction":
             if self.gateway_url is None or self.model is None:
                 raise ValueError("gateway_required")
@@ -573,7 +441,7 @@ class PumpStorage(RemoteStorageClient):
 
     def _request(self, method, path, text=None, *, request_id=None):
         try:
-            response = super()._request(method, path, text, request_id=request_id)
+            return super()._request(method, path, text, request_id=request_id)
         except (ResourceLimit, CommitUnknown, ServiceUnavailable) as exc:
             if self.state.config.module == "attribution" and not self._storage_failure_noted:
                 phase = {
@@ -605,21 +473,10 @@ class PumpStorage(RemoteStorageClient):
                             },
                         )
             raise
-        if self.state.config.transcript_course_sessions:
-            # Successful authenticated Storage progress (including intent/return
-            # CAS exchanges) keeps the local pump healthy. Never touch it while a
-            # stalled call is in flight, and don't store any response data.
-            self.state.health("busy")
-        return response
 
     def snapshot(self, *, profile: SnapshotProfile | None = None):
-        config = self.state.config
-        if config.module == "attribution":
+        if self.state.config.module == "attribution":
             profile = "attribution"
-        elif config.module == "extraction" and config.transcript_only:
-            profile = "transcript_extraction"
-        elif profile == "transcript_extraction":
-            raise ValueError("transcript_extraction_profile_requires_transcript_only")
         return super().snapshot(profile=profile)
 
     def subscribe(self, consumer, handler, *, event_types=None, from_beginning=False):
@@ -682,22 +539,7 @@ class BoundedExtraction(ExtractionService):
     def __init__(self, *args, config: Settings, stop: Event, state: State, **kwargs):
         super().__init__(
             *args,
-            activity_min_duration_minutes=config.activity_min_duration_minutes,
             transcript_only=config.transcript_only,
-            transcript_course_sessions=config.transcript_course_sessions,
-            course_blocks=config.transcript_course_sessions,
-            course_call_seconds=config.course_call_seconds,
-            transcript_course_reextract=config.transcript_course_reextract,
-            transcript_course_reextract_draft_sha256=config.transcript_course_reextract_draft_sha256,
-            transcript_course_reextract_reconciled_run_ids=config.transcript_course_reextract_reconciled_run_ids,
-            transcript_course_reextract_draft_spans=config.transcript_course_reextract_draft_spans,
-            transcript_course_reextract_schema_discard_attestations=config.transcript_course_reextract_schema_discard_attestations,
-            transcript_course_reextract_timeline=config.transcript_course_reextract_timeline,
-            transcript_automatic_timeline=config.transcript_automatic_timeline,
-            transcript_window_review_concurrency=config.transcript_window_review_concurrency,
-            transcript_automatic_timeline_prewrite_pins=config.transcript_automatic_timeline_prewrite_pins,
-            transcript_automatic_timeline_gaps=config.transcript_automatic_timeline_gaps,
-            transcript_automatic_timeline_asr_gaps=config.transcript_automatic_timeline_asr_gaps,
             transcript_summary_rule_id=config.transcript_summary_rule_id,
             transcript_allowed_windows=config.transcript_windows,
             transcript_max_calls=DEFAULT_TRANSCRIPT_MAX_CALLS,
@@ -789,22 +631,20 @@ def run(config: Settings, stop: Event) -> None:
                 from ear_llm_gateway.client import GatewayClient
 
                 assert config.gateway_url is not None and config.model is not None
-                system = SYSTEM
-                if config.transcript_course_sessions:
-                    system += "\n" + COURSE_BLOCK_SYSTEM + COURSE_NOTE_SYSTEM
-                elif config.transcript_only:
-                    system += (
+                gateway = GatewayClient(
+                    config.gateway_url,
+                    config.storage_token.get_secret_value(),
+                    model=config.model,
+                    system=SYSTEM
+                    + (
                         "\nGroup the ordered utterances into coherent activities. "
                         "Usually one to three per short recording; use fewer where supported. "
                         "Do not invent activities to fill gaps. "
                         "Use privacy-preserving titles and descriptions; mask direct identifiers. "
                         "Cite a few representative evidence IDs, not all IDs."
-                    )
-                gateway = GatewayClient(
-                    config.gateway_url,
-                    config.storage_token.get_secret_value(),
-                    model=config.model,
-                    system=system,
+                        if config.transcript_only
+                        else ""
+                    ),
                     timeout=config.effective_gateway_timeout,
                     transport=httpx.HTTPTransport(retries=0, trust_env=False),
                 )

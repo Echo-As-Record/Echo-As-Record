@@ -209,15 +209,6 @@ class Blocked(Exception):
     """A missing prerequisite or an unresolved shared contract, never a fabricated success."""
 
 
-class SessionCoverageBlocked(Blocked):
-    """An incomplete session plan can report counts without retaining evidence."""
-
-    def __init__(self, reason: str, unclassified_rows: int, *, detail: dict | None = None):
-        super().__init__(reason)
-        self.unclassified_rows = unclassified_rows
-        self.detail = detail or {}
-
-
 class Waiting(Exception):
     """Attributions have not arrived yet."""
 

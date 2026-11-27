@@ -70,12 +70,7 @@ def evidence_rows(
 
 
 def raw_inputs(
-    reader: Reader,
-    interval: Interval,
-    *,
-    transcript_only: bool = False,
-    allow_empty_transcript: bool = False,
-    max_transcript_records: int | None = None,
+    reader: Reader, interval: Interval, *, transcript_only: bool = False
 ) -> list[RawRecord]:
     time = TimeRange(interval.start, interval.end)
     if transcript_only:
@@ -83,10 +78,8 @@ def raw_inputs(
         for r in iter_query(reader, Query("transcript_segment", time=time)):
             if not isinstance(r, RawRecord) or r.data_type != "transcript_segment":
                 raise Blocked("transcript_evidence_invalid")
-            if max_transcript_records is not None and len(raw) >= max_transcript_records:
-                raise Blocked("automatic_timeline_raw_row_budget_exceeded")
             raw.append(r)
-        if not raw and not allow_empty_transcript:
+        if not raw:
             # No capture/readiness record is consulted. Absence is not proof of silence.
             raise Blocked("transcript_evidence_unavailable")
         return sorted(raw, key=lambda r: (r.event_start, r.id))

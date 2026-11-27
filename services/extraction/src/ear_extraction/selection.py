@@ -48,9 +48,7 @@ def validate_summary_rule_config(transcript_only: bool, rule_id: str | None) -> 
 
 
 def load_rule_candidates(reader: Reader, *, summary_rule_id: str | None = None) -> RuleCandidates:
-    # Take the revision BEFORE reading candidates. Normally this is one snapshot;
-    # the singleton course replacement can read live and fails the batch CAS if
-    # any rule changed during or after the reads.
+    # Both reads must come from the same snapshot; retain the revision for commit CAS.
     revision = reader.type_revision("rule")
     if summary_rule_id is None:
         return RuleCandidates(revision, records(reader, "rule"))

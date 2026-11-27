@@ -47,7 +47,7 @@ def test_v12_selection_and_artifact_finish_over_real_pg_http(pg_dsn):
                     {"text": "合成待办", "voiceprint_id": voice},
                     id=transcript,
                     start="2026-11-05T09:00:00Z",
-                    end="2026-11-05T09:10:00Z",
+                    end="2026-11-05T09:01:00Z",
                 )
             ),
         ],

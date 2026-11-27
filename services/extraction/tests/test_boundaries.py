@@ -134,9 +134,7 @@ def test_gateway_transport_preserves_attribution_and_schema(gateway_call: Call, 
         assert body["system"] == SYSTEM
         assert body["model"] == "default"
         assert is_id(body["call_id"])
-        return httpx.Response(
-            200, json={"call_id": body["call_id"], "record_saved": True, "output": {"rule_ids": []}}
-        )
+        return httpx.Response(200, json={"record_saved": True, "output": {"rule_ids": []}})
 
     with GatewayClient(
         "https://module-seven.invalid",
@@ -177,10 +175,7 @@ def test_gateway_does_not_hide_http_failures_or_follow_redirects(gateway_call, s
     "body",
     [
         {"output": {}},
-        {"call_id": "wrong", "record_saved": True, "output": {}},
-        {"call_id": None, "record_saved": True, "output": {}},
         {"record_saved": False, "output": {}},
-        {"record_saved": 1, "output": {}},
         {"record_saved": True, "output": []},
         {"record_saved": True, "output": "text"},
         {"record_saved": True, "output": None},
@@ -193,11 +188,7 @@ def test_gateway_rejects_invalid_response(gateway_call, body):
             "https://module-seven.invalid",
             "t" * 43,
             system=SYSTEM,
-            transport=httpx.MockTransport(
-                lambda request: httpx.Response(
-                    200, json={"call_id": json.loads(request.content)["call_id"], **body}
-                )
-            ),
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, json=body)),
         ) as gateway,
         pytest.raises(GatewayError, match="invalid_gateway_response") as error,
     ):

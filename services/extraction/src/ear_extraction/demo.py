@@ -97,7 +97,7 @@ def fixture() -> tuple[MemoryStorage, dict[str, str]]:
                     },
                     id=transcript,
                     start="2026-11-05T09:00:00Z",
-                    end="2026-11-05T09:10:00Z",
+                    end="2026-11-05T09:01:00Z",
                 )
             ),
             AppendRaw(
