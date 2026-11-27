@@ -182,11 +182,20 @@ def test_all_reader_results_frozen_restart_and_no_transaction_while_paused(seede
         snap.get(target)
 
 
-def test_attribution_snapshot_excludes_graph_without_raising_the_limit(env):
+@pytest.mark.parametrize(
+    "profile,module,peer,raw_type",
+    [
+        ("attribution", "attribution", "extraction", "voiceprint"),
+        ("transcript_extraction", "extraction", "attribution", "transcript_segment"),
+    ],
+)
+def test_graphless_snapshot_excludes_graph_without_raising_the_limit(
+    env, profile, module, peer, raw_type
+):
     dsn, store, _service, operator = env
     person = new_id()
     store.client("attribution").write([Create("person", person, {})], SYS).check()
-    subject = make_raw("voiceprint", {"synthetic": True}, start="2026-01-01T00:00:00Z")
+    subject = make_raw(raw_type, {"text": "synthetic"}, start="2026-01-01T00:00:00Z")
     store.client("adapter").write([AppendRaw(subject)], SYS).check()
     activities = [new_id() for _ in range(22)]
     store.client("extraction").write(
@@ -200,27 +209,39 @@ def test_attribution_snapshot_excludes_graph_without_raising_the_limit(env):
         ],
         SYS,
     ).check()
-    issued = operator.issue_principal(
-        "attribution", read_types=["person", "voiceprint", "activity"]
-    )
-    peer = operator.issue_principal("extraction", read_types=["person", "voiceprint", "activity"])
-    service = StorageService(dsn, snapshot_limits=SnapshotLimits(max_rows=45))
+    read_types = ["person", raw_type, "activity"]
+    issued = operator.issue_principal(module, read_types=read_types)
+    other_module = operator.issue_principal(peer, read_types=read_types)
+    service = StorageService(dsn, snapshot_limits=SnapshotLimits(max_rows=45, max_active_leases=1))
     with (
         loopback(create_app(service)) as url,
         RemoteStorageClient(issued.token, url) as client,
-        RemoteStorageClient(peer.token, url) as other,
+        RemoteStorageClient(other_module.token, url) as other,
     ):
         with pytest.raises(ResourceLimit):
             client.create_snapshot()
         with pytest.raises(PermissionDenied):
-            other.create_snapshot(profile="attribution")
-        with client.snapshot(profile="attribution") as view:
+            other.create_snapshot(profile=profile)
+        assert counts(dsn) == (0, 0)
+        with client.snapshot(profile=profile) as view:
+            with pytest.raises(ResourceLimit):
+                client.create_snapshot(profile=profile)
+            assert [r.id for r in view.query(Query(raw_type)).items] == [subject.id]
             assert view.get_many([person, subject.id]) == client.get_many([person, subject.id])
             assert view.count(Query("activity")) == 22
             assert view.type_revision("person") == client.type_revision("person")
-            assert not view.is_processed("attribution", new_id())
+            assert not view.is_processed(module, new_id())
             # Reopen through an independent service, not a process-local profile flag.
             assert view.snapshot_id is not None
+            with connection(dsn) as conn:
+                assert (
+                    conn.execute(
+                        "SELECT 1 FROM storage.snapshot_items WHERE snapshot_id=%s "
+                        "AND kind IN ('group','edge')",
+                        (view.snapshot_id,),
+                    ).fetchone()
+                    is None
+                )
             again = StorageService(dsn).read_snapshot(issued.token, view.snapshot_id)
             assert again.get(person) == client.get(person)
             for attempt in (

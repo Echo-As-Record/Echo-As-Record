@@ -116,6 +116,14 @@ def validate_lease(conn: psycopg.Connection, principal: Principal, snapshot_id: 
             raise SnapshotUnavailable("snapshot coverage changed; create a new snapshot")
 
 
+def _profile_module(profile: object) -> str | None:
+    if profile == "attribution":
+        return "attribution"
+    if profile == "transcript_extraction":
+        return "extraction"
+    return None
+
+
 def _sources(
     conn: psycopg.Connection, principal: Principal, *, profile: SnapshotProfile | None = None
 ):
@@ -173,7 +181,7 @@ def _sources(
                 ),
                 [kind, reads],
             )
-    if profile == "attribution":
+    if profile is not None:
         # Persist the restriction with the lease; it must survive reconnect/restart.
         yield (sql.SQL("SELECT 'profile','v1','',%s::text"), [canonical_json(profile)])
     else:
@@ -227,9 +235,10 @@ def create_lease(
     profile: SnapshotProfile | None = None,
 ) -> SnapshotLease:
     if profile is not None:
-        if profile != "attribution":
+        module = _profile_module(profile)
+        if module is None:
             raise InvalidRequest("invalid snapshot profile")
-        if principal.module != "attribution":
+        if principal.module != module:
             raise PermissionDenied("access denied")
     # PostgreSQL 17: cap the entire materialization transaction, not each SQL alone.
     conn.execute("SET LOCAL transaction_timeout = '30s'")
@@ -352,7 +361,7 @@ class MaterializedReader(_StateReader):
         return super().dependency_set(dependent_id, version)
 
     def authorized_read(self, method: str, *args: Any, **kwargs: Any) -> Any:
-        if self.profile == "attribution" and method in {
+        if self.profile is not None and method in {
             "dependency_set",
             "dependencies_of",
             "dependents_of",
@@ -412,20 +421,20 @@ def load_reader(
         "WHERE snapshot_id=%s ORDER BY kind,item_key",
         (sid,),
     ):
+        if kind == "profile":
+            try:
+                captured = json.loads(text)
+            except ValueError:
+                raise SnapshotUnavailable("invalid snapshot profile metadata") from None
+            if key != "v1" or dtype or _profile_module(captured) != principal.module:
+                raise SnapshotUnavailable("invalid snapshot profile metadata")
+            profile = captured
+            continue
         if dtype and dtype not in principal.read_types:
             if kind in {"raw", "version", "system", "completion"}:
                 denied.add(key.split("/")[0])
             continue
-        if kind == "profile":
-            if (
-                key != "v1"
-                or dtype
-                or json.loads(text) != "attribution"
-                or principal.module != "attribution"
-            ):
-                raise SnapshotUnavailable("invalid snapshot profile metadata")
-            profile = "attribution"
-        elif kind == "completion_index":
+        if kind == "completion_index":
             if key != "v1" or json.loads(text) != 1:
                 raise SnapshotUnavailable("invalid completion index metadata")
             completion_index = True
