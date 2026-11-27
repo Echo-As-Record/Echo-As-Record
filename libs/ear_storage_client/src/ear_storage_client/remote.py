@@ -43,6 +43,7 @@ from ear_storage_client.remote_errors import (
 from ear_storage_client.wire import (
     EVENT_ADAPTER,
     READ_ARGS,
+    SnapshotProfile,
     _value,
     decode_read,
     decode_read_result,
@@ -497,10 +498,13 @@ class RemoteStorageClient(RemoteReader):
         except (InvalidRequest, ValueError, KeyError, TypeError):
             raise CommitUnknown(request_id) from None
 
-    def create_snapshot(self, *, ttl_seconds: int | None = None) -> dict[str, Any]:
-        response = self._request(
-            "POST", "/v1/snapshots", canonical_json({"codec": 1, "ttl_seconds": ttl_seconds})
-        )
+    def create_snapshot(
+        self, *, ttl_seconds: int | None = None, profile: SnapshotProfile | None = None
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"codec": 1, "ttl_seconds": ttl_seconds}
+        if profile is not None:
+            body["profile"] = profile
+        response = self._request("POST", "/v1/snapshots", canonical_json(body))
         try:
             data = load_json(response.text)
             if type(data["codec"]) is not int or data["codec"] != 1:
@@ -523,8 +527,8 @@ class RemoteStorageClient(RemoteReader):
         self._request("DELETE", "/v1/snapshots/" + snapshot_id)
 
     @contextmanager
-    def snapshot(self) -> Iterator[RemoteReader]:
-        lease = self.create_snapshot()
+    def snapshot(self, *, profile: SnapshotProfile | None = None) -> Iterator[RemoteReader]:
+        lease = self.create_snapshot() if profile is None else self.create_snapshot(profile=profile)
         try:
             yield self.read_snapshot(lease["snapshot_id"])
         finally:

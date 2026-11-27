@@ -32,6 +32,7 @@ from ear_storage_client.completion import _indexed_result
 from ear_storage_client.engine import State, canonical_json
 from ear_storage_client.memory import _StateReader
 from ear_storage_client.queries import DependencySet
+from ear_storage_client.wire import SnapshotProfile
 from psycopg import sql
 
 from ear_storage.auth import Principal, can_use_consumer
@@ -115,7 +116,17 @@ def validate_lease(conn: psycopg.Connection, principal: Principal, snapshot_id: 
             raise SnapshotUnavailable("snapshot coverage changed; create a new snapshot")
 
 
-def _sources(conn: psycopg.Connection, principal: Principal):
+def _profile_module(profile: object) -> str | None:
+    if profile == "attribution":
+        return "attribution"
+    if profile == "transcript_extraction":
+        return "extraction"
+    return None
+
+
+def _sources(
+    conn: psycopg.Connection, principal: Principal, *, profile: SnapshotProfile | None = None
+):
     reads = sorted(principal.read_types)
     if strict_scheduler(conn, principal):
         _, revision = require_coverage(conn, principal)
@@ -170,28 +181,32 @@ def _sources(conn: psycopg.Connection, principal: Principal):
                 ),
                 [kind, reads],
             )
-    yield (
-        sql.SQL(
-            "SELECT 'group',s.dependent_id||'/'||s.dependent_version,s.dependent_type,"
-            "json_build_array(s.dependent_id,s.dependent_version,s.dependent_type,"
-            "s.registered_by,s.registered_at,EXISTS (SELECT 1 FROM "
-            "storage.current_dependency_edges e "
-            "JOIN storage.identity t ON t.id=e.target_id WHERE e.dependent_id=s.dependent_id "
-            "AND e.dependent_version=s.dependent_version AND NOT (t.data_type=ANY(%s))))::text "
-            "FROM storage.current_dependency_sets s WHERE s.dependent_type=ANY(%s)"
-        ),
-        [reads, reads],
-    )
-    yield (
-        sql.SQL(
-            "SELECT 'edge',e.dependent_id||'/'||e.dependent_version||'/'||e.target_id,"
-            "d.data_type,e.record_text FROM storage.current_dependency_edges e "
-            "JOIN storage.identity d ON d.id=e.dependent_id "
-            "JOIN storage.identity t ON t.id=e.target_id "
-            "WHERE d.data_type=ANY(%s) AND t.data_type=ANY(%s)"
-        ),
-        [reads, reads],
-    )
+    if profile is not None:
+        # Persist the restriction with the lease; it must survive reconnect/restart.
+        yield (sql.SQL("SELECT 'profile','v1','',%s::text"), [canonical_json(profile)])
+    else:
+        yield (
+            sql.SQL(
+                "SELECT 'group',s.dependent_id||'/'||s.dependent_version,s.dependent_type,"
+                "json_build_array(s.dependent_id,s.dependent_version,s.dependent_type,"
+                "s.registered_by,s.registered_at,EXISTS (SELECT 1 FROM "
+                "storage.current_dependency_edges e "
+                "JOIN storage.identity t ON t.id=e.target_id WHERE e.dependent_id=s.dependent_id "
+                "AND e.dependent_version=s.dependent_version AND NOT (t.data_type=ANY(%s))))::text "
+                "FROM storage.current_dependency_sets s WHERE s.dependent_type=ANY(%s)"
+            ),
+            [reads, reads],
+        )
+        yield (
+            sql.SQL(
+                "SELECT 'edge',e.dependent_id||'/'||e.dependent_version||'/'||e.target_id,"
+                "d.data_type,e.record_text FROM storage.current_dependency_edges e "
+                "JOIN storage.identity d ON d.id=e.dependent_id "
+                "JOIN storage.identity t ON t.id=e.target_id "
+                "WHERE d.data_type=ANY(%s) AND t.data_type=ANY(%s)"
+            ),
+            [reads, reads],
+        )
     # New snapshots must not even count another principal's registered progress.
     registered = conn.execute("SELECT to_regclass('storage.consumers')").fetchone() != (None,)
     owner_filter = (
@@ -212,8 +227,19 @@ def _sources(conn: psycopg.Connection, principal: Principal):
 
 
 def create_lease(
-    conn: psycopg.Connection, principal: Principal, limits: SnapshotLimits, ttl: int | None
+    conn: psycopg.Connection,
+    principal: Principal,
+    limits: SnapshotLimits,
+    ttl: int | None,
+    *,
+    profile: SnapshotProfile | None = None,
 ) -> SnapshotLease:
+    if profile is not None:
+        module = _profile_module(profile)
+        if module is None:
+            raise InvalidRequest("invalid snapshot profile")
+        if principal.module != module:
+            raise PermissionDenied("access denied")
     # PostgreSQL 17: cap the entire materialization transaction, not each SQL alone.
     conn.execute("SET LOCAL transaction_timeout = '30s'")
     ttl = limits.default_ttl_seconds if ttl is None else ttl
@@ -227,7 +253,7 @@ def create_lease(
     )[0]
     if active >= limits.max_active_leases:
         raise ProjectionLimit("snapshot active lease limit exceeded")
-    sources = list(_sources(conn, principal))
+    sources = list(_sources(conn, principal, profile=profile))
     rows = size = 0
     for query, params in sources:
         count, byte_count = one(
@@ -291,8 +317,11 @@ class MaterializedReader(_StateReader):
         denied: set[str],
         blocked: set[tuple[str, int]],
         completion_index: bool,
+        *,
+        profile: SnapshotProfile | None = None,
     ) -> None:
         super().__init__(state, registry)
+        self.profile = profile
         self.completion_index = completion_index
         self.principal, self.systems, self.denied, self.blocked = (
             principal,
@@ -332,6 +361,13 @@ class MaterializedReader(_StateReader):
         return super().dependency_set(dependent_id, version)
 
     def authorized_read(self, method: str, *args: Any, **kwargs: Any) -> Any:
+        if self.profile is not None and method in {
+            "dependency_set",
+            "dependencies_of",
+            "dependents_of",
+            "stale_dependencies",
+        }:
+            raise PermissionDenied("snapshot profile does not support dependency reads")
         if method == "type_revision":
             return self.type_revision(args[0])
         if method in {"query", "count"}:
@@ -368,6 +404,7 @@ def load_reader(
         raise ProjectionLimit("snapshot row/byte limit exceeded")
     state = State()
     completion_index = False
+    profile: SnapshotProfile | None = None
     specs: dict[str, DataTypeSpec] = {}
     core: set[str] = set()
     systems: dict[str, list[SystemRecord]] = {}
@@ -376,11 +413,23 @@ def load_reader(
     blocked: set[tuple[str, int]] = set()
     groups: list[Sequence[Any]] = []
     edges: dict[tuple[str, int], list[DependencyRecord]] = {}
+    # The caller holds the writer gate throughout this hydration. Check current
+    # ownership once per consumer, including denials, never across reads or leases.
+    consumer_access: dict[str, bool] = {}
     for kind, key, dtype, text in conn.execute(
         "SELECT kind,item_key,data_type,record_text FROM storage.snapshot_items "
         "WHERE snapshot_id=%s ORDER BY kind,item_key",
         (sid,),
     ):
+        if kind == "profile":
+            try:
+                captured = json.loads(text)
+            except ValueError:
+                raise SnapshotUnavailable("invalid snapshot profile metadata") from None
+            if key != "v1" or dtype or _profile_module(captured) != principal.module:
+                raise SnapshotUnavailable("invalid snapshot profile metadata")
+            profile = captured
+            continue
         if dtype and dtype not in principal.read_types:
             if kind in {"raw", "version", "system", "completion"}:
                 denied.add(key.split("/")[0])
@@ -435,7 +484,9 @@ def load_reader(
             ) | {group_key}
         elif kind == "processed":
             consumer, event = json.loads(text)
-            if can_use_consumer(conn, principal, consumer):
+            if consumer not in consumer_access:
+                consumer_access[consumer] = can_use_consumer(conn, principal, consumer)
+            if consumer_access[consumer]:
                 state.processed[(consumer, event)] = None
     state.versions = {
         id: tuple(sorted(vs, key=lambda r: r.version))
@@ -466,6 +517,7 @@ def load_reader(
         denied,
         blocked,
         completion_index,
+        profile=profile,
     )
 
 

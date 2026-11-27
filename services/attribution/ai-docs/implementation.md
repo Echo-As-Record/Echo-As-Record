@@ -60,6 +60,8 @@ based-on: 设计 v1.2 第 6 节与信号补充 §3.2、§4（accepted，仅表�
 
 ## 4. 匹配
 
+同一事件仍用同一授权快照读取候选与参考。参考记录用既有 SDK `get_many`，每批至多 32 条；不会跨事件复用参考。候选依赖、匹配阈值和顺序、单 worker、提交围栏、用户确认保护均不改变。 独立 worker 使用归属专用快照，不复制已存依赖图；算法仍读取候选及参考，并在原有受围栏的提交中登记完整新依赖。
+
 - **已是参考者优先**：数据 id 已出现在某个人物或地点的 `references` 里，直接归该对象，不看相似度。一个 id 出现在两个对象的参考里，抛 `reference_owner_conflict`。
 - **声纹**：`payload.model_version`（非空字符串）和 `payload.embedding.values/shape`（一维、有限、非零）。向量先按最大绝对值缩放再归一化，防止溢出。只与**同一 `model_version`、同一维度**的参考向量比余弦；`>= cosine_threshold` 才算候选，取相似度最高者，平局按对象 id 稳定排序。
 - **GPS**：`payload.latitude/longitude`（度，WGS84）。用 haversine 球面距离（平均地球半径 6371008.8 m），`<= gps_threshold_m` 才算候选。这是球面近似，不是椭球大地线。

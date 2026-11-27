@@ -362,9 +362,13 @@ class ReadRequest(ClosedModel):
     snapshot_id: Id | None = None
 
 
+SnapshotProfile = Literal["attribution", "transcript_extraction"]
+
+
 class SnapshotRequest(ClosedModel):
     codec: Literal[1]
     ttl_seconds: Annotated[int, Field(ge=1, le=3600)] | None = None
+    profile: SnapshotProfile | None = None
 
 
 READ_ARGS: dict[str, type[ClosedModel]] = {

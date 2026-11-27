@@ -8,6 +8,8 @@ from typing import Any, cast
 
 import pytest
 from ear_contracts import Cause, NewRawRecord, RawRecord, SemanticRecord, format_utc, new_id
+from ear_extraction import planning
+from ear_extraction.activity_duration import meets_activity_floor
 from ear_extraction.demo import fixture_registry, submit
 from ear_extraction.domain import Call, Command, Interval, Rule
 from ear_extraction.orchestration import ExtractionService, reevaluation_run_id
@@ -32,6 +34,17 @@ from ear_storage_client.testing import make_raw, ts
 RANGE = Interval(start=ts("2026-11-05T09:00:00Z"), end=ts("2026-11-05T10:00:00Z"))
 
 
+@pytest.fixture(autouse=True)
+def isolate_transcript_transport_from_activity_duration(monkeypatch):
+    # These privacy/budget fixtures deliberately compress transcript timing to
+    # sub-second rows. Production floor behavior has a separate test module.
+    monkeypatch.setattr(
+        planning,
+        "meets_activity_floor",
+        lambda activity, raw, _: meets_activity_floor(activity, raw, timedelta(microseconds=1)),
+    )
+
+
 class CapturingGateway:
     def __init__(self):
         self.calls: list[Call] = []
@@ -42,13 +55,18 @@ class CapturingGateway:
         self.calls.append(call)
         match call.purpose:
             case "segmentation":
+                first_transcript = next(
+                    r
+                    for r in call.data["evidence"]
+                    if r.get("data_type", "transcript_segment") == "transcript_segment"
+                )
                 return {
                     "activities": [
                         {
                             **call.data["interval"],
                             "title_md": "Synthetic activity",
                             # The source may contain more evidence than was cited by segmentation.
-                            "evidence_ids": [call.data["evidence"][0]["id"]],
+                            "evidence_ids": [first_transcript["id"]],
                         }
                     ]
                 }

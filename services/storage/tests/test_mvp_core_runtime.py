@@ -12,15 +12,12 @@ import asyncio
 import hashlib
 import json
 import secrets
-import socket
 import threading
-import time
-from contextlib import ExitStack, contextmanager, suppress
+from contextlib import ExitStack, suppress
 from typing import Any
 
 import httpx
 import pytest
-import uvicorn
 from ear_adapter import AdapterConfig, AlreadyIngested, Ingested, Runner
 from ear_adapter.ear_api import Embedding
 from ear_adapter.testing import FakeLocator, FakeSource, embedding_json, evidence_json
@@ -58,7 +55,7 @@ from ear_storage_client.remote import RemoteStorageClient
 from ear_storage_client.testing import make_raw
 from nats.js.errors import NotFoundError
 
-from .test_api_gateway_integration import Harness
+from .test_api_gateway_integration import Harness, loopback
 from .test_relay import reader
 
 pytestmark = [pytest.mark.postgres, pytest.mark.nats]
@@ -72,46 +69,6 @@ RAW_TYPES = {
     "phone_info",
 }
 INTERVAL = {"start": "2026-10-26T01:55:38Z", "end": "2026-10-26T02:25:38Z"}
-# Fixture lifecycle, NOT a request timeout or worker completion deadline.
-# SDK/gateway/HTTPX pools expire idle connections after 5s; keep the server
-# alive beyond that window. Short idle-close behavior is tested explicitly below.
-LOOPBACK_KEEPALIVE_SECONDS = 30
-
-
-@contextmanager
-def loopback(app, *, timeout_keep_alive: int = LOOPBACK_KEEPALIVE_SECONDS):
-    """Core runtime listener with the same TCP semantics as a normal TCP server.
-
-    The shared helper's prebound proto=0 socket bypasses asyncio's NODELAY
-    setup. h11 sends headers and body separately; Nagle then adds a delayed-ACK
-    interval to virtually every reused connection. Do not compensate with a
-    larger business deadline, weaker coverage checks, or hidden HTTP retries.
-
-    Normal scenarios exercise pooling with client-first idle expiration. This
-    finite server lifetime does not guarantee against arbitrary disconnects; the
-    separate fault-injection test still requires visible errors and zero retries.
-    """
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP)
-    sock.bind(("127.0.0.1", 0))
-    sock.listen(32)
-    runner = uvicorn.Server(
-        uvicorn.Config(
-            app, log_level="critical", access_log=False, timeout_keep_alive=timeout_keep_alive
-        )
-    )
-    thread = threading.Thread(target=runner.run, kwargs={"sockets": [sock]}, daemon=True)
-    thread.start()
-    try:
-        deadline = time.monotonic() + 10
-        while not runner.started and thread.is_alive() and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert runner.started, "core loopback startup failed"
-        yield f"http://127.0.0.1:{sock.getsockname()[1]}"
-    finally:
-        runner.should_exit = True
-        thread.join(10)
-        sock.close()
-        assert not thread.is_alive(), "core loopback cleanup failed"
 
 
 class SelectedSource(FakeSource):
@@ -159,13 +116,17 @@ class SyntheticProvider:
         data = call.data
         if call.purpose == "segmentation":
             assert not data.get("attributions") and not data.get("entities")
+            # Cite the fixture's opening and closing remarks as part of the same meeting.
+            # The requested 30-minute interval does not itself count as evidence duration.
+            transcripts = [r for r in data["evidence"] if r["data_type"] == "transcript_segment"]
+            assert len(transcripts) == 3
             result = Segmentation.model_validate(
                 {
                     "activities": [
                         {
                             **data["interval"],
                             "title_md": "Synthetic meeting",
-                            "evidence_ids": [data["evidence"][0]["id"]],
+                            "evidence_ids": [r["id"] for r in transcripts],
                         }
                     ]
                 }

@@ -136,7 +136,8 @@ def create_app(
     remote = upstream or Upstream(settings)
     selection = (
         ModelSettings(settings.model_settings_file)
-        if not settings.test_no_auth and settings.model_settings_file is not None
+        if settings.model_settings_file is not None
+        and (not settings.test_no_auth or settings.test_no_auth_model_settings)
         else None
     )
     if settings.execution_action_v2 and execution is not None:
@@ -227,6 +228,8 @@ def create_app(
         params(request, set())
         # Public capability discovery only; never expose bindings or credentials.
         capabilities = {"test_no_auth": settings.test_no_auth}
+        if settings.test_no_auth_model_settings:
+            capabilities["test_no_auth_model_settings"] = True
         if settings.chat_evidence_read:
             capabilities["chat_evidence_read"] = True
         return response(capabilities)

@@ -25,13 +25,14 @@ HEAD **`84d2d0f` 已包含 `origin/dev ba36543`（PR #20）及此前GPS**；不�
 
 ## 网页大模型设置（显式部署启用）
 
-在插件管理页进入 `/model-settings/`；配置 `model_settings_file` 后，登录的管理员可查看、修改保存的模型 ID。`GET/PUT /v1/settings/model` 必须使用正常管理员 Bearer 并复核①的当前管理权限，**免登录测试模式不启用这两个端点**。更新按修订号比较并原子写入；旧修订返回409，需要重新读取。保存不发起模型请求；由操作者重启⑦后读取新值，页面不把保存值当作正在运行的配置。第一版固定上游，网页不编辑地址或 API key。配置和验证边界见[⑦部署说明](../llm_gateway/README.md#直连-new-api可选)。
+在插件管理页进入 `/model-settings/`；配置 `model_settings_file` 后，管理员可查看、修改保存的模型 ID。默认使用管理员 Bearer；测试免登录模式默认不启用 `GET/PUT /v1/settings/model`。仅在显式回环管理员模式额外开启 `test_no_auth_model_settings: true` 时，网页才自动连入这两个端点，无需 Bearer。两种模式都复核①当前管理权限；免登录写请求仍要求匹配配置的同源 Origin。更新按修订号比较并原子写入；旧修订返回409，需要重新读取。保存不发起模型请求；由操作者重启⑦后读取新值，页面不把保存值当作正在运行的配置。第一版固定上游，网页不编辑地址或 API key。配置和验证边界见[⑦部署说明](../llm_gateway/README.md#直连-new-api可选)。
 
 ## 本地测试免登录（2026-11-18 用户明确授权）
 
 `test_no_auth` 是严格布尔配置，默认 `false`，原有 Bearer 验证默认不变。
 开启后，⑥忽略调用者 Authorization；绑定选择只来自受保护部署配置与端点固定映射。
 `test_no_auth_role` 仅允许 `user` / `admin`，默认 `user`；`admin` 仅在 `test_no_auth=true` 时有效。
+在免登录配置中，绑定的客户端 `token` 可以省略；`storage_token` 仍必需。正常认证仍要求每个绑定提供客户端令牌。能进入免登录实例的本地进程或 SSH 隧道使用者可使用开放的管理和业务接口；保持回环隔离，不转发给 LAN 或公网。
 普通用户模式仍要求唯一user绑定且所有请求使用它，管理端点仍403。管理员测试模式必须
 **恰好一个user绑定和一个admin绑定**，缺失或歧义拒绝启动；按本轮用户明确授权暴露两项预配置能力：
 
@@ -154,7 +155,7 @@ HEAD **`84d2d0f` 已包含 `origin/dev ba36543`（PR #20）及此前GPS**；不�
 ### 3.1 前置条件
 
 - ① 服务在线，并已为本服务签发 `api` 模块的凭据：普通用户绑定用普通 `api` 凭据；管理员绑定必须是①里带可信管理员角色的 `api` 凭据。凭据怎么签发、怎么授权，见[①部署指南](../storage/ai-docs/deployment.md)。⑥ 不创建身份、不迁移数据库、不读 `.env`。
-- 每个绑定有两个互不相同的 43 位令牌：给调用 ⑥ 的人用的 API 令牌，和 ⑥ 调用①用的 `storage_token`。生成方式：`python3 -c "import secrets; print(secrets.token_urlsafe(32))"`。所有令牌必须两两不同。
+- 每个绑定都需要 43 位 `storage_token`（⑥ 调用①使用）；正常认证还需要 43 位客户端 API `token`（仅在 `test_no_auth` 模式可省略）。生成方式：`python3 -c "import secrets; print(secrets.token_urlsafe(32))"`。所有令牌必须两两不同。
 
 ### 3.2 配置文件
 

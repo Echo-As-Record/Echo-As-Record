@@ -331,12 +331,12 @@ def create_app(
 
     @app.post("/v1/snapshots")
     def snapshot(request: Request):
-        token, _client, _module = authenticated(request)
+        _token, client, _module = authenticated(request)
         data = load_json(request.scope["ear.body"])
         if not isinstance(data, dict) or type(data.get("codec")) is not int:
             raise InvalidRequest("invalid snapshot request")
         parsed = SnapshotRequest.model_validate_json(canonical_json(data))
-        lease = service.create_snapshot(token, ttl_seconds=parsed.ttl_seconds)
+        lease = client.create_snapshot(ttl_seconds=parsed.ttl_seconds, profile=parsed.profile)
         return json_response({"codec": 1, "lease": lease.to_json()})
 
     @app.delete("/v1/snapshots/{snapshot_id}")

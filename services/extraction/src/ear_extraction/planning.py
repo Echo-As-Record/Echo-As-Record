@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import timedelta
+from itertools import pairwise
 from typing import Any
 
 from ear_contracts import SemanticRecord, VersionRef, new_id
@@ -17,13 +19,35 @@ from ear_storage_client import (
     WriteOp,
 )
 
+from ear_extraction.activity_duration import (
+    DEFAULT_ACTIVITY_MIN_DURATION_MINUTES,
+    duration_audit,
+    meets_activity_floor,
+)
 from ear_extraction.artifacts import dependencies, transcript_dependencies, validate_generated
+from ear_extraction.automatic_timeline import (
+    MAX_RAW_READ_ROWS,
+    AutomaticTimeline,
+    ReviewWave,
+    segment_automatic_timeline,
+)
+from ear_extraction.course_blocks import segment_course_blocks
+from ear_extraction.course_reextract import (
+    CourseDraftGuard,
+    CourseReplacement,
+    ScopedTranscriptGuard,
+    compile_course_draft,
+    course_draft_sha256,
+    course_replacement_targets,
+)
 from ear_extraction.domain import (
+    Activity,
     Blocked,
     Command,
     Generated,
     Interval,
     Rule,
+    SessionCoverageBlocked,
 )
 from ear_extraction.long_input import generate, segment
 from ear_extraction.persistence import range_of, records, semantic
@@ -35,6 +59,7 @@ from ear_extraction.selection import (
     load_rule_candidates,
     validate_summary_rule_config,
 )
+from ear_extraction.sessions import segment_sessions, validate_session_windows
 from ear_extraction.suggestions import create_suggestion, pending_replacements
 
 Ask = Callable[[str, dict[str, Any], type], Any]
@@ -63,7 +88,13 @@ def preview_reextract(reader: Reader, interval: Interval) -> dict:
     }
 
 
-def _reextract_ops(reader: Reader, command: Command, interval: Interval) -> list[WriteOp]:
+def _reextract_ops(
+    reader: Reader, command: Command, interval: Interval, *, course: CourseReplacement | None = None
+) -> list[WriteOp]:
+    if course is not None:
+        if course.preview_versions != command.preview:
+            raise Blocked("reextract_preview_changed")
+        return [Supersede(kind, id, version) for (kind, id), version in course.versions.items()]
     ops: list[WriteOp] = []
     preview = preview_reextract(reader, interval)
     if preview["versions"] != command.preview:
@@ -91,29 +122,188 @@ def extract_plan(
     run_id: str,
     ask: Ask,
     *,
+    activity_min_duration_minutes: int = DEFAULT_ACTIVITY_MIN_DURATION_MINUTES,
     transcript_only: bool = False,
     transcript_summary_rule_id: str | None = None,
     release_snapshot: Callable[[], None] | None = None,
+    session_windows: tuple[Interval, ...] = (),
+    course_blocks: bool = False,
+    course_draft_guard: CourseDraftGuard | None = None,
+    scoped_transcript_guard: ScopedTranscriptGuard | None = None,
+    automatic_timeline: AutomaticTimeline | None = None,
+    timeline_max_calls: int | None = None,
+    timeline_review_wave: ReviewWave | None = None,
+    timeline_review_concurrency: int = 1,
 ) -> tuple[list[WriteOp], dict]:
     validate_summary_rule_config(transcript_only, transcript_summary_rule_id)
     assert command.interval is not None
     interval = command.interval
+    minimum = timedelta(minutes=activity_min_duration_minutes)
+    course_reextract = command.kind == "reextract" and (
+        course_draft_guard is not None or automatic_timeline is not None
+    )
+    if course_draft_guard is not None and not (
+        course_reextract and course_blocks and transcript_only
+    ):
+        raise Blocked("course_reextract_requires_course_blocks")
+    if course_blocks and not session_windows:
+        raise Blocked("course_blocks_require_session_windows")
+    if session_windows:
+        validate_session_windows(session_windows)
+        if not transcript_only or command.kind not in {"extract", "reextract"}:
+            raise Blocked("session_windows_require_transcript_extraction")
+        if interval.start != session_windows[0].start or interval.end != session_windows[-1].end:
+            raise Blocked("session_windows_must_match_command_range")
+        if (
+            command.kind == "reextract"
+            and not course_reextract
+            and any(a.end != b.start for a, b in pairwise(session_windows))
+        ):
+            # The reextract preview describes all existing activities in the envelope.
+            raise Blocked("session_reextract_requires_contiguous_windows")
+    if automatic_timeline is not None:
+        if not (
+            session_windows
+            and scoped_transcript_guard is not None
+            and course_blocks
+            and transcript_summary_rule_id is not None
+            and course_draft_guard is None
+            and automatic_timeline.interval == interval
+            and automatic_timeline.replacing == course_reextract
+            and timeline_max_calls is not None
+            and timeline_review_wave is not None
+        ):
+            raise Blocked("automatic_timeline_requires_guarded_exact_scope")
+        old = automatic_timeline.live_targets(reader, session_windows)
+    else:
+        old = (
+            course_replacement_targets(reader, interval, session_windows)
+            if course_reextract
+            else None
+        )
+    timeline = course_draft_guard.timeline if course_draft_guard is not None else None
+    if timeline is not None:
+        assert old is not None
+        timeline.check_pins(old)
     ops = (
-        _reextract_ops(reader, command, interval)
+        _reextract_ops(reader, command, interval, course=old)
         if transcript_only and command.kind == "reextract"
         else []
     )
-    raw = raw_inputs(reader, interval, transcript_only=transcript_only)
+    if session_windows:
+        if scoped_transcript_guard is not None:
+            scoped_transcript_guard.raw_revision = reader.type_revision("transcript_segment")
+        raw, counts = [], []
+        for window in session_windows:
+            part = raw_inputs(
+                reader,
+                window,
+                transcript_only=True,
+                allow_empty_transcript=True,
+                max_transcript_records=(MAX_RAW_READ_ROWS - len(raw))
+                if automatic_timeline
+                else None,
+            )
+            raw.extend(part)
+            counts.append(len(part))
+        if scoped_transcript_guard is not None:
+            scoped_transcript_guard.raw_counts = tuple(counts)
+    else:
+        raw = raw_inputs(reader, interval, transcript_only=transcript_only)
+    if old is not None:
+        old.check_evidence(raw)
     candidates = None
     if transcript_only:
         candidates = load_rule_candidates(reader, summary_rule_id=transcript_summary_rule_id)
-        # All reads (including any reextract CAS versions) are now materialized.
-        # A model call may outlast the snapshot lease; commit uses the captured guards.
+        # Ordinary transcript reads are now materialized. A model call may outlast
+        # the snapshot lease; the one-time course path takes no snapshot at all.
         if release_snapshot is not None:
             release_snapshot()
-    result = segment(ask, interval, raw, transcript_only=transcript_only)
-    if not transcript_only and command.kind == "reextract":
-        ops = _reextract_ops(reader, command, interval)
+    session = None
+    draft_spans = course_draft_guard.spans if course_draft_guard is not None else None
+    detail = {}
+    if automatic_timeline is not None:
+        assert old is not None and timeline_max_calls is not None
+        assert timeline_review_wave is not None
+        session, detail = segment_automatic_timeline(
+            automatic_timeline,
+            session_windows,
+            raw,
+            timeline_review_wave,
+            old,
+            max_calls=timeline_max_calls,
+            concurrency=timeline_review_concurrency,
+        )
+    elif timeline is not None:
+        session = timeline.compile(session_windows, raw)
+        assert old is not None
+        old.require_family_successors(session.segmentation.activities)
+    elif draft_spans is not None:
+        session = compile_course_draft(draft_spans, session_windows, raw)
+    elif course_blocks:
+        session = segment_course_blocks(
+            ask,
+            session_windows,
+            raw,
+            require_complete_coverage=course_reextract,
+            minimum=None if course_reextract else minimum,
+        )
+    elif session_windows:
+        session = segment_sessions(ask, session_windows, raw, minimum=minimum)
+    if session is not None:
+        detail.update(duration_audit(list(session.below_min_duration)))
+        result = session.segmentation
+        if result.empty_reason or not result.activities:
+            # Never persist partial coverage as success when a selected window is
+            # missing, or when no activity can be grounded in the supplied rows.
+            reason = (
+                "session_windows_without_transcript"
+                if result.empty_reason.startswith("session_windows_without_transcript:")
+                else result.empty_reason or "session_all_rows_unclassified"
+            )
+            raise SessionCoverageBlocked(reason, session.unclassified_rows, detail=detail)
+        if course_draft_guard is not None and timeline is None:
+            if (
+                session.unclassified_rows
+                or session.uncertain_boundaries
+                or session.discarded_boundary_hints
+            ):
+                raise SessionCoverageBlocked(
+                    "course_reextract_incomplete_coverage", session.unclassified_rows
+                )
+            if course_draft_sha256(result.activities) != course_draft_guard.digest:
+                raise Blocked("course_reextract_draft_changed")
+        by_id = {r.id: r for r in raw}  # The session compiler already checked duplicates.
+        activity_deps = transcript_dependencies(list(by_id.values()))
+    else:
+        result = segment(ask, interval, raw, transcript_only=transcript_only)
+        by_id = {r.id: r for r in raw}
+        activity_deps = transcript_dependencies(raw) if transcript_only else []
+        kept: list[Activity] = []
+        short: list[Activity] = []
+        for activity in result.activities:
+            validate_anonymous_activity(activity)
+            (kept if meets_activity_floor(activity, by_id, minimum) else short).append(activity)
+        detail.update(duration_audit(short))
+        if short:
+            result = result.model_copy(
+                update={
+                    "activities": kept,
+                    "empty_reason": result.empty_reason if kept else "no_supported_activity",
+                }
+            )
+    if command.kind == "reextract" and not course_reextract:
+        if not transcript_only:
+            ops = _reextract_ops(reader, command, interval)
+        # Generic preview permits whole-family retirement, but here there is no
+        # successor/citation guard. Keep all old objects if any proposed fragment
+        # was withheld or if the replacement is empty; don't partially retire.
+        if ops and (not result.activities or "below_min_duration_candidates" in detail):
+            raise SessionCoverageBlocked(
+                "reextract_incomplete_activity_replacement",
+                detail.get("below_min_duration_rows", 0),
+                detail=detail,
+            )
     for activity in result.activities:
         # Keep segmentation independent from attribution and only validate its raw references.
         validate_anonymous_activity(activity)
@@ -130,14 +320,16 @@ def extract_plan(
         if transcript_only:
             time = TimeRange(activity.start, activity.end)
             current = Inputs(
-                [r for r in raw if time.overlaps(r.event_start, r.event_end)],
+                [by_id[id] for id in activity.evidence_ids]
+                if session is not None
+                else [r for r in raw if time.overlaps(r.event_start, r.event_end)],
                 [],
                 [],
                 transcript_only=True,
             )
             # Boundary placement and any merge used the entire segmentation input,
             # not just the records cited in this activity or consumed by its rules.
-            deps = transcript_dependencies(raw)
+            deps = activity_deps
         else:
             current = inputs(reader, activity)
             deps = []
@@ -146,9 +338,24 @@ def extract_plan(
         ops.extend(create_selection(rules, aid, activity, current, run_id, ask))
     # In this profile keep only outcome metadata, not free-form audit text that
     # could contain the verbatim transcript. Product Markdown is still persisted.
-    if transcript_only:
-        return ops, {"activities": len(result.activities)}
-    return ops, {"empty_reason": result.empty_reason, "activities": len(result.activities)}
+    if session is not None:
+        return ops, {
+            **detail,
+            "activities": len(result.activities),
+            "course_activities": session.course_activities,
+            "merged_boundaries": session.merged_boundaries,
+            "uncertain_boundaries": session.uncertain_boundaries,
+            "discarded_boundary_hints": session.discarded_boundary_hints,
+            "unclassified_rows": session.unclassified_rows,
+            **(
+                {"covered_rows": sum(len(a.evidence_ids) for a in result.activities)}
+                if course_reextract or automatic_timeline is not None
+                else {}
+            ),
+        }
+    if not transcript_only or (detail and not result.activities):
+        detail["empty_reason"] = result.empty_reason
+    return ops, {**detail, "activities": len(result.activities)}
 
 
 def apply_plan(

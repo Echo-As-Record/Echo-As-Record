@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 from ear_contracts import RawRecord, SemanticRecord, VersionRef
-from ear_storage_client import DependencyInput, Query, Reader, iter_query
+from ear_storage_client import DependencyInput, PermissionDenied, Query, Reader, iter_query
 
-from ear_attribution.payloads import PAIRS, DomainError, raw_subject, references
+from ear_attribution.payloads import PAIRS, DomainError, references
+
+# Well below the wire limit; bound the number of full reference payloads per read.
+REFERENCE_READ_SIZE = 32
 
 
 @dataclass(frozen=True)
@@ -95,57 +99,85 @@ class Match:
     dependencies: tuple[DependencyInput, ...]
 
 
+def _reference_batches(
+    reader: Reader, kind: str, unknown_id: str, dependencies: list[DependencyInput]
+) -> Iterator[list[tuple[str, str]]]:
+    pending: list[tuple[str, str]] = []
+    try:
+        for item in iter_query(reader, Query(kind, order="id")):
+            if not isinstance(item, SemanticRecord):
+                raise DomainError("invalid_candidate")
+            refs = references(item)
+            # Include empty and nonmatching candidates: their reference field was read.
+            dependencies.append(reference_dependency(item))
+            if kind == "place":
+                flag = item.payload.get("is_unknown", False)
+                if type(flag) is not bool or flag != (item.id == unknown_id):
+                    raise DomainError("invalid_unknown_place")
+                if flag:
+                    if refs:
+                        raise DomainError("unknown_place_has_references")
+                    continue
+            for id in refs:
+                pending.append((item.id, id))
+                if len(pending) == REFERENCE_READ_SIZE:
+                    yield pending
+                    pending = []
+    except DomainError:
+        # Preserve error precedence: validate the earlier refs before reporting
+        # a later candidate's malformed payload.
+        if pending:
+            yield pending
+        raise
+    if pending:
+        yield pending
+
+
 def match(reader: Reader, subject: RawRecord, config: MatchConfig, unknown_id: str) -> Match:
     kind = PAIRS[subject.data_type]
     query_vector = vector(subject) if kind == "person" else None
     query_point = coordinates(subject) if kind == "place" else None
-    candidates: list[tuple[SemanticRecord, list[RawRecord]]] = []
+    candidates: list[tuple[str, RawRecord]] = []
     dependencies: list[DependencyInput] = []
     owners: dict[str, str] = {}
-    for item in iter_query(reader, Query(kind, order="id")):
-        if not isinstance(item, SemanticRecord):
-            raise DomainError("invalid_candidate")
-        refs = references(item)
-        # Include even empty/mismatched candidates: their reference field was read.
-        dependencies.append(reference_dependency(item))
-        if kind == "place":
-            flag = item.payload.get("is_unknown", False)
-            if type(flag) is not bool or flag != (item.id == unknown_id):
-                raise DomainError("invalid_unknown_place")
-            if flag:
-                if refs:
-                    raise DomainError("unknown_place_has_references")
-                continue
-        raw_refs = []
-        for id in refs:
-            raw = raw_subject(reader, id)
+    for group in _reference_batches(reader, kind, unknown_id, dependencies):
+        try:
+            rows = reader.get_many(list(dict.fromkeys(id for _, id in group)))
+        except PermissionDenied as exc:
+            if type(exc) is not PermissionDenied:
+                raise
+            # Bulk reads deny the whole group. On this exceptional path use the
+            # same snapshot/ACL, in order, to preserve the first failing input.
+            rows = None
+        for owner, id in group:
+            raw = reader.get(id) if rows is None else rows.get(id)
+            if not isinstance(raw, RawRecord) or raw.data_type not in PAIRS:
+                raise DomainError("invalid_subject")
             if raw.data_type != subject.data_type:
                 raise DomainError("reference_type_mismatch")
             if id in owners:
                 raise DomainError("reference_owner_conflict")
-            owners[id] = item.id
-            raw_refs.append(raw)
-        candidates.append((item, raw_refs))
+            owners[id] = owner
+            candidates.append((owner, raw))
     # Being a reference takes precedence over distance/similarity.
     if subject.id in owners:
         return Match(owners[subject.id], tuple(dependencies))
     best: tuple[float, str] | None = None
-    for item, refs in candidates:
-        for raw in refs:
-            if query_vector is not None:
-                model, values = vector(raw)
-                if model != query_vector[0] or len(values) != len(query_vector[1]):
-                    continue
-                similarity = math.fsum(a * b for a, b in zip(values, query_vector[1], strict=True))
-                if similarity < config.cosine_threshold:
-                    continue
-                score = -similarity
-            else:
-                assert query_point is not None
-                score = distance_m(query_point, coordinates(raw))
-                if score > config.gps_threshold_m:
-                    continue
-            proposal = (score, item.id)
-            if best is None or proposal < best:
-                best = proposal
+    for owner, raw in candidates:
+        if query_vector is not None:
+            model, values = vector(raw)
+            if model != query_vector[0] or len(values) != len(query_vector[1]):
+                continue
+            similarity = math.fsum(a * b for a, b in zip(values, query_vector[1], strict=True))
+            if similarity < config.cosine_threshold:
+                continue
+            score = -similarity
+        else:
+            assert query_point is not None
+            score = distance_m(query_point, coordinates(raw))
+            if score > config.gps_threshold_m:
+                continue
+        proposal = (score, owner)
+        if best is None or proposal < best:
+            best = proposal
     return Match(best[1] if best is not None else None, tuple(dependencies))
