@@ -159,13 +159,17 @@ class SyntheticProvider:
         data = call.data
         if call.purpose == "segmentation":
             assert not data.get("attributions") and not data.get("entities")
+            # Cite the fixture's opening and closing remarks as part of the same meeting.
+            # The requested 30-minute interval does not itself count as evidence duration.
+            transcripts = [r for r in data["evidence"] if r["data_type"] == "transcript_segment"]
+            assert len(transcripts) == 3
             result = Segmentation.model_validate(
                 {
                     "activities": [
                         {
                             **data["interval"],
                             "title_md": "Synthetic meeting",
-                            "evidence_ids": [data["evidence"][0]["id"]],
+                            "evidence_ids": [r["id"] for r in transcripts],
                         }
                     ]
                 }
