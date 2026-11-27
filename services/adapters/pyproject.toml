@@ -7,6 +7,7 @@ dependencies = ["ear-contracts", "ear-storage-client", "pydantic>=2.9", "httpx>=
 
 [project.scripts]
 ear-adapter = "ear_adapter.__main__:main"
+ear-native-worker = "ear_adapter.native_worker_cli:main"
 geo-adapter = "geo_adapter.__main__:main"
 librechat-adapter = "librechat_adapter.__main__:main"
 

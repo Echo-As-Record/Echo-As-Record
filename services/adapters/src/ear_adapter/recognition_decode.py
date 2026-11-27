@@ -123,6 +123,10 @@ def _number(text: object) -> int:
     return int(text)
 
 
+def _duration(frames: int) -> timedelta:
+    return timedelta(microseconds=round(frames * 1_000_000 / _RATE))
+
+
 def _ceil_frames(samples: int, rate: int) -> int:
     return (samples * _RATE + rate - 1) // rate
 
@@ -137,7 +141,7 @@ class _Track:
 def _track(
     reply: bytearray,
     extent: tuple[int, int],
-    span: timedelta,
+    span: timedelta | None,
     *,
     max_seconds: int = 30,
     packet_cap: int = _PACKET_CAP,
@@ -160,7 +164,7 @@ def _track(
     declared = s["duration_ts"]
     _require(type(declared) is int and rate <= declared <= max_seconds * rate)
     frames = _ceil_frames(declared, rate)
-    _require(abs(timedelta(microseconds=round(frames * 1_000_000 / _RATE)) - span) <= _CLOCK_SLOP)
+    _require(span is None or abs(_duration(frames) - span) <= _CLOCK_SLOP)
 
     cursor, limit = extent
     clock = tail = 0
@@ -459,20 +463,22 @@ class FFmpegDecoder:
     def _long_pcm(
         self,
         audio: BinaryIO,
-        capture: CaptureInput,
         pcm: BinaryIO,
         *,
+        media_type: str,
+        size: int,
+        span: timedelta | None,
         deadline: float,
         scratch_dir: str | None,
     ) -> tuple[int, str]:
         """Write to an empty private scratch file. Return frame count and source codec."""
         try:
             deadline = min(deadline, time.monotonic() + self._timeout)
-            size = capture.file_ref.size
-            span = capture.ended_at - capture.started_at
-            _require(timedelta(seconds=1) <= span <= timedelta(seconds=LONG_MAX_SECONDS))
+            _require(
+                span is None or timedelta(seconds=1) <= span <= timedelta(seconds=LONG_MAX_SECONDS)
+            )
             _require(0 < size <= _LONG_INPUT_CAP and audio.tell() == 0)
-            if capture.media_type in _WAV_TYPES:
+            if media_type in _WAV_TYPES:
                 _require(44 <= size <= (2 * _RATE * LONG_MAX_SECONDS) + 65_536)
                 audio.seek(0, os.SEEK_END)
                 _require(audio.tell() == size)
@@ -480,14 +486,11 @@ class FFmpegDecoder:
                 offset, n = _wav_extent(audio, size, 2 * _RATE * LONG_MAX_SECONDS, max_chunks=8192)
                 _require(size - n <= 65_536)
                 frames = n // 2
-                _require(
-                    abs(timedelta(microseconds=round(frames * 1_000_000 / _RATE)) - span)
-                    <= _CLOCK_SLOP
-                )
+                _require(span is None or abs(_duration(frames) - span) <= _CLOCK_SLOP)
                 audio.seek(offset)
                 _copy(audio, pcm, n, deadline)
                 return frames, "pcm_s16le"
-            _require(capture.media_type == "audio/mp4")
+            _require(media_type == "audio/mp4")
             # Copy bytes, not the original descriptor/path. Only the parent holds
             # the writable scratch fd; children receive a fresh read-only description.
             with tempfile.TemporaryFile(dir=scratch_dir, buffering=0) as spool:

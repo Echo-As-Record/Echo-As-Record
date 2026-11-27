@@ -486,3 +486,75 @@ def test_optional_ffmpeg_synthetic_roundtrip(codec: str, rate: int, ms: int, cha
         assert len(decoded) == 44 + 32 * ms
     with pytest.raises(RecognitionDecodeError):
         decoder.decode(io.BytesIO(raw), _capture(raw, ms=ms - 3 if ms > 1000 else 1003))
+
+
+def test_spooled_m4a_without_end_uses_one_validated_decode(monkeypatch, tmp_path):
+    from ear_adapter.recognition_long import ChunkedRecognitionProvider
+    from ear_adapter.recording_intake import RecordingIntake
+    from ear_adapter.recording_worker import NativeRecordingPreparation, NativeRecordingPublication
+    from ear_storage_client import Query
+
+    raw = _fake_media()
+    stream, packets = _probe()
+    called = []
+
+    def run(command, source, cap, deadline, *, sink=None):
+        source.seek(0)
+        assert source.read() == raw
+        assert fcntl.fcntl(source, fcntl.F_GETFL) & os.O_ACCMODE == os.O_RDONLY
+        called.append((command[0], deadline))
+        if sink is None:
+            data = bytearray(json.dumps({"streams": [stream], "packets": packets}).encode())
+            assert len(data) < cap
+            return data, len(data)
+        # Decoder emits the final partial AAC packet with padding. This must be
+        # validated and trimmed before the duration or model WAV is produced.
+        assert cap == 2 * 16_384
+        sink.write(b"\0\0" * 16_000 + b"\xff\xff" * 384)
+        return bytearray(), cap
+
+    monkeypatch.setattr(decode, "_run_to", run)
+    model = process.RecognitionProcess(
+        (
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            """
+import sys
+assert sys.argv[1:] == ['--started-at', '2000-01-01T00:00:00Z',
+                        '--ended-at', '2000-01-01T00:00:01Z']
+wav = sys.stdin.buffer.read()
+assert len(wav) == 32044 and not any(wav[44:])
+print('{"status":"complete","asr":{"status":"complete","chunks":[],"segments":[]},'
+      '"speakers":[],"ambient":[]}')
+""",
+        )
+    )
+    provider = ChunkedRecognitionProvider(model, DECODER, scratch_dir=str(tmp_path))
+    intake = RecordingIntake(tmp_path / "spool")
+    job = intake.accept(
+        io.BytesIO(raw),
+        source="web",
+        source_id=None,
+        started_at=START.isoformat(),
+        media_type="audio/mp4",
+    )
+    storage = MemoryStorage().client("adapter")
+    with intake.worker() as worker:
+        assert worker.run_one(
+            NativeRecordingPreparation(
+                provider,
+                CFG,
+                normalized_duration=lambda job, audio: provider.decoded_duration(
+                    audio, media_type=job.media_type, size=job.size
+                ),
+            ),
+            NativeRecordingPublication(storage),
+        )
+    status = intake.get(job.id)
+    assert status is not None and status["state"] == "succeeded"
+    (ref,) = storage.query(Query("audio_ref")).items
+    assert (ref.event_start, ref.event_end) == (START, START + timedelta(seconds=1))
+    assert [name for name, _ in called] == ["/trusted/ffprobe", "/trusted/ffmpeg"]
+    assert called[0][1] == called[1][1]

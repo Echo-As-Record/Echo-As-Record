@@ -22,6 +22,8 @@ import tempfile
 import time
 import wave
 import weakref
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from itertools import pairwise
@@ -33,7 +35,7 @@ from ear_adapter.convert import FileRef
 from ear_adapter.ear_api import AudioChunk, SpeechSegment
 from ear_adapter.native_channels import CaptureInput
 from ear_adapter.native_pipeline import AmbientEvent, ASRResult, SpeakerResult, _asr, _speakers
-from ear_adapter.recognition_decode import FFmpegDecoder, RecognitionDecodeError
+from ear_adapter.recognition_decode import FFmpegDecoder, RecognitionDecodeError, _duration
 from ear_adapter.recognition_process import (
     RecognitionProcess,
     RecognitionProcessError,
@@ -120,7 +122,7 @@ def _windows(frames: int, capture: CaptureInput) -> list[ChunkReport]:
     key = hashlib.sha256(json.dumps(source, separators=(",", ":")).encode()).hexdigest()
 
     def at(frame: int) -> datetime:
-        return capture.started_at + timedelta(microseconds=round(frame * 1_000_000 / _RATE))
+        return capture.started_at + _duration(frame)
 
     return [
         ChunkReport(
@@ -196,6 +198,18 @@ def _scoped(
     )
 
 
+@dataclass(slots=True)
+class _Decoded:
+    audio: BinaryIO
+    media_type: str
+    size: int
+    pcm: BinaryIO
+    frames: int
+    codec: str
+    deadline: float
+    used: bool = False
+
+
 class ChunkedRecognitionProvider(_RecognitionStages):
     """Up to 31 minutes, at most 62 sequential one-shot calls and one storage batch.
 
@@ -224,12 +238,45 @@ class ChunkedRecognitionProvider(_RecognitionStages):
         self._timeout = timeout
         self._scratch_dir = scratch_dir
         self.last_report: LongRecognitionReport | None = None
+        self._decoded: _Decoded | None = None
+
+    @contextmanager
+    def decoded_duration(
+        self, audio: BinaryIO, *, media_type: str, size: int
+    ) -> Iterator[timedelta]:
+        """For intake with no trusted end: decode once, then recognize within this scope.
+
+        Bind PCM to this borrowed stream and the derived duration. Do not stage it
+        across retries, job exits, or failed capture construction.
+        """
+        if self._decoded is not None:
+            raise RecognitionDecodeError("audio normalization stage mismatch")
+        self._pending = None
+        self.last_report = None
+        deadline = time.monotonic() + self._timeout
+        with tempfile.TemporaryFile(dir=self._scratch_dir) as pcm:
+            frames, codec = self._decoder._long_pcm(
+                audio,
+                pcm,
+                media_type=media_type,
+                size=size,
+                span=None,
+                deadline=deadline,
+                scratch_dir=self._scratch_dir,
+            )
+            self._decoded = _Decoded(audio, media_type, size, pcm, frames, codec, deadline)
+            try:
+                yield _duration(frames)
+            finally:
+                self._decoded = None
+                self._pending = None
 
     def asr(self, audio: BinaryIO, capture: CaptureInput) -> ASRResult:
         self._pending = None
         self.last_report = None
         stream = weakref.ref(audio, self._discard)
-        deadline = time.monotonic() + self._timeout
+        decoded = self._decoded
+        deadline = time.monotonic() + self._timeout if decoded is None else decoded.deadline
         windows: list[ChunkReport] = []
         chunks: list[AudioChunk] = []
         segments: list[SpeechSegment] = []
@@ -239,10 +286,32 @@ class ChunkedRecognitionProvider(_RecognitionStages):
         failure: Failure | None = "normalization"
         nbytes, nrecords = 0, 1
         try:
-            with tempfile.TemporaryFile(dir=self._scratch_dir) as pcm:
-                frames, codec = self._decoder._long_pcm(
-                    audio, capture, pcm, deadline=deadline, scratch_dir=self._scratch_dir
-                )
+            span = capture.ended_at - capture.started_at
+            with ExitStack() as stack:
+                if decoded is None:
+                    pcm = stack.enter_context(tempfile.TemporaryFile(dir=self._scratch_dir))
+                    frames, codec = self._decoder._long_pcm(
+                        audio,
+                        pcm,
+                        media_type=capture.media_type,
+                        size=capture.file_ref.size,
+                        span=span,
+                        deadline=deadline,
+                        scratch_dir=self._scratch_dir,
+                    )
+                else:
+                    if (
+                        decoded.used
+                        or decoded.audio is not audio
+                        or audio.closed
+                        or audio.tell() != 0
+                        or decoded.media_type != capture.media_type
+                        or decoded.size != capture.file_ref.size
+                        or _duration(decoded.frames) != span
+                    ):
+                        raise RecognitionDecodeError("audio normalization stage mismatch")
+                    decoded.used = True
+                    pcm, frames, codec = decoded.pcm, decoded.frames, decoded.codec
                 windows = _windows(frames, capture)
                 pcm.seek(0)
                 failure = None

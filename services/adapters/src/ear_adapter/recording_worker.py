@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from contextlib import AbstractContextManager, nullcontext
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import BinaryIO
 
@@ -25,36 +26,45 @@ class NativeRecordingPreparation:
 
     Configure a fixed channel and device label for the shared intake, not per retry
     or uploader. Phone timestamps are supplied at accept; for files without an
-    authoritative end, inject a duration probe that consumes the verified stream.
+    authoritative end, provide a scoped normalization step that yields the media
+    duration and lets the provider reuse decoded samples, or a duration probe.
     """
 
     provider: RecognitionProvider
     config: AdapterConfig
     duration: Callable[[RecordingJob, BinaryIO], timedelta] | None = None
     device_id: str = "recording_intake"
+    normalized_duration: (
+        Callable[[RecordingJob, BinaryIO], AbstractContextManager[timedelta]] | None
+    ) = field(default=None, kw_only=True)
 
     def __call__(self, job: RecordingJob, audio: BinaryIO) -> dict[str, object]:
         start = datetime.fromisoformat(job.started_at)
+        span: AbstractContextManager[timedelta]
         if job.ended_at is not None:
-            end = datetime.fromisoformat(job.ended_at)
+            span = nullcontext(datetime.fromisoformat(job.ended_at) - start)
+        elif self.normalized_duration is not None:
+            span = self.normalized_duration(job, audio)
+        elif self.duration is not None:
+            span = nullcontext(self.duration(job, audio))
         else:
-            if self.duration is None:
-                raise ValueError("recording duration probe required")
-            duration = self.duration(job, audio)
+            raise ValueError("recording duration probe required")
+        with span as duration:
             if not isinstance(duration, timedelta) or duration <= timedelta(0):
                 raise ValueError("invalid recording duration")
-            end = start + duration
-        capture = CaptureInput(
-            capture_id=job.id,
-            group_id=job.id,
-            record_id=job.id,
-            device_id=self.device_id,
-            started_at=start,
-            ended_at=end,
-            media_type=job.media_type,
-            file_ref=FileRef(job.relative_path, job.sha256, job.size),
-        )
-        records = prepare_native_records(capture, audio, provider=self.provider, config=self.config)
+            capture = CaptureInput(
+                capture_id=job.id,
+                group_id=job.id,
+                record_id=job.id,
+                device_id=self.device_id,
+                started_at=start,
+                ended_at=start + duration,
+                media_type=job.media_type,
+                file_ref=FileRef(job.relative_path, job.sha256, job.size),
+            )
+            records = prepare_native_records(
+                capture, audio, provider=self.provider, config=self.config
+            )
         return {"native_batch": encode_request([AppendRaw(r) for r in records], Context.system())}
 
 
