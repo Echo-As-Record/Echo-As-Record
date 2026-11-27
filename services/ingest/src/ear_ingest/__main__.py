@@ -23,6 +23,11 @@ def main() -> None:
     relay = sub.add_parser("relay", help="Loopback HTTP listener for encrypted FRP uploads")
     relay.add_argument("--port", type=int, default=18873)
     sub.add_parser("octopus-finalized", help="Accept one trusted finalized Octopus event on stdin")
+    bridge = sub.add_parser("octopus-bridge", help="Publish a bounded Octopus finalized raw export")
+    bridge.add_argument("--export-root", type=Path, required=True, help="Dedicated raw export")
+    bridge.add_argument("--octopus-uid", type=int, required=True, help="Trusted export owner UID")
+    bridge.add_argument("--lookback-minutes", type=int, required=True, help="1..1440 minutes")
+    bridge.add_argument("--emit", metavar="SLOT", help="Write one verified wire frame to stdout")
     pair = sub.add_parser("pair")
     pair.add_argument(
         "--relay",
@@ -31,6 +36,17 @@ def main() -> None:
     )
     pair.add_argument("--output", type=Path, help="Write the pairing QR to a private PNG")
     args = parser.parse_args()
+    if args.command == "octopus-bridge":
+        from ear_ingest.octopus_bridge import run as publish_export
+
+        raise SystemExit(
+            publish_export(
+                root=args.export_root,
+                uid=args.octopus_uid,
+                lookback_minutes=args.lookback_minutes,
+                emit=args.emit,
+            )
+        )
     if args.command == "octopus-finalized":
         from ear_ingest.octopus_finalized import main as accept_finalized
 

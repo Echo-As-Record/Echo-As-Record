@@ -1,7 +1,7 @@
 ---
 audience: ai
 doc-type: reference
-based-on: 用户 2026-11-13 services/ingest 实现任务；docs/proposals/phone-recorder-extraction.md 3.5；docs/design/design-v1.2.md 3.4；services/adapters 包结构；本机 brain channel 与旧 Ear 只读源码及 2026-11-12 会话样本；原生上传实现任务（dev e9590ae，Octopus iOS 6786977 源码及 RecordingIntake 协作接口）
+based-on: 用户 2026-11-13 services/ingest 实现任务；docs/proposals/phone-recorder-extraction.md 3.5；docs/design/design-v1.2.md 3.4；services/adapters 包结构；本机 brain channel 与旧 Ear 只读源码及 2026-11-12 会话样本；原生上传实现任务（dev e9590ae，Octopus iOS 6786977 源码及 RecordingIntake 协作接口）；用户本轮 Octopus 封口导出桥接任务
 ---
 
 # Ingest 实现与兼容依据
@@ -19,9 +19,11 @@ based-on: 用户 2026-11-13 services/ingest 实现任务；docs/proposals/phone-
 | `src/ear_ingest/native.py` / `limited.py` | 共享 intake 交接、严格 UTC 和标识转换、仅 native 的 multipart 字节数和结束边界校验 |
 | `src/ear_ingest/relay.py` | 确认加密结束帧后转发；在原生录音路由上预先限制解密临时文件的大小 |
 | `src/ear_ingest/octopus_finalized.py` | stdin 限定设备、启用时间及单条已封口显式事件，不接受路径或扫描 |
+| `src/ear_ingest/octopus_bridge.py` | [专用封口导出](../octopus-bridge.md)单次生产器；复用 OctopusInboxChannel 的路径固定与重查，不复用其基于旧 timestamp 加 offset 的时间解释；校验后交给 finalized 接收入口或输出 wire frame |
 | `src/ear_ingest/__main__.py` | `ear-ingest serve` 启动 |
 | `tests/test_ingest.py` | 合成输入、旧解析最小断言、重传、失败与并发测试 |
 | `tests/test_native_upload.py` | 合成 WAV/Context/IMU/Notes，原生接收、加密中继、去重和本机 finalized 入口 |
+| `tests/test_octopus_bridge.py` | 合成导出、范围过滤、路径与并发替换拒绝、未完整重试、共用手机标识去重、CLI 帧交接 |
 
 沿用单一模块名 `ingest`，数据称 `record`，落盘边界称 `store`；未引入并行同义类型，也没有更名或删除现有模块。旧 URL 的兼容路由留在 HTTP 边界；待手机全部迁移新 URL 后可删除，当前无删除日期。POSIX 文件锁在 worker thread 内执行，不阻塞 ASGI 事件循环；不同实例可并发，跨进程也遵循相同锁文件。重传查找仅扫描当前设备下 group_id 匹配的会话目录。定向投递以 Delivery 命名。publications 表暂存发布计划（两次 rename、旧路径清理），先记录计划再发布，在同一 SQLite 事务中登记 job 并移除计划。启动仅恢复未完成的计划。jobs 每条 record 保留最新 revision；revision 绑定附件字节、record 内容及目标路径。后台进程通过 flock 选出唯一发送者，并按 revision 检查回包。每次 accepted 追加 receipts，按 seq 读取可定位对应 capture。
 

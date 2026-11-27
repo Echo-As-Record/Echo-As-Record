@@ -45,7 +45,7 @@ uv run ear-ingest serve --host 0.0.0.0 --port 8791
 ### Octopus 手机上传和独立落地
 
 - 原 Octopus iOS `phone_local` 的 multipart 字段与旧 Brain 路由 `/api/v1/instances/brain___<device>/service/api/v1/record` 兼容；仅当请求已实际送到本接收端、Bearer 由本接收端认可、`timestamp` 遵循以上会话起点约定时，HTTP 原生路径才适用。没有接管 Octopus Manager、PC 发现或登录。查阅的 Octopus iOS `6786977` 源码在部分分段上发送段起始的绝对时间而非会话起点，并可能回退到会话起点；路由和字段无法可靠区分两种来源。未修改该客户端，也不宣称它直接改指后各段时间都正确；需要发送方对齐，或使用下述已知真值的 finalized 事件。
-- 对仍落在其它 Octopus 接收端的文件，`ear-ingest octopus-finalized` 仅提供一个**本机可信生产者**的单次入口。上游必须在真正封口后主动调用并提供最终字节、原始段时间和事件时间；本仓库未安装 Octopus 发布器、监听器或自动投递，现有落地不会自行进入此入口。不要把此命令直接暴露给网络或不受信任的调用者。它不接受文件路径，不搜索旧 inbox、目录或历史清单。
+- 对仍落在其它 Octopus 接收端的文件，`ear-ingest octopus-finalized` 仅提供一个**本机可信生产者**的单次入口。上游必须在真正封口后主动调用并提供最终字节、原始段时间和事件时间；不要把此命令直接暴露给网络或不受信任的调用者。它不接受文件路径，不搜索旧 inbox、目录或历史清单。
 - 额外显式配置 `EAR_INGEST_OCTOPUS_DEVICE_ID`（唯一允许设备，大小写无关）和 `EAR_INGEST_OCTOPUS_FINALIZED_AFTER`（固定启用时间，带时区）。输入为一行 UTF-8 JSON（含 LF 最多 8192 字节），后接该条附件的原始字节并立即 EOF。对象字段必须恰好如下，字段顺序任意：
 
   ```text
@@ -54,6 +54,8 @@ uv run ear-ingest serve --host 0.0.0.0 --port 8791
   ```
 
   起止时间为**绝对时间**；无结束时间只允许第 0 段会话 Notes（`ended_at: null`）。结束（无结束用起点）与可信封口时间均不能早于启用时间；封口时间不能超前或超过 24 小时。`size` 为正整数字节数且受原生上限约束，`sha256` 为 64 位小写十六进制。独立校验长度和摘要后才入队；退出 0 且输出 JSON 代表已持久确认，非零不确认。生产者负责保留附件、在允许窗口内重试以及观察非零退出。与 HTTP 路径使用同样的身份，不应同时配置两路投递，尤其是两路时间基准未对齐时。
+
+- `ear-ingest octopus-bridge` 可由操作者单次运行，从 Octopus 拥有的专用原始封口导出读取有界批次，校验后通过同一 finalized 入口入队；也可以只输出一条已校验的 wire frame，交给异机接收端。不安装 Octopus 钩子，不读取旧 Ear，不调度或补扫历史。前置条件、导出格式和重试见 [Octopus 封口导出接入](octopus-bridge.md)。若只有旧 Ear 拥有的挂载，或上游无法提供确切的物理段时间及封口事件，则不能激活。
 
 ## macOS 登录后常驻
 

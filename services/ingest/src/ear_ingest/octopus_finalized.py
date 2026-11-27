@@ -4,8 +4,10 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import sys
 import tempfile
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import BinaryIO
 
@@ -39,17 +41,41 @@ def _unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
-def publish(stream: BinaryIO) -> dict:
-    options = native.config()
-    device_scope = os.environ.get("EAR_INGEST_OCTOPUS_DEVICE_ID", "")
-    enabled_after = os.environ.get("EAR_INGEST_OCTOPUS_FINALIZED_AFTER", "")
-    if options is None or not device_scope or not enabled_after:
-        raise ValueError("Octopus finalized input is not enabled")
-    root, limit = options
-    allowed_device = component(device_scope).lower()
-    cutoff = native.utc_datetime(enabled_after)
-    now = datetime.now(UTC)
+@dataclass(frozen=True, slots=True)
+class FinalizedScope:
+    device: str
+    cutoff: datetime
 
+    @classmethod
+    def configured(cls) -> "FinalizedScope":
+        device = os.environ.get("EAR_INGEST_OCTOPUS_DEVICE_ID", "")
+        cutoff = os.environ.get("EAR_INGEST_OCTOPUS_FINALIZED_AFTER", "")
+        if not device or not cutoff:
+            raise ValueError("Octopus finalized input is not enabled")
+        return cls(component(device).lower(), native.utc_datetime(cutoff))
+
+
+@dataclass(frozen=True, slots=True)
+class FinalizedEvent:
+    device: str
+    group: str
+    index: int
+    kind: str
+    media: str
+    start: datetime
+    end: datetime | None
+    finalized: datetime
+    size: int
+    sha256: str
+
+    def in_window(self, scope: FinalizedScope, now: datetime, lookback: timedelta) -> bool:
+        return (
+            scope.cutoff <= (self.end or self.start) <= self.finalized <= now
+            and now - self.finalized <= lookback
+        )
+
+
+def read_event(stream: BinaryIO, scope: FinalizedScope, limit: int) -> FinalizedEvent:
     line = stream.readline(MANIFEST_BYTES + 1)
     if len(line) > MANIFEST_BYTES or not line.endswith(b"\n"):
         raise ValueError("Expected one bounded finalized event manifest line")
@@ -77,7 +103,7 @@ def publish(stream: BinaryIO) -> dict:
     ):
         raise ValueError("Invalid finalized event fields")
     device, group = component(device).lower(), component(group)
-    if device != allowed_device or kind not in native.KINDS:
+    if device != scope.device or kind not in native.KINDS:
         raise ValueError("Record outside configured Octopus scope")
     index, size, expected_hash = event["segment_index"], event["size"], event["sha256"]
     if (
@@ -98,36 +124,55 @@ def publish(stream: BinaryIO) -> dict:
             raise ValueError("Invalid finalized recording interval")
     else:
         raise ValueError("Expected finalized recording end time")
-    if not cutoff <= (end or start) <= final_time <= now or now - final_time > MAX_EVENT_AGE:
+    if (end or start) > final_time:
+        raise ValueError("Recording ends after finalization")
+    return FinalizedEvent(
+        device, group, index, kind, media, start, end, final_time, size, expected_hash
+    )
+
+
+def copy_payload(stream: BinaryIO, checked: BinaryIO, event: FinalizedEvent) -> None:
+    digest = hashlib.sha256()
+    remaining = event.size
+    while remaining:
+        chunk = stream.read(min(remaining, CHUNK))
+        if not chunk:
+            raise ValueError("Truncated finalized payload")
+        digest.update(chunk)
+        checked.write(chunk)
+        remaining -= len(chunk)
+    if stream.read(1) or digest.hexdigest() != event.sha256:
+        raise ValueError("Finalized payload does not match manifest")
+
+
+def publish(stream: BinaryIO) -> dict:
+    options = native.config()
+    if options is None:
+        raise ValueError("Octopus finalized input is not enabled")
+    root, limit = options
+    scope = FinalizedScope.configured()
+    now = datetime.now(UTC)
+    event = read_event(stream, scope, limit)
+    if not event.in_window(scope, now, MAX_EVENT_AGE):
         raise ValueError("Record outside configured finalization window")
 
     from ear_adapter.recording_intake import RecordingIntake
 
     # Verify the complete immutable payload before making any durable acceptance.
     with tempfile.TemporaryFile() as checked:
-        digest = hashlib.sha256()
-        remaining = size
-        while remaining:
-            chunk = stream.read(min(remaining, CHUNK))
-            if not chunk:
-                raise ValueError("Truncated finalized payload")
-            digest.update(chunk)
-            checked.write(chunk)
-            remaining -= len(chunk)
-        if stream.read(1) or digest.hexdigest() != expected_hash:
-            raise ValueError("Finalized payload does not match manifest")
+        copy_payload(stream, checked, event)
         checked.seek(0)
         return native.accept(
             RecordingIntake(root),
             checked,
             root=root,
-            device=device,
-            group=group,
-            index=index,
-            record_type=kind,
-            start=start,
-            end=end,
-            media=media,
+            device=event.device,
+            group=event.group,
+            index=event.index,
+            record_type=event.kind,
+            start=event.start,
+            end=event.end,
+            media=event.media,
         )
 
 
@@ -137,7 +182,7 @@ def main() -> int:
     except (ValueError, OverflowError, RecursionError):
         print("Invalid, conflicting, or out-of-scope Octopus finalized record", file=sys.stderr)
         return 2
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, sqlite3.Error):
         print("Octopus finalized record was not confirmed by native intake", file=sys.stderr)
         return 1
     print(json.dumps(result))

@@ -35,10 +35,14 @@ def config() -> tuple[Path, int] | None:
     root = Path(value).expanduser()
     if not root.is_absolute() or not value.strip():
         raise RuntimeError("EAR_INGEST_NATIVE_ROOT must be an absolute path")
+    return root, max_bytes()
+
+
+def max_bytes() -> int:
     raw_limit = os.environ.get("EAR_INGEST_NATIVE_MAX_BYTES", str(DEFAULT_MAX_BYTES))
     if not re.fullmatch(r"[0-9]{1,9}", raw_limit) or not 0 < int(raw_limit) <= MAX_BYTES:
         raise RuntimeError(f"EAR_INGEST_NATIVE_MAX_BYTES must be in 1..{MAX_BYTES}")
-    return root, int(raw_limit)
+    return int(raw_limit)
 
 
 def utc_datetime(value: str) -> datetime:
@@ -70,7 +74,7 @@ def accept(
     end: datetime | None,
     media: str,
 ) -> dict:
-    from ear_adapter.recording_intake import IntakeConflict, IntakeInvalid
+    from ear_adapter.recording_intake import IntakeConflict, IntakeInvalid, phone_source_id
 
     media = media.strip().lower() or "application/octet-stream"
     if not _MEDIA_TYPE.fullmatch(media) or (
@@ -80,9 +84,13 @@ def accept(
     # The components cannot contain the separator. The fixed-width digest keeps the
     # shared source ID bounded and does not expose the raw device or group string.
     kind = KINDS[record_type]
-    identity = f"{device.lower()}:{group}:{index}:{kind}"
-    source_id = "phone-v1:" + hashlib.sha256(identity.encode("ascii")).hexdigest()
     try:
+        if kind in {"audio", "context"}:
+            source_id = phone_source_id(device, group, index, kind)
+        else:
+            # The current intake rejects unsupported sidecar kinds; preserve the wire identity.
+            identity = f"{device.lower()}:{group}:{index}:{kind}"
+            source_id = "phone-v1:" + hashlib.sha256(identity.encode("ascii")).hexdigest()
         receipt = intake.accept(
             stream,
             source=SOURCE,
