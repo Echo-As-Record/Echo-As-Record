@@ -122,3 +122,15 @@ uv run geo-adapter run --interval 60
 `geo_adapter` 仍使用 `adapter` 身份，单独令牌至少授予 `read_types=["gps_point", "gps_geocode"]`，不需订阅；若两进程共享令牌，则在旧 Ear 的七类基础上增加 `gps_geocode`，共八类。旧 `ear-adapter` 仍只检查其七类输入。④ extraction 身份须额外读取 `gps_geocode`。已有①部署需由运维显式运行可信 `bootstrap` 更新核心登记表并补授权，普通启动不自动登记；现有 `init-identities` 不负责签发这些身份。
 
 日志仅输出计数、状态和异常类，不输出凭据、坐标或地名。缓存包含地点数据，置于被忽略的数据目录，`geo-cache.sqlite3*` 也全局忽略。运行单个 geo-adapter 进程，按所用地图服务的限速要求配置间隔。
+
+## LibreChat 源适配器（可选）
+
+`librechat_adapter` 是可选的独立适配器（不是分析插件），把**一个个人 LibreChat 账号**的会话、消息和附件真实字节导入 Ear：文件字节进 Ear 私有文件卷，`chat_session` / `chat_message` / `chat_attachment` 原始记录经与其他适配器相同的 AppendRaw 写入 ①，不新增数据库或服务。来源侧是只读、按版本核对的导出器（`tools/librechat_export.mjs`），编辑以追加修订表达，源端删除不会删除 Ear 里的数据。
+
+```bash
+uv run librechat-adapter dry-run --from-file export.ndjson
+uv run librechat-adapter once
+uv run librechat-adapter run --interval 300
+```
+
+新数据类型须先在共享登记表登记并给 adapter 身份读权限（`librechat-adapter registry` 打印定义）。数据流、契约字段、版本边界、最小权限设置和合成测试见[实现说明](ai-docs/librechat-source.md)。
