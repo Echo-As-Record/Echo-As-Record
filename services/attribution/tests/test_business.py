@@ -41,69 +41,68 @@ def test_unknown_person_repeat_no_automatic_reference_growth():
     assert {d.depends_on.id for d in client.dependencies_of(a.id)} == {person.id}
 
 
-def test_same_audio_scope_excludes_sibling_owner_and_registers_dependencies():
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("second_scope", ["scope", "separate"])
+def test_siblings_rejudge_without_cross_edges_and_user_correction_stays_protected(
+    reverse, second_scope
+):
     storage, client, service = setup()
     audio = new_id()
-    left = append(
-        storage,
-        "local_speaker",
-        {"audio_ref_id": audio, "upstream": {"diarization_scope_id": "scope"}},
-    )
-    right = append(
-        storage,
-        "local_speaker",
-        {"audio_ref_id": audio, "upstream": {"diarization_scope_id": "scope"}},
-    )
-    first = append(
-        storage, "voiceprint", {**voice(), "local_speaker_id": left.data_id, "audio_ref_id": audio}
-    )
-    second = append(
-        storage, "voiceprint", {**voice(), "local_speaker_id": right.data_id, "audio_ref_id": audio}
-    )
-    service.handle(first)
-    service.handle(second)
-    first_attr, second_attr = attr(client, first), attr(client, second)
-    assert first_attr.payload["target_id"] != second_attr.payload["target_id"]
-    deps = client.dependencies_of(second_attr.id)
-    assert {d.depends_on.data_type for d in deps} >= {"local_speaker", "voiceprint", "attribution"}
-    fields_by_type = {
-        d.depends_on.data_type: d.fields
-        for d in deps
-        if d.depends_on.data_type in {"local_speaker", "voiceprint", "attribution"}
-    }
-    assert set(fields_by_type["local_speaker"] or ()) == {"audio_ref_id", "upstream"}
-    assert set(fields_by_type["voiceprint"] or ()) == {"local_speaker_id", "audio_ref_id"}
-    assert set(fields_by_type["attribution"] or ()) == {"subject_id", "target_id"}
+    voices = []
+    for scope in ("scope", second_scope):
+        local = append(
+            storage,
+            "local_speaker",
+            {"audio_ref_id": audio, "upstream": {"diarization_scope_id": scope}},
+        )
+        voices.append(
+            append(
+                storage,
+                "voiceprint",
+                {**voice(), "local_speaker_id": local.data_id, "audio_ref_id": audio},
+            )
+        )
+    first, second = reversed(voices) if reverse else voices
+    # An external seed makes both sibling voices ordinary scored matches, not direct refs.
+    seed = append(storage)
+    alternate = append(storage, payload=voice((0, 1)))
+    for event in (seed, alternate, first, second):
+        service.handle(event)
+    target = attr(client, seed).payload["target_id"]
+    new_target = attr(client, alternate).payload["target_id"]
+    for event in (second, first):
+        sibling = attr(client, event)
+        assert sibling.payload["target_id"] == target
+        r = request(storage, sibling)
+        service.handle(r)
+        assert present(client.get_reevaluation_result(r.event_id)).outcome == "unchanged"
+        assert {d.depends_on.data_type for d in client.dependencies_of(sibling.id)} == {"person"}
 
-
-def test_different_scope_and_same_local_speaker_are_not_mutually_exclusive():
-    storage, client, service = setup()
-    audio = new_id()
-    one = append(
+    correction = feedback(
         storage,
-        "local_speaker",
-        {"audio_ref_id": audio, "upstream": {"diarization_scope_id": "one"}},
+        service,
+        {
+            "kind": "correct_attribution",
+            "subject_id": second.data_id,
+            "previous_target_id": target,
+            "new_target_id": new_target,
+        },
     )
-    two = append(
-        storage,
-        "local_speaker",
-        {"audio_ref_id": audio, "upstream": {"diarization_scope_id": "two"}},
+    assert (
+        present(client.get_system_record(feedback_result_id(correction.data_id))).payload["status"]
+        == "succeeded"
     )
-    first = append(
-        storage, "voiceprint", {**voice(), "local_speaker_id": one.data_id, "audio_ref_id": audio}
-    )
-    same_local = append(
-        storage, "voiceprint", {**voice(), "local_speaker_id": one.data_id, "audio_ref_id": audio}
-    )
-    other_scope = append(
-        storage, "voiceprint", {**voice(), "local_speaker_id": two.data_id, "audio_ref_id": audio}
-    )
-    service.handle(first)
-    service.handle(same_local)
-    service.handle(other_scope)
-    target = attr(client, first).payload["target_id"]
-    assert attr(client, same_local).payload["target_id"] == target
-    assert attr(client, other_scope).payload["target_id"] == target
+    fixed = attr(client, second)
+    assert fixed.payload["target_id"] == new_target and fixed.payload["user_protected"] is True
+    for event in (first, second):
+        r = request(storage, attr(client, event))
+        service.handle(r)
+        assert present(client.get_reevaluation_result(r.event_id)).outcome == "unchanged"
+    assert attr(client, second) == fixed
+    assert attr(client, first).payload["target_id"] == target
+    assert [(d.depends_on.id, d.fields) for d in client.dependencies_of(fixed.id)] == [
+        (new_target, ("references",)),
+    ]
 
 
 def test_gps_unknown_singleton_restart_and_distance():
@@ -114,6 +113,10 @@ def test_gps_unknown_singleton_restart_and_distance():
     target = attr(client, first).payload["target_id"]
     assert attr(client, second).payload["target_id"] == target
     assert client.count(Query("place")) == 1
+    assert all(
+        d.fields == ("is_unknown", "references")
+        for d in client.dependencies_of(attr(client, first).id)
+    )
     assert present(client.get(target)).payload == {
         "name": None,
         "references": [],
@@ -145,16 +148,23 @@ def test_gps_unknown_singleton_restart_and_distance():
     assert distance_m((0, 179.9999), (0, -179.9999)) < 30
 
 
-@pytest.mark.parametrize("payload", [voice(model="other/v1"), voice((1, 0, 0)), voice((0, 1))])
-def test_only_same_model_and_dimension_compare(payload):
+@pytest.mark.parametrize(
+    ("payload", "scored"),
+    [(voice(model="other/v1"), False), (voice((1, 0, 0)), False), (voice((0, 1)), True)],
+)
+def test_only_same_model_and_dimension_compare(payload, scored):
     storage, client, service = setup()
     a, b = append(storage), append(storage, payload=payload)
     service.handle(a)
     service.handle(b)
     assert attr(client, a).payload["target_id"] != attr(client, b).payload["target_id"]
     deps = client.dependencies_of(attr(client, b).id)
-    assert len(deps) == 2  # even the incompatible candidate's references were read
-    assert all(d.fields == ("references",) for d in deps)
+    # Even an incompatible candidate's references were read. A compatible
+    # candidate that loses on score still reads name in grouped mode.
+    assert {d.depends_on.id: d.fields for d in deps} == {
+        attr(client, a).payload["target_id"]: ("name", "references") if scored else ("references",),
+        attr(client, b).payload["target_id"]: ("references",),
+    }
 
 
 def test_configurable_threshold_and_all_actual_candidates():
@@ -355,7 +365,10 @@ def test_automatic_changed_finish_after_reference_correction():
     assert present(client.get(c.id)).payload["target_id"] == b.payload["target_id"]
     assert present(client.get_reevaluation_result(r.event_id)).outcome == "changed"
     assert present(client.get(c.id)).payload["user_protected"] is False
-    assert all(d.fields == ("references",) for d in client.dependencies_of(c.id))
+    assert {d.depends_on.id: d.fields for d in client.dependencies_of(c.id)} == {
+        a.payload["target_id"]: ("references",),
+        b.payload["target_id"]: ("name", "references"),
+    }
 
 
 def test_legacy_readable_but_not_automatically_unlocked():
@@ -540,3 +553,26 @@ def test_empty_candidate_plan_rejected_after_new_person_then_retry_reuses_match(
     service.handle(fourth)
     assert client.count(Query("person")) == 2
     assert present(client.get_system_record(STATE_ID)).payload["next_person_number"] == 3
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_name_changes_only_invalidate_eligible_scored_attributions(grouped):
+    storage, client, service = setup()
+    if not grouped:
+        service = AttributionService.business(client, config=MatchConfig(0.9, 100))
+    seed = append(storage)
+    incompatible = append(storage, payload=voice(model="other"))
+    scored = append(storage)
+    for event in (seed, incompatible, scored):
+        service.handle(event)
+    direct, excluded, scored_attr = (attr(client, event) for event in (seed, incompatible, scored))
+    ids = (direct.payload["target_id"], excluded.payload["target_id"])
+    assert {d.depends_on.id: d.fields for d in client.dependencies_of(scored_attr.id)} == {
+        ids[0]: ("name", "references") if grouped else ("references",),
+        ids[1]: ("references",),
+    }
+    for target in ids:
+        feedback(storage, service, {"kind": "rename", "target_id": target, "name": "Synthetic"})
+    assert {d.dependent.id for d in client.stale_dependencies(ids)} == (
+        {scored_attr.id} if grouped else set()
+    )

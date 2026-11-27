@@ -6,7 +6,8 @@
 # All JSONs set state_dir=/state and their own stable journal_namespace + consumer.
 # Required: module, storage_url (http://storage:8000), storage_token (PRIVATE JSON ONLY),
 # consumer (attribution / extraction.jobs / dependency.changes), journal_namespace, state_dir.
-# ③: explicitly calibrated cosine_threshold and gps_threshold_m; no defaults supplied here.
+# ③: cosine_threshold and gps_threshold_m are required (no defaults). Keep only
+# those two for legacy matching; see the attribution implementation guide for grouped scoring.
 # ④: gateway_url (e.g. http://gateway:8087), model; no provider/token environment variables.
 # schedule is absent by default; opt in with start=<explicit UTC RFC3339 Z>, every_seconds.
 # ⑤: server scheduler authority/explicit grants required; no full_visibility escape hatch.

@@ -75,7 +75,7 @@ class MatchConfig:
             raise ValueError("named_threshold must be finite in [-1, 1]")
         if not _finite(m) or m < 0:
             raise ValueError("named_margin must be finite and nonnegative")
-        if aggregation != "max" and aggregation != "top_k_mean":
+        if not isinstance(aggregation, str) or aggregation not in {"max", "top_k_mean"}:
             raise ValueError("invalid voice aggregation")
         if (aggregation == "top_k_mean" and (type(top_k) is not int or top_k < 1)) or (
             aggregation == "max" and top_k is not None

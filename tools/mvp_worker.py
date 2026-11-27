@@ -3,8 +3,9 @@
 Private JSON keys: module (attribution/extraction/dependency), storage_url,
 storage_token, consumer, journal_namespace, state_dir (existing owned 0700).
 Consumers are fixed: attribution / extraction.jobs / dependency.changes.
-③ requires the complete explicit voice matching configuration. ④ requires
-gateway_url and model; its storage identity authenticates at ⑦ too. Optional
+③ requires explicit cosine_threshold and gps_threshold_m; all six additional
+voice options are required to opt into grouped scoring. ④ requires gateway_url
+and model; its storage identity authenticates at ⑦ too. Optional
 ④ gateway_timeout configures only the gateway client; omitted, it uses timeout
 as before. Optional schedule={start: RFC3339 UTC ending Z, every_seconds:
 positive integer} is the ONLY timer opt-in. No history registration, memory
@@ -40,7 +41,7 @@ from datetime import datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
 from threading import Event
-from typing import Any, Literal, Self
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 import httpx
 from ear_contracts import SystemRecord, is_id
@@ -82,6 +83,20 @@ from ear_storage_client.remote import RemoteStorageClient
 from ear_storage_client.remote_errors import CommitUnknown, ResourceLimit, ServiceUnavailable
 from ear_storage_client.wire import SnapshotProfile
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+
+if TYPE_CHECKING:
+    from ear_attribution.matching import MatchConfig
+
+
+LEGACY_THRESHOLD_FIELDS = {"cosine_threshold", "gps_threshold_m"}
+GROUPED_VOICE_FIELDS = {
+    "unnamed_margin",
+    "named_threshold",
+    "named_margin",
+    "aggregation",
+    "top_k",
+    "safe_anonymous_reuse",
+}
 
 CONSUMERS = {
     "attribution": "attribution",
@@ -199,6 +214,39 @@ class Settings(SafeModel):
     transcript_summary_rule_id: str | None = Field(default=None, strict=True)
     transcript_windows: tuple[Interval, ...] = Field(default=(), max_length=24)
 
+    def attribution_match_config(self) -> MatchConfig:
+        from ear_attribution.matching import MatchConfig
+
+        if (
+            not LEGACY_THRESHOLD_FIELDS.issubset(self.model_fields_set)
+            or self.cosine_threshold is None
+            or self.gps_threshold_m is None
+        ):
+            raise ValueError("explicit_thresholds_required")
+        grouped = self.model_fields_set & GROUPED_VOICE_FIELDS
+        if not grouped:
+            return MatchConfig(self.cosine_threshold, self.gps_threshold_m)
+        if grouped != GROUPED_VOICE_FIELDS:
+            raise ValueError("explicit_thresholds_required")
+        if (
+            self.unnamed_margin is None
+            or self.named_threshold is None
+            or self.named_margin is None
+            or self.aggregation is None
+            or self.safe_anonymous_reuse is None
+        ):
+            raise ValueError("null_voice_option")
+        return MatchConfig(
+            self.cosine_threshold,
+            self.gps_threshold_m,
+            self.unnamed_margin,
+            self.named_threshold,
+            self.named_margin,
+            self.aggregation,
+            self.top_k,
+            self.safe_anonymous_reuse,
+        )
+
     @property
     def effective_gateway_timeout(self) -> float:
         return self.timeout if self.gateway_timeout is None else self.gateway_timeout
@@ -246,41 +294,14 @@ class Settings(SafeModel):
                 or url.raw_path != b"/"
             ):
                 raise ValueError("invalid_origin")
-        voice_fields = {
-            "cosine_threshold",
-            "gps_threshold_m",
-            "unnamed_margin",
-            "named_threshold",
-            "named_margin",
-            "aggregation",
-            "top_k",
-            "safe_anonymous_reuse",
-        }
         if self.module == "attribution":
-            from ear_attribution.matching import MatchConfig
-
-            if not voice_fields.issubset(self.model_fields_set):
-                raise ValueError("explicit_thresholds_required")
-            assert (
-                self.cosine_threshold is not None
-                and self.gps_threshold_m is not None
-                and self.unnamed_margin is not None
-                and self.named_threshold is not None
-                and self.named_margin is not None
-                and self.aggregation is not None
-                and self.safe_anonymous_reuse is not None
-            )
-            MatchConfig(
-                self.cosine_threshold,
-                self.gps_threshold_m,
-                self.unnamed_margin,
-                self.named_threshold,
-                self.named_margin,
-                self.aggregation,
-                self.top_k,
-                self.safe_anonymous_reuse,
-            )
-        elif self.model_fields_set.intersection(voice_fields):
+            self.attribution_match_config()
+        elif any(
+            getattr(self, field) is not None
+            for field in LEGACY_THRESHOLD_FIELDS | GROUPED_VOICE_FIELDS
+        ):
+            # Preserve dev's round-trip for other workers: their serialized defaults
+            # include nulls, which don't configure attribution or enable scoring.
             raise ValueError("unexpected_thresholds")
         validate_course_reextract_config(
             self.transcript_course_sessions,
@@ -379,7 +400,7 @@ def private_file(info: os.stat_result) -> None:
     if (
         not stat.S_ISREG(info.st_mode)
         or info.st_uid != os.geteuid()
-        or info.st_mode & 0o7777 != 0o600
+        or stat.S_IMODE(info.st_mode) != 0o600
         or info.st_nlink != 1
     ):
         raise ValueError("unsafe_file")
@@ -402,7 +423,7 @@ def directory(path: Path, *, private: bool = False) -> tuple[int, tuple[tuple[in
             ):
                 raise ValueError("untrusted_ancestor")
             chain.append(identity(info))
-        if private and (info.st_uid != os.geteuid() or info.st_mode & 0o7777 != 0o700):
+        if private and (info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700):
             raise ValueError("unsafe_state_directory")
         return fd, tuple(chain)
     except BaseException:
@@ -854,33 +875,14 @@ def run(config: Settings, stop: Event) -> None:
                 )
             else:
                 if config.module == "attribution":
-                    from ear_attribution.matching import MatchConfig
                     from ear_attribution.service import AttributionService
                     from ear_attribution.transactions import CommitJournal
 
                     journal = CommitJournal(state.path / "journal", namespace=namespace)
                     stack.callback(journal.close)
-                    assert (
-                        config.cosine_threshold is not None
-                        and config.gps_threshold_m is not None
-                        and config.unnamed_margin is not None
-                        and config.named_threshold is not None
-                        and config.named_margin is not None
-                        and config.aggregation is not None
-                        and config.safe_anonymous_reuse is not None
-                    )
                     worker = AttributionService.business(
                         client,
-                        config=MatchConfig(
-                            config.cosine_threshold,
-                            config.gps_threshold_m,
-                            config.unnamed_margin,
-                            config.named_threshold,
-                            config.named_margin,
-                            config.aggregation,
-                            config.top_k,
-                            config.safe_anonymous_reuse,
-                        ),
+                        config=config.attribution_match_config(),
                         journal=journal,
                     )
                     worker.subscribe(from_beginning=False)  # recovery MUST precede registration

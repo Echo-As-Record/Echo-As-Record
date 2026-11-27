@@ -270,16 +270,66 @@ def test_attribution_voice_configuration_is_explicit(tmp_path, field):
         worker.Settings.model_validate(value)
 
 
+@pytest.mark.parametrize("mode", ["legacy", "max", "top_k_mean"])
+def test_attribution_cli_accepts_legacy_and_full_configs(tmp_path, mode, monkeypatch):
+    data = settings(tmp_path)
+    if mode == "legacy":
+        for key in worker.GROUPED_VOICE_FIELDS:
+            data.pop(key)
+    elif mode == "top_k_mean":
+        data.update(aggregation=mode, top_k=2)
+    health = Mock(return_value=True)
+    monkeypatch.setattr(worker, "healthy", health)
+    path = write_config(tmp_path, data)
+    assert worker.main(["--config", str(path), "--healthcheck"]) == 0
+    cfg = health.call_args.args[0].attribution_match_config()
+    if mode == "legacy":
+        from ear_attribution.matching import MatchConfig
+
+        assert cfg == MatchConfig(0.9, 100)
+    else:
+        assert cfg.aggregation == mode and cfg.top_k == data["top_k"]
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "cosine_threshold",
+        "gps_threshold_m",
+        "unnamed_margin",
+        "named_threshold",
+        "named_margin",
+        "aggregation",
+        "safe_anonymous_reuse",
+    ],
+)
+def test_attribution_cli_rejects_null_voice_settings(tmp_path, field, capsys):
+    path = write_config(tmp_path, settings(tmp_path) | {field: None})
+    with pytest.raises(ValueError, match=r"explicit_thresholds_required|null_voice_option"):
+        worker.load_config(str(path))
+    assert worker.main(["--config", str(path), "--healthcheck"]) == 1
+    assert capsys.readouterr().err == worker.ERROR_METADATA + "\n"
+
+
 def test_attribution_top_k_matches_aggregation(tmp_path):
-    with pytest.raises(ValueError):
-        worker.Settings.model_validate(settings(tmp_path, aggregation="max", top_k=2))
+    for changes in (
+        {"aggregation": "max", "top_k": 2},
+        {"aggregation": "top_k_mean", "top_k": None},
+    ):
+        with pytest.raises(ValueError, match="top_k must match aggregation"):
+            worker.Settings.model_validate(settings(tmp_path, **changes))
     cfg = worker.Settings.model_validate(settings(tmp_path, aggregation="top_k_mean", top_k=2))
     assert cfg.top_k == 2
 
 
-def test_non_attribution_rejects_voice_configuration_even_null(tmp_path):
-    with pytest.raises(ValueError, match="unexpected_thresholds"):
-        worker.Settings.model_validate(settings(tmp_path, "dependency", cosine_threshold=None))
+@pytest.mark.parametrize("module", ["extraction", "dependency"])
+def test_non_attribution_round_trips_null_defaults_but_rejects_voice_options(tmp_path, module):
+    data = settings(tmp_path, module)
+    cfg = worker.Settings.model_validate(data)
+    assert worker.Settings.model_validate(cfg.model_dump()) == cfg
+    for changes in ({"cosine_threshold": 0.9}, {"aggregation": "max"}):
+        with pytest.raises(ValueError, match="unexpected_thresholds"):
+            worker.Settings.model_validate(data | changes)
 
 
 @pytest.mark.parametrize("value", [0, 661, "330", True, float("inf"), float("nan")])
