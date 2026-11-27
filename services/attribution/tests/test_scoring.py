@@ -173,5 +173,6 @@ def test_match_config_rejects_null_even_when_all_options_supplied(field):
         top_k=None,
         safe_anonymous_reuse=True,
     )
+    options[field] = None
     with pytest.raises(ValueError):
-        MatchConfig(**(options | {field: None}))
+        MatchConfig(**options)
