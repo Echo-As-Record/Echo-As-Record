@@ -60,6 +60,8 @@ based-on: 设计 v1.2 第 6 节与信号补充 §3.2、§4（accepted，仅表�
 
 ## 4. 匹配
 
+同一事件仍用同一授权快照读取候选与参考。参考记录用既有 SDK `get_many`，每批至多 32 条；不会跨事件复用参考。候选依赖、匹配阈值和顺序、单 worker、提交围栏、用户确认保护均不改变。 独立 worker 使用归属专用快照，不复制已存依赖图；算法仍读取候选及参考，并在原有受围栏的提交中登记完整新依赖。
+
 - **已是参考者优先**：数据 id 已出现在某个人物或地点的 `references` 里，直接归该对象，不看相似度。一个 id 出现在两个对象的参考里，抛 `reference_owner_conflict`。
 - **声纹**：`payload.model_version`（非空字符串）和 `payload.embedding.values/shape`（一维、有限、非零）。向量先按最大绝对值缩放再归一化，只与同模型、同维度参考比较。`scoring.py` 先按人聚合（`max` 或 top-k 平均），参考不会先平均成模板。`normalized` 与 `support_bonus` 只供离线评估，未接入生产匹配。
 - **离线评分**：`normalized` 使用查询向量与该人的参考相似度分布作为 genuine、其他人的参考作为 impostor，公式为 `(s-μ_self)/(σ_self+1e-6) - (s-μ_other)/(σ_other+1e-6)`；只要任一候选少于两条参考或没有对照候选，整个排名退回 raw，并在诊断记录模式和原因。`support_bonus` 只按余弦达到显式 `support_min_score` 的参考数计数，raw/normalized 均一致。两者目前不进入生产配置。

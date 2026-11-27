@@ -52,6 +52,19 @@ class SyntheticModel(DemoGateway):
 
     def complete(self, call: Call) -> dict:
         self.calls.append(call)
+        if call.purpose == "segmentation":
+            # The synthetic meeting is witnessed from the first to last utterance.
+            speech = [r for r in call.data["evidence"] if r["data_type"] == "transcript_segment"]
+            return {
+                "activities": [
+                    {
+                        "start": speech[0]["event_start"],
+                        "end": speech[-1]["event_end"],
+                        "title_md": "Synthetic meeting",
+                        "evidence_ids": [r["id"] for r in speech],
+                    }
+                ]
+            }
         if call.purpose not in {"generation", "reevaluation"}:
             return super().complete(call)
         selected = next(

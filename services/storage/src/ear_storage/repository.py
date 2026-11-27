@@ -1,8 +1,8 @@
 """Bounded SQL projection for the pure validator; never loads all historical state.
 
-P1a deliberately scans all CURRENT semantic objects and their current dependency
-sets (including superseded nodes before cycle filtering). Cost is O(current graph),
-not O(version history). All row/edge/byte limits fail closed before hydration.
+Current semantic records still supply collection constraints. Dependency groups
+are projected only for the batch and for existing paths reachable from proposed
+semantic edges. Row/edge/byte limits cap the projection, not unrelated stored edges.
 """
 
 from __future__ import annotations
@@ -111,6 +111,59 @@ class Projection:
         self.bytes += row[1]
         return [r[0] for r in self.conn.execute(query, params)]
 
+    def dependency_scope(self, ops: Sequence[WriteOp]) -> tuple[set[str], set[str]]:
+        # Acyclic before the batch. Any new cycle uses at least one registered
+        # edge: updates and supersedes only retire a version's outgoing edges.
+        # Seed EVERY proposed target so paths alternating old and new edges are
+        # covered. Follow current versions by identity, not the stored target version.
+        roots = {op.id for op in ops if isinstance(op, Create | Update)}
+        roots.update(op.result.target_id for op in ops if isinstance(op, FinishReevaluation))
+        targets: set[str] = set()
+        for op in ops:
+            if isinstance(op, RegisterDependencies):
+                roots.add(op.dependent_id)
+                targets.update(item.id for item in op.inputs())
+                if len(targets) > self.limits.max_graph_edges:
+                    raise ProjectionLimit("batch dependency targets exceed validator limit")
+        frontier = (
+            {
+                id
+                for (id,) in self.conn.execute(
+                    "SELECT id FROM storage.identity WHERE id=ANY(%s) "
+                    "AND kind IN ('semantic','rule')",
+                    (sorted(targets),),
+                )
+            }
+            if targets
+            else set()
+        )
+        visited: set[str] = set()
+        remaining = self.limits.max_graph_edges
+        while frontier:
+            visited.update(frontier)
+            if len(roots | visited) > self.limits.max_graph_nodes:
+                raise ProjectionLimit("dependency validation scope exceeds node limit")
+            # Count every traversed semantic edge, not just distinct nodes. SQL
+            # returns at most one extra witness before we fail closed.
+            edges = self.conn.execute(
+                "SELECT target.id FROM storage.identity source "
+                "JOIN LATERAL (SELECT s.commit_seq FROM storage.dependency_sets s "
+                "WHERE s.dependent_id=source.id AND s.dependent_version=source.current_seq "
+                "ORDER BY s.commit_seq DESC LIMIT 1) g ON TRUE "
+                "JOIN storage.dependency_edges e ON e.dependent_id=source.id "
+                "AND e.dependent_version=source.current_seq AND e.commit_seq=g.commit_seq "
+                "JOIN storage.identity target ON target.id=e.target_id "
+                "AND target.kind IN ('semantic','rule') WHERE source.id=ANY(%s) LIMIT %s",
+                (sorted(frontier), remaining + 1),
+            ).fetchall()
+            remaining -= len(edges)
+            if remaining < 0:
+                raise ProjectionLimit("dependency traversal exceeds edge limit")
+            frontier = {id for (id,) in edges} - visited
+        if len(roots) > self.limits.max_graph_nodes:
+            raise ProjectionLimit("dependency validation scope exceeds node limit")
+        return roots, visited
+
     def load(self, ops: Sequence[WriteOp], registry: Registry, context=None) -> State:
         s = State()
         needed = {
@@ -146,22 +199,38 @@ class Projection:
                 s.versions[record.id] = (record,)
                 if record.dedup_key is not None:
                     s.semantic_keys[(record.data_type, record.dedup_key)] = record.id
-        groups = self.conn.execute(
-            "SELECT s.* FROM storage.current_dependency_sets s "
-            "JOIN storage.identity i ON i.id=s.dependent_id AND i.current_seq=s.dependent_version "
-            "WHERE i.kind IN ('semantic','rule') LIMIT %s",
-            (self.limits.max_graph_nodes + 1,),
-        ).fetchall()
-        if len(groups) > self.limits.max_graph_nodes:
-            raise ProjectionLimit("dependency set limit exceeded")
-        edges = self.texts(
-            sql.SQL(
-                "SELECT e.record_text FROM storage.current_dependency_edges e "
-                "JOIN storage.identity i ON i.id=e.dependent_id "
-                "AND i.current_seq=e.dependent_version "
-                "WHERE i.kind IN ('semantic','rule')"
-            ),
-            cap=self.limits.max_graph_edges,
+        roots, reachable = self.dependency_scope(ops)
+        scope = sorted(roots | reachable)
+        groups = (
+            self.conn.execute(
+                "SELECT g.* FROM storage.identity i CROSS JOIN LATERAL ("
+                "SELECT s.* FROM storage.dependency_sets s WHERE s.dependent_id=i.id "
+                "AND s.dependent_version=i.current_seq ORDER BY s.commit_seq DESC LIMIT 1) g "
+                "WHERE i.id=ANY(%s) AND i.kind IN ('semantic','rule')",
+                (scope,),
+            ).fetchall()
+            if scope
+            else []
+        )
+        # Only explicitly touched groups need their complete records for set
+        # equality/freshness/persistence. Other groups are immutable in this
+        # batch. Keep only their semantic edges for the final cycle check;
+        # unrelated raw dependencies must not affect the traversal budget.
+        edges = (
+            self.texts(
+                sql.SQL(
+                    "SELECT e.record_text FROM storage.dependency_edges e "
+                    "JOIN unnest(%s::text[],%s::int[],%s::bigint[],%s::bool[]) "
+                    "k(id,v,seq,full_set) "
+                    "ON (e.dependent_id,e.dependent_version,e.commit_seq)=(k.id,k.v,k.seq) "
+                    "JOIN storage.identity target ON target.id=e.target_id "
+                    "WHERE k.full_set OR target.kind IN ('semantic','rule')"
+                ),
+                (*([g[i] for g in groups] for i in range(3)), [g[0] in roots for g in groups]),
+                cap=self.limits.max_graph_edges,
+            )
+            if groups
+            else []
         )
         by_key: dict[tuple[str, int], list[DependencyRecord]] = {}
         refs: set[tuple[str, int]] = set()

@@ -15,6 +15,7 @@ import re
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import replace
+from datetime import datetime, timedelta
 from typing import Any
 
 import psycopg
@@ -49,6 +50,7 @@ from ear_storage_client import (
 from ear_storage_client.preflight import LLMCallPreflight, validate_preflight
 from ear_storage_client.queries import DependencySet, Page, StaleDependency
 from ear_storage_client.results import Conflict
+from ear_storage_client.wire import SnapshotProfile
 
 from ear_storage.auth import (
     AuthenticationError,
@@ -367,6 +369,18 @@ class AuthenticatedClient(AuthorizedReaderMethods):
                 if principal.module in modules
             }
             return Registry(types, publishers, registry.core_types & frozenset(types))
+
+    def week_coverage(
+        self,
+        days: list[tuple[datetime, datetime]],
+        include_chat: bool,
+        shift: tuple[timedelta, dict[str, list[str]]] | None = None,
+    ) -> dict[str, Any]:
+        from ear_storage.week_coverage import project
+
+        with self._session() as (conn, principal, _reader):
+            conn.execute("SET LOCAL statement_timeout = '2000ms'")
+            return project(conn, principal, days, include_chat, shift)
 
     def scheduler_state(self) -> dict[str, Any]:
         with self._session() as (conn, principal, _reader):
@@ -728,10 +742,14 @@ class AuthenticatedClient(AuthorizedReaderMethods):
 
         return attach(self, job_id, item_id, request_event_id)
 
-    def create_snapshot(self, *, ttl_seconds: int | None = None) -> SnapshotLease:
+    def create_snapshot(
+        self, *, ttl_seconds: int | None = None, profile: SnapshotProfile | None = None
+    ) -> SnapshotLease:
         """Create and commit before returning; descriptor.to_json() is transport-ready."""
         with self._session() as (conn, principal, _reader):
-            return create_lease(conn, principal, self._snapshot_limits, ttl_seconds)
+            return create_lease(
+                conn, principal, self._snapshot_limits, ttl_seconds, profile=profile
+            )
 
     @contextmanager
     def _lease_session(self, snapshot_id: str):

@@ -4,23 +4,26 @@ from __future__ import annotations
 
 import re
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Literal
 
-from ear_contracts import SemanticRecord, SystemRecord, is_id
+from ear_contracts import RawRecord, SemanticRecord, SystemRecord, is_id
 from ear_contracts.base import UtcDatetime
+from ear_contracts.optional_sources import CHAT_TYPES
 from ear_extraction.domain import Interval
 from ear_storage.management_input import ManagementInput
+from ear_storage.week_coverage import SLOT_SECONDS, parse_days
 from ear_storage_client import Query, TimeRange
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from starlette.exceptions import HTTPException
-from starlette.responses import Response
+from starlette.responses import RedirectResponse, Response
 from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
 
-from ear_api import evidence, transcript_search
+from ear_api import evidence, source_timeline, transcript_search
 from ear_api.boundary import Boundary, failure, response
 from ear_api.business import (
     BUSINESS_TYPES,
@@ -30,6 +33,7 @@ from ear_api.business import (
     submit_feedback,
 )
 from ear_api.config import Binding, Settings
+from ear_api.effective_time import TimeProjection
 from ear_api.execution import (
     PROTOCOL_BLOCKER,
     ActionAdapter,
@@ -66,7 +70,10 @@ class _FlatPageFiles(StaticFiles):
     async def get_response(self, path: str, scope: Scope) -> Response:
         if path == ".":
             path = f"{self.page}.html"
-        if path not in {f"{self.page}.html", f"{self.page}.js", f"{self.page}.css"}:
+        allowed = {f"{self.page}.html", f"{self.page}.js", f"{self.page}.css"}
+        if self.page == "results":
+            allowed.update({"katex.min.js", "KaTeX-LICENSE.txt"})
+        if path not in allowed:
             raise HTTPException(status_code=404)
         return await super().get_response(path, scope)
 
@@ -124,11 +131,13 @@ def create_app(
     upstream: Upstream | None = None,
     execution: ExecutionService | None = None,
     adapter: ActionAdapter | None = None,
+    time_projection: TimeProjection | None = None,
 ) -> FastAPI:
     remote = upstream or Upstream(settings)
     selection = (
         ModelSettings(settings.model_settings_file)
-        if not settings.test_no_auth and settings.model_settings_file is not None
+        if settings.model_settings_file is not None
+        and (not settings.test_no_auth or settings.test_no_auth_model_settings)
         else None
     )
     if settings.execution_action_v2 and execution is not None:
@@ -218,7 +227,37 @@ def create_app(
     def session(request: Request):
         params(request, set())
         # Public capability discovery only; never expose bindings or credentials.
-        return response({"test_no_auth": settings.test_no_auth})
+        capabilities = {"test_no_auth": settings.test_no_auth}
+        if settings.test_no_auth_model_settings:
+            capabilities["test_no_auth_model_settings"] = True
+        if settings.chat_evidence_read:
+            capabilities["chat_evidence_read"] = True
+        return response(capabilities)
+
+    @app.get("/v1/source-evidence/{record_id}")
+    def source_evidence(record_id: str, request: Request):
+        if not settings.chat_evidence_read:
+            raise GatewayError(404, "not_found")
+        # Like other business reads, use the fixed ordinary binding in loopback test mode.
+        binding = authenticated(request)
+        valid_id(record_id)
+        params(request, set())
+        with remote.client(binding) as client:
+            record = client.get(record_id)
+        if not isinstance(record, RawRecord) or record.data_type not in CHAT_TYPES:
+            raise GatewayError(404, "not_found")
+        text = record.payload.get("title" if record.data_type == "chat_session" else "text")
+        if not isinstance(text, str):
+            raise GatewayError(404, "not_found")
+        return response(
+            {
+                "id": record.id,
+                "kind": record.data_type,
+                "start": record.event_start.isoformat().replace("+00:00", "Z"),
+                "end": record.event_end.isoformat().replace("+00:00", "Z"),
+                "text": text[:20000],
+            }
+        )
 
     @app.get("/v1/me")
     def me(request: Request):
@@ -295,6 +334,50 @@ def create_app(
 
     app.add_api_route("/v1/records/{data_type}", list_records, methods=["GET"])
 
+    @app.get("/v1/recording-intervals")
+    def recording_intervals(request: Request):
+        # Use the current caller's existing audio_ref read grant; do not send file references.
+        binding = authenticated(request)
+        values = params(request, {"start", "end", "limit", "cursor"})
+        limit, cursor = pagination(values)
+        adapter = TypeAdapter(UtcDatetime)
+        time = TimeRange(
+            adapter.validate_python(values.get("start")),
+            adapter.validate_python(values.get("end")),
+        )
+        if not timedelta(0) < time.end - time.start <= timedelta(hours=48):
+            raise GatewayError(422, "invalid_input")
+        with remote.client(binding) as client:
+            page = (
+                client.query(Query("audio_ref", time=time, limit=limit, cursor=cursor))
+                if time_projection is None
+                else time_projection.page(
+                    client,
+                    "audio_ref",
+                    time,
+                    limit,
+                    cursor,
+                    subject=binding.subject,
+                    surface="recording-intervals",
+                )
+            )
+        items = []
+        for row in page.items:
+            if not isinstance(row, RawRecord) or row.data_type != "audio_ref":
+                raise GatewayError(503, "storage_unavailable")
+            start, end = (
+                (row.event_start, row.event_end)
+                if time_projection is None
+                else time_projection.interval(row)
+            )
+            items.append(
+                {
+                    "start": start.isoformat().replace("+00:00", "Z"),
+                    "end": end.isoformat().replace("+00:00", "Z"),
+                }
+            )
+        return response({"items": items, "next_cursor": page.next_cursor})
+
     @app.get("/v1/evidence/search")
     def evidence_search(request: Request):
         binding = authenticated(request)
@@ -311,6 +394,82 @@ def create_app(
         with remote.client(binding) as client:
             result = evidence.search(client, time, phrase, cursor, limit)
         return response(result)
+
+    @app.get("/v1/week-coverage")
+    def week_coverage(request: Request):
+        binding = authenticated(request)
+        values = params(request, {"days"})
+        raw = values.get("days", "").split(",")
+        if not 1 <= len(raw) <= 7 or any(item.count("/") != 1 for item in raw):
+            raise GatewayError(422, "invalid_input")
+        days: list[dict[str, str]] = [
+            dict(zip(("start", "end"), item.split("/"), strict=True)) for item in raw
+        ]
+        ranges = parse_days(days)
+        result = (
+            remote.week_coverage(binding, days)
+            if time_projection is None
+            else remote.week_coverage(binding, days, shift=time_projection.coverage_shift())
+        )
+        if (
+            result.keys() != {"slot_seconds", "timeline", "activity"}
+            or type(result["slot_seconds"]) is not int
+            or result["slot_seconds"] != SLOT_SECONDS
+        ):
+            raise GatewayError(503, "storage_unavailable")
+        for key in ("timeline", "activity"):
+            track = result[key]
+            if (
+                not isinstance(track, dict)
+                or track.keys() != {"state", "days"}
+                or track["state"] not in ("ready", "partial", "unavailable")
+                or not isinstance(track["days"], list)
+                or len(track["days"]) != len(ranges)
+            ):
+                raise GatewayError(503, "storage_unavailable")
+            for bits, (start, end) in zip(track["days"], ranges, strict=True):
+                size = (int((end - start).total_seconds()) + SLOT_SECONDS - 1) // SLOT_SECONDS
+                if track["state"] == "unavailable":
+                    size = 0
+                if (
+                    not isinstance(bits, str)
+                    or len(bits) != size
+                    or re.fullmatch(r"[01]*", bits) is None
+                ):
+                    raise GatewayError(503, "storage_unavailable")
+        return response(result)
+
+    @app.get("/v1/source-timeline")
+    def source_events(request: Request):
+        binding = authenticated(request)
+        values = params(request, {"start", "end", "kind", "source", "limit", "cursor"})
+        kind, source = values.get("kind", ""), values.get("source", "all")
+        if source not in source_timeline.SOURCES:
+            raise GatewayError(422, "invalid_input")
+        if kind in source_timeline.CHAT:
+            if not settings.chat_evidence_read:
+                raise GatewayError(404, "not_found")
+            if source == "legacy-ear":
+                raise GatewayError(422, "invalid_input")
+        elif kind not in source_timeline.RECORDINGS or source == "librechat":
+            raise GatewayError(422, "invalid_input")
+        time = source_timeline.window(values.get("start", ""), values.get("end", ""))
+        limit, cursor = pagination({"limit": str(source_timeline.MAX_PAGE), **values})
+        if limit > source_timeline.MAX_PAGE:
+            raise GatewayError(422, "invalid_input")
+        with remote.client(binding) as client:
+            return response(
+                source_timeline.page(
+                    client,
+                    kind,
+                    time,
+                    source,
+                    limit,
+                    cursor,
+                    projection=time_projection,
+                    subject=binding.subject,
+                )
+            )
 
     @app.get("/v1/timeline")
     def timeline(request: Request):
@@ -623,6 +782,12 @@ def create_app(
                 raise GatewayError(503, "model_settings_unavailable") from None
 
     if settings.static_dir is not None:
+
+        @app.get("/", include_in_schema=False)
+        def results_home() -> Response:
+            return RedirectResponse("/results/", status_code=307)
+
+        app.mount("/results", _FlatPageFiles(settings.static_dir, page="results"), name="results")
         app.mount("/plugins", StaticFiles(directory=settings.static_dir, html=True), name="plugins")
         app.mount(
             "/workspace", _FlatPageFiles(settings.static_dir, page="workspace"), name="workspace"

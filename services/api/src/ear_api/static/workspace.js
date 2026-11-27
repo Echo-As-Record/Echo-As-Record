@@ -11,7 +11,10 @@
   'use strict';
   const api = factory();
   if (typeof module === 'object' && module.exports) module.exports = api;
-  else { root.EarWorkspace = api; api.app.boot(root, root.document); }
+  else {
+    root.EarWorkspace = api;
+    if (!root.document.currentScript?.hasAttribute('data-library-only')) api.app.boot(root, root.document);
+  }
 })(typeof window !== 'undefined' ? window : globalThis, function () {
   'use strict';
   const modules = Object.create(null);
@@ -1111,12 +1114,40 @@ define('./ws-md.js', function (module, require) {
   }
   function backslashes(s, i) { var c = 0; while (i - 1 - c >= 0 && s[i - 1 - c] === '\\') c++; return c; }
 
-  function findClose(s, from, delim) {
+  // These delimiters are enabled only by a caller supplying a math renderer.
+  var MAX_MATH = 3000;
+  function mathAt(s, i) {
+    var lead = s[i];
+    if (lead !== '$' && lead !== '\\') return null;
+    var pair = s.slice(i, i + 2), display = pair === '$$' || pair === '\\[';
+    var stop = pair === '\\(' ? '\\)' : pair === '\\[' ? '\\]' : display ? '$$' : '$';
+    if (lead !== '$' && pair !== '\\(' && pair !== '\\[') return null;
+    if (lead === '$' && s[i - 1] === '$') return null;
+    var start = i + (lead === '$' && !display ? 1 : 2);
+    if (lead === '$' && !display && (isSpace(s[start]) ||
+        /^\d+(?:[,.]\d+)*(?=[，。！？、；：])/.test(s.slice(start, start + 50)))) return null;
+    for (var k = start; k < s.length && k - start <= MAX_MATH; k++) {
+      var c = s[k];
+      if (!display && (c === '\n' || (lead === '$' && c === '`'))) return null;
+      if (s.startsWith(stop, k)) {
+        var tail = k + stop.length;
+        if (stop === '$' && (s[tail] === '$' || isSpace(s[k - 1]) || /[0-9]/.test(s[tail] || ''))) return null;
+        var text = s.slice(start, k).trim();
+        return text ? {t:'math', v:text, raw:s.slice(i, tail), display:display, end:tail} : null;
+      }
+      if (c === '\\') k++;
+    }
+    return null;
+  }
+
+  function findClose(s, from, delim, math) {
     var k = from;
     var ch = delim[0];
     while (k < s.length) {
       var c = s[k];
       if (c === '`') { var r = countRun(s, k, '`'); var e = findRun(s, k + r, '`', r); k = e >= 0 ? e + r : k + r; continue; }
+      var formula = math && mathAt(s, k);
+      if (formula) { k = formula.end; continue; }
       if (c === '\\') { k += 2; continue; }
       if (s.substr(k, delim.length) === delim) {
         var after = s[k + delim.length];
@@ -1172,15 +1203,16 @@ define('./ws-md.js', function (module, require) {
     return { text: s.slice(i + 1, close), url: url, end: p + 1 };
   }
 
-  function parseInline(src, depth) {
+  function parseInline(src, depth, math) {
     var out = [], buf = '', i = 0, n = src.length;
     function flush() { if (buf) { out.push({ t: 'text', v: decodeEntities(buf) }); buf = ''; } }
     while (i < n) {
-      var ch = src[i];
+      var ch = src[i], formula = math && mathAt(src, i);
+      if (formula) { flush(); out.push(formula); i = formula.end; continue; }
       if (ch === '\\' && i + 1 < n) {
         var nx = src[i + 1];
         if (nx === '\n') { flush(); out.push({ t: 'br' }); i += 2; continue; }
-        if (ESCAPABLE.indexOf(nx) >= 0) { buf += nx; i += 2; continue; }
+        if (ESCAPABLE.indexOf(nx) >= 0 || (math && nx === '$')) { buf += nx; i += 2; continue; }
         buf += ch; i++; continue;
       }
       if (ch === '\n') {
@@ -1208,7 +1240,7 @@ define('./ws-md.js', function (module, require) {
         var lk = parseLink(src, i);
         if (lk) {
           flush();
-          out.push({ t: 'link', url: lk.url, c: depth < LIMITS.maxInlineDepth ? parseInline(lk.text, depth + 1) : [{ t: 'text', v: lk.text }] });
+          out.push({ t: 'link', url: lk.url, c: depth < LIMITS.maxInlineDepth ? parseInline(lk.text, depth + 1, math) : [{ t: 'text', v: lk.text }] });
           i = lk.end; continue;
         }
       }
@@ -1232,9 +1264,9 @@ define('./ws-md.js', function (module, require) {
         else delim = ch;
         var canOpen = delim !== null && !isSpace(src[i + delim.length]) && !(ch === '_' && isWordChar(src[i - 1]));
         if (canOpen) {
-          var cl = findClose(src, i + delim.length, delim);
+          var cl = findClose(src, i + delim.length, delim, math);
           if (cl > i + delim.length) {
-            var inner = parseInline(src.slice(i + delim.length, cl), depth + 1);
+            var inner = parseInline(src.slice(i + delim.length, cl), depth + 1, math);
             flush();
             if (delim === '~~') out.push({ t: 'del', c: inner });
             else if (delim.length === 3) out.push({ t: 'em', c: [{ t: 'strong', c: inner }] });
@@ -1265,21 +1297,27 @@ define('./ws-md.js', function (module, require) {
   function indentOf(line) { var m = /^ */.exec(line); return m[0].length; }
   function isBlank(line) { return /^[ \t]*$/.test(line); }
 
-  function splitRow(line) {
+  function splitRow(line, math) {
     var t = line.trim();
     if (t[0] === '|') t = t.slice(1);
     if (t[t.length - 1] === '|' && t[t.length - 2] !== '\\') t = t.slice(0, -1);
     var cells = [], cur = '';
     for (var i = 0; i < t.length; i++) {
-      if (t[i] === '\\' && t[i + 1] === '|') { cur += '|'; i++; }
+      var formula = math && mathAt(t, i);
+      if (formula) { cur += formula.raw; i = formula.end - 1; }
+      else if (t[i] === '\\' && t[i + 1] === '|') { cur += '|'; i++; }
       else if (t[i] === '|') { cells.push(cur.trim()); cur = ''; }
       else cur += t[i];
     }
     cells.push(cur.trim());
     return cells;
   }
-  function startsBlock(line, afterPara) {
-    if (RE.fence.test(line) || RE.atx.test(line) || RE.hr.test(line) || RE.quote.test(line)) return true;
+  function displayMarker(line) {
+    var m = /^ {0,3}(\$\$|\\\[)(.*)$/.exec(line);
+    return m && m[1];
+  }
+  function startsBlock(line, afterPara, math) {
+    if ((math && displayMarker(line)) || RE.fence.test(line) || RE.atx.test(line) || RE.hr.test(line) || RE.quote.test(line)) return true;
     var m = RE.list.exec(line);
     if (m) {
       // 只有“空行之后”或“-/*/+ 与 1.”才能打断段落，避免把“2024. 年”之类误判成列表。
@@ -1312,6 +1350,22 @@ define('./ws-md.js', function (module, require) {
         i = closed ? j + 1 : j;
         continue;
       }
+      var marker = ctx.math && displayMarker(line);
+      if (marker) {
+        var stop = marker === '$$' ? '$$' : '\\]';
+        var pieces = [line.trimStart()], size = pieces[0].length, j = i;
+        // Only span a bounded number of lines; never consume a fenced code block.
+        var closed = pieces[0].indexOf(stop, 2) >= 0;
+        while (!closed && j + 1 < lines.length && pieces.length < 80) {
+          var next = lines[j + 1];
+          if (RE.fence.test(next) || size + next.length + 1 > MAX_MATH + 4) break;
+          j++; pieces.push(next); size += next.length + 1; closed = next.includes(stop);
+        }
+        var raw = closed && size <= MAX_MATH + 4 ? pieces.join('\n') : '';
+        var formula = mathAt(raw, 0);
+        if (formula && raw.slice(formula.end).trim()) formula = null;
+        if (formula) { blocks.push(formula); ctx.count++; i = j + 1; continue; }
+      }
       if ((m = RE.atx.exec(line))) {
         blocks.push({ t: 'h', level: m[1].length, text: (m[2] || '').trim() });
         ctx.count++; i++; continue;
@@ -1320,7 +1374,7 @@ define('./ws-md.js', function (module, require) {
 
       if (RE.quote.test(line)) {
         var q = [];
-        while (i < lines.length && !isBlank(lines[i]) && (RE.quote.test(lines[i]) || (q.length && !startsBlock(lines[i], true)))) {
+        while (i < lines.length && !isBlank(lines[i]) && (RE.quote.test(lines[i]) || (q.length && !startsBlock(lines[i], true, ctx.math)))) {
           q.push(lines[i].replace(/^ {0,3}> ?/, ''));
           i++;
         }
@@ -1350,7 +1404,7 @@ define('./ws-md.js', function (module, require) {
               break;
             }
             if (indentOf(ln) >= contentIndent) { itemLines.push(ln.slice(contentIndent)); k++; continue; }
-            if (RE.list.test(ln) || startsBlock(ln, true)) break;
+            if (RE.list.test(ln) || startsBlock(ln, true, ctx.math)) break;
             if (!isBlank(itemLines[itemLines.length - 1])) { itemLines.push(ln.trim()); k++; continue; }
             break;
           }
@@ -1368,12 +1422,12 @@ define('./ws-md.js', function (module, require) {
       }
 
       if (line.indexOf('|') >= 0 && i + 1 < lines.length && RE.tableSep.test(lines[i + 1]) && lines[i + 1].indexOf('-') >= 0) {
-        var head = splitRow(line), sep = splitRow(lines[i + 1]);
+        var head = splitRow(line, ctx.math), sep = splitRow(lines[i + 1]);
         if (head.length === sep.length && head.length <= 24) {
           var align = sep.map(function (c) { return /^:-+:$/.test(c) ? 'center' : /-:$/.test(c) ? 'right' : /^:-/.test(c) ? 'left' : ''; });
           var rows = [], r = i + 2;
           while (r < lines.length && !isBlank(lines[r]) && lines[r].indexOf('|') >= 0 && rows.length < 500) {
-            var cells = splitRow(lines[r]);
+            var cells = splitRow(lines[r], ctx.math);
             while (cells.length < head.length) cells.push('');
             rows.push(cells.slice(0, head.length));
             r++;
@@ -1400,7 +1454,7 @@ define('./ws-md.js', function (module, require) {
           blocks.push({ t: 'h', level: sm[1][0] === '=' ? 1 : 2, text: para.join('\n') });
           ctx.count++; i++; para = null; break;
         }
-        if (startsBlock(lines[i], true)) break;
+        if (startsBlock(lines[i], true, ctx.math)) break;
         if (lines[i].indexOf('|') >= 0 && i + 1 < lines.length && RE.tableSep.test(lines[i + 1]) && lines[i + 1].indexOf('-') >= 0) break;
         para.push(lines[i].replace(/^ +/, ''));
         i++;
@@ -1410,19 +1464,19 @@ define('./ws-md.js', function (module, require) {
     return blocks;
   }
 
-  function parse(text) {
+  function parse(text, math) {
     var src = typeof text === 'string' ? text : '';
     var truncated = false;
     if (src.length > LIMITS.maxChars) { src = src.slice(0, LIMITS.maxChars); truncated = true; }
     src = src.replace(/\r\n?/g, '\n').replace(/\t/g, '    ').replace(/\u0000/g, '');
-    var ctx = { count: 0, truncated: truncated };
+    var ctx = { count: 0, truncated: truncated, math: math };
     var blocks = parseBlocks(src.split('\n'), 0, ctx);
     return { blocks: blocks, truncated: ctx.truncated, totalChars: typeof text === 'string' ? text.length : 0 };
   }
 
   // ---------------------------------------------------------------- 渲染（只用安全的 DOM API）
 
-  function makeCtx(doc) { return { doc: doc, nodes: 0, stats: { images: 0, links: 0, truncated: false } }; }
+  function makeCtx(doc, math) { return { doc: doc, math: math, formulas: 0, nodes: 0, stats: { images: 0, links: 0, truncated: false } }; }
   function allocate(ctx) {
     if (ctx.nodes >= LIMITS.maxNodes) { ctx.stats.truncated = true; throw new RangeError('md_node_limit'); }
     ctx.nodes++;
@@ -1436,10 +1490,17 @@ define('./ws-md.js', function (module, require) {
   function txt(ctx, s) { allocate(ctx); return ctx.doc.createTextNode(s); }
   function shortUrl(u) { return u.length > LIMITS.maxUrl ? u.slice(0, LIMITS.maxUrl) + '…' : u; }
 
+  function renderFormula(ctx, n, parent) {
+    var value = ctx.math && ctx.formulas++ < 48 ? ctx.math(n.v, n.display) : null;
+    if (value) parent.appendChild(value);
+    else parent.appendChild(txt(ctx, n.raw));
+  }
+
   function renderInlineNodes(ctx, nodes, parent) {
     nodes.forEach(function (n) {
       switch (n.t) {
         case 'text': parent.appendChild(txt(ctx, n.v)); break;
+        case 'math': renderFormula(ctx, n, parent); break;
         case 'br': parent.appendChild(el(ctx, 'br')); break;
         case 'code': { var c = el(ctx, 'code', 'md-code-inline'); c.appendChild(txt(ctx, n.v)); parent.appendChild(c); break; }
         case 'strong': { var s = el(ctx, 'strong'); renderInlineNodes(ctx, n.c, s); parent.appendChild(s); break; }
@@ -1479,11 +1540,15 @@ define('./ws-md.js', function (module, require) {
       }
     });
   }
-  function inlineInto(ctx, text, parent) { renderInlineNodes(ctx, parseInline(text, 0), parent); }
+  function inlineInto(ctx, text, parent) { renderInlineNodes(ctx, parseInline(text, 0, ctx.math), parent); }
 
   function renderBlocks(ctx, blocks, parent) {
     blocks.forEach(function (b) {
       switch (b.t) {
+        case 'math': {
+          var row = el(ctx, 'div', 'md-math-block');
+          renderFormula(ctx, b, row); parent.appendChild(row); break;
+        }
         case 'h': {
           var h = el(ctx, 'h' + Math.min(6, b.level + 2), 'md-h');
           inlineInto(ctx, b.text, h); parent.appendChild(h); break;
@@ -1543,10 +1608,10 @@ define('./ws-md.js', function (module, require) {
   }
 
   /** 把 Markdown 渲染为一个 div.md；返回 {node, stats}。stats 供界面提示“已屏蔽 N 张图片、N 个链接未启用”。 */
-  function renderMarkdown(doc, text) {
-    var ctx = makeCtx(doc);
+  function renderMarkdown(doc, text, math) {
+    var ctx = makeCtx(doc, math);
     var box = el(ctx, 'div', 'md');
-    var ast = parse(text);
+    var ast = parse(text, !!math);
     try {
       renderBlocks(ctx, ast.blocks, box);
     } catch (e) {
@@ -1606,7 +1671,7 @@ define('./ws-client.js', function (module, require) {
   var TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
   var CODE_RE = /^[a-zA-Z0-9_]{1,100}$/;
 
-  function pathOk(path) {
+  function pathOk(path, resultsPaths) {
     if (typeof path !== 'string' || path.length > LIMITS.maxPathChars) return false;
     if (!/^\/(v1|health)\/[A-Za-z0-9_\-/]*(\?[A-Za-z0-9_\-.~%=&]*)?$/.test(path)) return false;
     if (path.indexOf('//') >= 0 || path.indexOf('..') >= 0) return false;
@@ -1614,6 +1679,7 @@ define('./ws-client.js', function (module, require) {
     var uuid = '[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
     var records = new RegExp('^/v1/records/([a-z_]+)(?:/' + uuid + '(?:/history)?)?$').exec(pathname);
     if (records) return Object.prototype.hasOwnProperty.call(core.TYPES, records[1]);
+    if (resultsPaths === true && ['/v1/week-coverage', '/v1/source-timeline', '/v1/timeline'].includes(pathname)) return true;
     return pathname === '/v1/session' || pathname === '/v1/me' || pathname === core.EVIDENCE_PATH || pathname === '/health/ready' ||
       new RegExp('^/v1/(?:previews/person/' + uuid + '|actions/' + uuid + '/execution|feedback/' + uuid + '/status)$').test(pathname);
   }
@@ -1719,7 +1785,7 @@ define('./ws-client.js', function (module, require) {
     }
 
     function get(path) {
-      if (!pathOk(path)) return Promise.resolve(fail({ failure: 'bad_path' }));
+      if (!pathOk(path, opts.resultsPaths)) return Promise.resolve(fail({ failure: 'bad_path' }));
       var isHealth = path.indexOf('/health/') === 0;
       if (!isHealth && path !== '/v1/session' && token === null && !noAuth) return Promise.resolve(fail({ failure: 'not_connected' }));
       return new Promise(function (resolve) {

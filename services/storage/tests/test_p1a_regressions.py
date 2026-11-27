@@ -12,7 +12,15 @@ from typing import Any
 import psycopg
 import pytest
 from ear_contracts import DEFAULT_REGISTRY, DataTypeSpec, VersionRef, new_id
-from ear_storage import Limits, PostgresStorage, bootstrap, migrate
+from ear_storage import (
+    AuthOperator,
+    Limits,
+    PostgresStorage,
+    ProjectionLimit,
+    StorageService,
+    bootstrap,
+    migrate,
+)
 from ear_storage.codec import encode_request
 from ear_storage.repository import Projection, persist
 from ear_storage.schema import connection, writer
@@ -356,3 +364,140 @@ def test_waiting_writer_reads_fresh_state_after_gate(pg_dsn: str) -> None:
         result = future.result(timeout=10)
     assert result.conflict is not None and result.conflict.reason == "stale_dependency"
     assert c.dependency_set(b) is None
+
+
+@pytest.mark.postgres
+def test_attribution_writes_past_fifty_thousand_unrelated_edges(pg_dsn):
+    store = setup(pg_dsn)
+    caller = store.client("attribution")
+    subjects = [make_raw("voiceprint", {}, start="2026-10-12T00:00:00Z") for _ in range(321)]
+    store.client("adapter").write([AppendRaw(v) for v in subjects], SYS).check()
+    people = [new_id() for _ in range(160)]
+    caller.write([Create("person", id, {"references": []}) for id in people], SYS).check()
+    refs = [VersionRef(data_type="person", id=id, version=1) for id in people]
+    ids = [new_id() for _ in subjects]
+
+    def batch(lo, hi):
+        return [
+            op
+            for i in range(lo, hi)
+            for op in (
+                Create(
+                    "attribution", ids[i], {"subject_id": subjects[i].id, "target_id": people[0]}
+                ),
+                RegisterDependencies("attribution", ids[i], refs),
+            )
+        ]
+
+    for i in range(0, 320, 40):
+        caller.write(batch(i, i + 40), SYS).check()
+    with connection(pg_dsn) as conn, writer(conn):
+        assert conn.execute("SELECT count(*) FROM storage.current_dependency_edges").fetchone() == (
+            51_200,
+        )
+        projected = Projection(conn, Limits()).load(batch(320, 321), store.registry)
+        assert not projected.deps
+    request = new_id()
+    event = new_id()
+    tail = [*batch(320, 321), MarkProcessed("attribution", event)]
+    result = caller.write(tail, SYS, request_id=request).check()
+    assert caller.write(tail, SYS, request_id=request) == result
+    assert caller.is_processed("attribution", event)
+    assert caller.count(Query("attribution")) == 321
+    assert len(caller.dependencies_of(ids[0])) == len(caller.dependencies_of(ids[-1])) == 160
+    # Resource bounds still fail atomically for work that is actually in scope.
+    limited = PostgresStorage(pg_dsn, limits=Limits(max_graph_edges=10)).client("attribution")
+    fresh = new_id()
+    seq = store.commit_seq
+    with pytest.raises(ProjectionLimit):
+        limited.write(
+            [Create("person", fresh, {}), RegisterDependencies("person", fresh, refs)], SYS
+        )
+    assert caller.get(fresh) is None and store.commit_seq == seq
+
+
+@pytest.mark.postgres
+def test_cycle_across_new_and_untouched_edges_follows_current_identity(pg_dsn):
+    store = setup(pg_dsn)
+    c = store.client("extraction")
+    a, b, middle, d = [new_id() for _ in range(4)]
+    c.write([Create("activity", id, {"stable": True}) for id in (a, b, middle, d)], SYS).check()
+    c.write(
+        [RegisterDependencies("activity", b, [DependencyInput(ref(middle), ("stable",))])], SYS
+    ).check()
+    c.write(
+        [
+            Update("activity", middle, 1, {"stable": True, "new": 1}),
+            RegisterDependencies("activity", middle, [ref(d)]),
+        ],
+        SYS,
+    ).check()
+    # B's unchanged edge still targets M's identity (now v2). The cycle also
+    # needs two edges introduced by the batch, not just one.
+    ops = [
+        RegisterDependencies("activity", a, [ref(b)]),
+        RegisterDependencies("activity", d, [ref(a)]),
+    ]
+    bad = c.write(ops, SYS)
+    assert bad.conflict is not None and bad.conflict.reason == "dependency_cycle"
+    cycle = bad.conflict.details["path"]
+    assert {n["id"] for n in cycle} == {a, b, middle, d}
+    assert {n["version"] for n in cycle if n["id"] == middle} == {2}
+    assert c.dependencies_of(a) == c.dependencies_of(d) == []
+    c.write([*ops, RegisterDependencies("activity", b, [])], SYS).check()
+    # Re-register the exact same groups: do not append a duplicate group.
+    assert all(op.outcome == "unchanged" for op in c.write(ops, SYS).check())
+
+
+@pytest.mark.postgres
+def test_unreadable_transitive_raw_edges_do_not_affect_authorized_cycle_budget(pg_dsn):
+    store = setup(pg_dsn)
+    c = store.client("extraction")
+    a, b = new_id(), new_id()
+    c.write([Create("activity", i, {}) for i in (a, b)], SYS).check()
+    subjects = [make_raw("voiceprint", {}, start="2026-10-12T00:00:00Z") for _ in range(12)]
+    store.client("adapter").write([AppendRaw(v) for v in subjects], SYS).check()
+    c.write(
+        [
+            RegisterDependencies(
+                "activity",
+                b,
+                [VersionRef(data_type="voiceprint", id=v.id, version=1) for v in subjects],
+            )
+        ],
+        SYS,
+    ).check()
+    owner = AuthOperator(pg_dsn).issue_principal("extraction", read_types=["activity"])
+    scoped = StorageService(pg_dsn, limits=Limits(max_graph_edges=4)).client(owner.token)
+    scoped.write([RegisterDependencies("activity", a, [ref(b)])], SYS).check()
+    assert len(c.dependencies_of(b)) == 12
+    with pytest.raises(PermissionDenied):
+        scoped.write(
+            [
+                RegisterDependencies(
+                    "activity",
+                    a,
+                    [VersionRef(data_type="voiceprint", id=subjects[0].id, version=1)],
+                )
+            ],
+            SYS,
+        )
+
+
+@pytest.mark.postgres
+def test_reachable_dense_edges_not_just_distinct_nodes_count_against_budget(pg_dsn):
+    store = setup(pg_dsn)
+    c = store.client("extraction")
+    a, b, d, e = [new_id() for _ in range(4)]
+    c.write([Create("activity", i, {}) for i in (a, b, d, e)], SYS).check()
+    c.write(
+        [
+            RegisterDependencies("activity", b, [ref(d), ref(e)]),
+            RegisterDependencies("activity", d, [ref(e)]),
+        ],
+        SYS,
+    ).check()
+    scoped = PostgresStorage(pg_dsn, limits=Limits(max_graph_edges=2)).client("extraction")
+    with pytest.raises(ProjectionLimit, match="dependency traversal exceeds edge limit"):
+        scoped.write([RegisterDependencies("activity", a, [ref(b)])], SYS)
+    assert c.dependency_set(a) is None

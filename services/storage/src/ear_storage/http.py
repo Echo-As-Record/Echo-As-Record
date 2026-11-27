@@ -45,6 +45,7 @@ from ear_storage.relay import RelayConfig
 from ear_storage.schema import ProjectionLimit, SchemaMismatch
 from ear_storage.service import StorageService
 from ear_storage.snapshots import SnapshotUnavailable
+from ear_storage.week_coverage import parse_days, parse_shift
 
 
 def json_response(value: Any, status: int = 200) -> Response:
@@ -299,6 +300,23 @@ def create_app(
         result = client.write(ops, context, request_id=request_id)
         return Response(encode_result(result), media_type="application/json")
 
+    @app.post("/v1/coverage/week")
+    def week_coverage(request: Request):
+        _token, client, module = authenticated(request)
+        data = load_json(request.scope["ear.body"])
+        check_keys(data, {"days", "include_chat", "shift"})
+        if type(data.get("include_chat")) is not bool:
+            raise InvalidRequest("invalid coverage request")
+        if data.get("shift") is not None and module != "api":
+            raise PermissionDenied("effective-time projection requires the API module")
+        days = parse_days(data.get("days"))
+        try:
+            return json_response(
+                client.week_coverage(days, data["include_chat"], parse_shift(data.get("shift")))
+            )
+        except psycopg.errors.QueryCanceled:
+            return failure(503, "unavailable", "storage unavailable")
+
     @app.post("/v1/read")
     def read(request: Request):
         token, client, _module = authenticated(request)
@@ -313,12 +331,12 @@ def create_app(
 
     @app.post("/v1/snapshots")
     def snapshot(request: Request):
-        token, _client, _module = authenticated(request)
+        _token, client, _module = authenticated(request)
         data = load_json(request.scope["ear.body"])
         if not isinstance(data, dict) or type(data.get("codec")) is not int:
             raise InvalidRequest("invalid snapshot request")
         parsed = SnapshotRequest.model_validate_json(canonical_json(data))
-        lease = service.create_snapshot(token, ttl_seconds=parsed.ttl_seconds)
+        lease = client.create_snapshot(ttl_seconds=parsed.ttl_seconds, profile=parsed.profile)
         return json_response({"codec": 1, "lease": lease.to_json()})
 
     @app.delete("/v1/snapshots/{snapshot_id}")

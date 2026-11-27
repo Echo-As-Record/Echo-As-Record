@@ -8,6 +8,7 @@ Worker and private journal reopen in-process, not an OS crash or full deployment
 import asyncio
 from contextlib import ExitStack, suppress
 from dataclasses import replace
+from functools import partial
 
 import pytest
 from ear_adapter import AdapterConfig, AlreadyIngested, Ingested, Runner
@@ -172,8 +173,12 @@ def worker(rt):
     return AttributionService.business(rt.clients["owner"], config=CONFIG, journal=journal), journal
 
 
-def test_import_feedback_and_finish_through_broker(attribution_runtime):
+@pytest.mark.parametrize("profile", [None, "attribution"])
+def test_import_feedback_and_finish_through_broker(attribution_runtime, profile, monkeypatch):
     rt = attribution_runtime
+    if profile is not None:
+        client = rt.clients["owner"]
+        monkeypatch.setattr(client, "snapshot", partial(client.snapshot, profile=profile))
     service, journal = worker(rt)
     try:
         service.subscribe()

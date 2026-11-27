@@ -25,13 +25,14 @@ HEAD **`84d2d0f` 已包含 `origin/dev ba36543`（PR #20）及此前GPS**；不�
 
 ## 网页大模型设置（显式部署启用）
 
-在插件管理页进入 `/model-settings/`；配置 `model_settings_file` 后，登录的管理员可查看、修改保存的模型 ID。`GET/PUT /v1/settings/model` 必须使用正常管理员 Bearer 并复核①的当前管理权限，**免登录测试模式不启用这两个端点**。更新按修订号比较并原子写入；旧修订返回409，需要重新读取。保存不发起模型请求；由操作者重启⑦后读取新值，页面不把保存值当作正在运行的配置。第一版固定上游，网页不编辑地址或 API key。配置和验证边界见[⑦部署说明](../llm_gateway/README.md#直连-new-api可选)。
+在插件管理页进入 `/model-settings/`；配置 `model_settings_file` 后，管理员可查看、修改保存的模型 ID。默认使用管理员 Bearer；测试免登录模式默认不启用 `GET/PUT /v1/settings/model`。仅在显式回环管理员模式额外开启 `test_no_auth_model_settings: true` 时，网页才自动连入这两个端点，无需 Bearer。两种模式都复核①当前管理权限；免登录写请求仍要求匹配配置的同源 Origin。更新按修订号比较并原子写入；旧修订返回409，需要重新读取。保存不发起模型请求；由操作者重启⑦后读取新值，页面不把保存值当作正在运行的配置。第一版固定上游，网页不编辑地址或 API key。配置和验证边界见[⑦部署说明](../llm_gateway/README.md#直连-new-api可选)。
 
 ## 本地测试免登录（2026-11-18 用户明确授权）
 
 `test_no_auth` 是严格布尔配置，默认 `false`，原有 Bearer 验证默认不变。
 开启后，⑥忽略调用者 Authorization；绑定选择只来自受保护部署配置与端点固定映射。
 `test_no_auth_role` 仅允许 `user` / `admin`，默认 `user`；`admin` 仅在 `test_no_auth=true` 时有效。
+在免登录配置中，绑定的客户端 `token` 可以省略；`storage_token` 仍必需。正常认证仍要求每个绑定提供客户端令牌。能进入免登录实例的本地进程或 SSH 隧道使用者可使用开放的管理和业务接口；保持回环隔离，不转发给 LAN 或公网。
 普通用户模式仍要求唯一user绑定且所有请求使用它，管理端点仍403。管理员测试模式必须
 **恰好一个user绑定和一个admin绑定**，缺失或歧义拒绝启动；按本轮用户明确授权暴露两项预配置能力：
 
@@ -51,7 +52,7 @@ HEAD **`84d2d0f` 已包含 `origin/dev ba36543`（PR #20）及此前GPS**；不�
 - 请求 Host 须与该 origin 的主机和端口一致，拒绝 DNS 重绑定主机；仅健康检查额外允许
   容器回环 `127.0.0.1:8086`。带 Origin 的请求仍须完全同源；跨站/同站非同源的
   Sec-Fetch-Site 被拒绝。所有非 GET/HEAD/OPTIONS 请求都须携带匹配的 Origin，命令行写请求亦然。
-- `GET /v1/session` 仍仅公开返回 `{"test_no_auth": true/false}`，不返回凭据、绑定或角色。
+- `GET /v1/session` 公开返回 `test_no_auth` 布尔值和显式开启的可选能力，不返回凭据、绑定或角色。
   `/workspace/` 和 `/plugins/` 自动连接后，根据重新验证的 `/v1/me` 显示角色；无令牌输入或登录提示。
   普通用户不发管理请求；管理员自动读取插件目录/管理结果，管理操作仍需手动提交及既有确认。
 - 免登录**不是只读 scope**：选定绑定原有的业务或管理写入口也不要求浏览器令牌。
@@ -69,6 +70,42 @@ HEAD **`84d2d0f` 已包含 `origin/dev ba36543`（PR #20）及此前GPS**；不�
 回执 `/tmp/ear-admin-noauth-20261118.json` 原样保留，不作为最终限制或验收通过依据。
 修复后已实测17类无Bearer业务读取全部200、插件目录与管理结果200，真实Chromium可浏览转写/历史并进入管理区；详细范围见[实现说明](ai-docs/implementation.md)。
 最终证据单独写入 `/tmp/ear-admin-noauth-final-20261118.json`，不改原初始化材料。
+
+### 可选 LibreChat 证据
+
+`chat_evidence_read` 是独立的严格布尔开关，默认关闭。显式开启后，`GET /v1/source-evidence/{id}` 按 UUIDv7 读取一条聊天记录；此端点不提供列表或搜索。返回 `id`、`kind`、UTC `start`/`end`、最多 20,000 字符的 `text`（会话标题或已存文本），不返回原始记录、文件引用或字节，也不开放通用记录路由。响应不缓存。服务端不把“被活动引用”当作授权；每次读取仍由①复核当前类型权限。
+
+默认需要 Bearer。若同时显式开启 `test_no_auth`，沿用现有回环和 Host/Origin/Sec-Fetch-Site 约束，使用固定普通用户绑定，即使会话角色是管理员也不回退或合并授权。能访问该回环实例的本地进程或转发客户端可按 ID 读取该普通绑定有权读的数据；真实聊天数据应保留 Bearer。`/v1/session` 仅在显式开启时返回 `chat_evidence_read: true`。只读来源时间线通过下面独立的有界列表端点读取聊天事件。
+
+### 只读活动与笔记
+
+启用静态页面时，`/` 跳转至 `/results/`。左侧固定图标栏用于滑动收起／恢复侧边栏；系统启用减少动态效果时直接切换。侧边栏显示该标签标题、上一周／下一周和七张始终保持缩略样式的日期卡，不显示周区间或时区行。点击上一周／下一周仅横向滑动日期卡，标题、按钮和来源筛选位置不变；减少动态效果时直接切周。周从周一到周日，日期按浏览器时区；默认选今天，翻至非当前周时选周一。日期卡没有展开态，选中后直接在主区显示当天的活动；窄屏上选日期后收起日期面板，图标可以再打开它。
+
+日期标题、时间轴和活动同处一块无框阅读区，一起滚动。每项活动的开始时间在标题左侧单独标记，标题或笔记换行时仍与该项对齐。按时间顺序连续阅读活动和关联的 Markdown 笔记；点时间标记可定位该项，滚动时高亮正在阅读的活动。笔记接近视口才读取，并按明确的活动 ID 关联。日期列表不混入已整体替代的对象，旧活动及版本深链接仍可打开，历史活动不混用当前笔记。阅读流不显示返回列表、依据、来源和历史列表；需进一步追溯时可由侧栏的「高级查看」进入 `/workspace/`。明暗主题实时跟随系统。
+
+日时间轴按活动排列，不按时长等比例拉伸。日期卡蓝轨表示全部可读时间线事件的分布，包含录音、转写、已启用的 LibreChat 会话、消息和附件；红轨表示当前可读活动的覆盖。两轨按浏览器自然日各自切成 5 分钟格，跨日分别裁切，夏令时使用实际日长。只要时段内有事件就点亮，瞬时消息也可见；蓝轨不是录音时长，且不随阅读区筛选改变。空白不等于处理失败，权限不全与读取故障分别标记。
+
+卡片用单次 `GET /v1/week-coverage` 获取七天两轨；Storage 在重新核对原授权后，只返回占用格，不传送正文，未选日期不预拉活动列表。`/v1/recording-intervals` 保留独立的录音时间区间兼容读取。默认按原始事件时间计算；显式启用下述有效时间投影时，录音和转写才使用校正时界。两轨都不反映提取进度。
+
+页面只发送同源 GET，不写反馈、不修改记录、不触发处理，也不加载笔记里的外部资源。普通认证模式令牌只在当前页内存中保留；显式本地免登录沿用原有绑定。**只读页面不限制既有管理端点的权限**，部署仍应保持原有回环隔离。
+
+开发检查：`node --test services/api/tests/ui/results.test.js`；真实 Chromium 合成测试可用 `EAR_WORKSPACE_BROWSER=1 node --test --test-name-pattern='results browser' services/api/tests/ui/workspace-flat-browser.test.js`，默认查找已安装的 Playwright Chromium headless shell，可用 `EAR_CHROME` 指定本地二进制。
+
+### 只读来源时间线
+
+「时间线」是结果页图标栏的独立视图（`/results/?view=timeline`）。沿用周一至周日的选日和无框滚动布局。事件使用紧凑间距，标题和来源尽量同排，正文摘录不折叠。按浏览器本地时间合并显示录音、转写、LibreChat 会话、消息及附件记录；不等待活动提取。来源选项为全部、旧 Ear 导入和 LibreChat。旧 Ear 录音依据已登记的旧服务来源识别，转写沿明确的录音引用核对来源；无法核实的条目仅在「全部来源」里显示。LibreChat 仅在原 `chat_evidence_read` 能力开启时可选，列表保留归档记录本来的时间和可读范围，不从 LibreChat 在线读取或下载附件。
+
+`GET /v1/source-timeline` 每页只投影一个固定事件类型，窗口最长 26 小时、每页最多 16 项；已有 Storage 类型授权每次重新核对。返回时间、类型、来源、短标题和有限文本摘录，不返回文件路径、附件原件、声纹、推理或工具调用。按流分页归并；滚动接近底部自动加载下一批，首批内容不满视口或过滤出空页时自动继续。权限不足与确实为空分别提示，读取失败才提供重试。实时归档过程中分页不保证快照一致性。已归档的 LibreChat 消息保留正文文本，但不保证保留源页面的排版、结构或可用的 Markdown 格式标志。时间线统一将用户和助手的消息摘录按安全 Markdown 渲染；不执行 HTML、不加载远程图片、不改变原始记录或摘录长度。其它事件仍按文字显示。
+
+#### 有效时间投影（实验性，仅宿主显式注入）
+
+默认和常规命令行仍使用原始事件时间。可信宿主可在 `create_app` 中显式传入 `time_projection`，使只读来源时间线、录音区间和周覆盖使用同一录音/转写显示时间。原始记录接口、短语搜索、活动、笔记和 worker 不受影响；启用需要匹配的 Storage 周覆盖支持，不读取正文作为回退。适用范围与未采纳的跨模块语义见[有效时间提案](../../docs/proposals/effective-time-projection.md)。
+
+### 结果页公式排版
+
+时间线的 LibreChat 消息、活动概述和笔记正文支持 `$...$`、`\(...\)` 行内公式，以及 `$$...$$`、`\[...\]` 独立公式。代码块、行内代码不解析；不支持、超限或不完整的公式保留原文。浏览器用本地 KaTeX 0.19.1（MIT）生成 MathML，不访问 CDN、不放宽 CSP、不加载公式中的链接或图片。`/workspace/` 不启用此扩展。
+
+本地资产 `src/ear_api/static/katex.min.js` 来自 npm `katex@0.19.1` 的 `dist/katex.min.js`；SHA-256 `fa140498b8cfc8302cbe5e7cb1bdbc1f952bc38b3fa258ede09e73edbf9a74bc`。同目录保留 npm 原始 `LICENSE`（`KaTeX-LICENSE.txt`），页面以 SRI 固定脚本内容。
 
 ### 工作台每个页面做什么
 
@@ -118,7 +155,7 @@ HEAD **`84d2d0f` 已包含 `origin/dev ba36543`（PR #20）及此前GPS**；不�
 ### 3.1 前置条件
 
 - ① 服务在线，并已为本服务签发 `api` 模块的凭据：普通用户绑定用普通 `api` 凭据；管理员绑定必须是①里带可信管理员角色的 `api` 凭据。凭据怎么签发、怎么授权，见[①部署指南](../storage/ai-docs/deployment.md)。⑥ 不创建身份、不迁移数据库、不读 `.env`。
-- 每个绑定有两个互不相同的 43 位令牌：给调用 ⑥ 的人用的 API 令牌，和 ⑥ 调用①用的 `storage_token`。生成方式：`python3 -c "import secrets; print(secrets.token_urlsafe(32))"`。所有令牌必须两两不同。
+- 每个绑定都需要 43 位 `storage_token`（⑥ 调用①使用）；正常认证还需要 43 位客户端 API `token`（仅在 `test_no_auth` 模式可省略）。生成方式：`python3 -c "import secrets; print(secrets.token_urlsafe(32))"`。所有令牌必须两两不同。
 
 ### 3.2 配置文件
 
@@ -137,7 +174,8 @@ JSON 文件，必须是当前用户拥有的普通文件、权限不含 group/ot
 ```
 
 - `public_origin`：浏览器地址栏的来源必须与它完全一致，否则带 `Origin` 的请求得到 `cross_origin_denied`。
-- `static_dir`：默认使用随包的 `static/`（含 `/plugins/` 与 flat `/workspace/` 页面）；显式写 `null` 可关闭页面。
+- `static_dir`：默认使用随包的 `static/`（含 `/results/`、`/plugins/` 与 flat `/workspace/` 页面）；显式写 `null` 可关闭页面。
+- `chat_evidence_read`（严格布尔，默认 `false`）：允许结果页通过现有类型授权读取已归档的 LibreChat 事件摘录、并计入周覆盖。此开关不注册类型、不授予权限；没有启用的导入端时无需开启。
 - `execution_journal`：外部动作的私有恢复日志路径；不设则外部动作状态显示 `disabled`。
 - `execution_action_v2`（严格布尔，默认 `false`）：只有同时设了 `execution_journal`、且宿主在代码里把可信适配器传给 `create_app(settings, adapter=…)` 才启用 action-v2 的 HTTP；配置文件里写 `true` 并不会让 `ear-api serve` 获得适配器，推进类路径仍是 501。见第 3.6 节。
 - 可选：`timeout`（默认 10 秒，≤60）、`max_body_bytes`（默认 65536，上限 65536）、`body_timeout`（默认 10 秒，≤30）。
@@ -167,11 +205,15 @@ JSON 文件，必须是当前用户拥有的普通文件、权限不含 group/ot
 | 方法与路径 | 谁可用 | 说明 |
 |---|---|---|
 | `GET /health/live`、`GET /health/ready` | 无需认证 | 存活；就绪（范围仅为 ⑥ 到 ① 的连通） |
-| `GET /v1/session` | 无需认证 | 最小测试模式标志，无凭据/身份信息 |
+| `GET /v1/session` | 无需认证 | 测试模式标志及已开启的可选能力，无凭据/身份信息 |
+| `GET /v1/source-evidence/{id}` | 显式启用，①复核读权限 | 有界聊天文本投影；关闭时 404 |
 | `GET /v1/me` | 任一绑定 | 当前主体与角色（会先向①复核身份） |
 | `GET /v1/records/{type}` | 任一绑定 | 分页列出（`limit`、`cursor`、`start`、`end`、`include_superseded`）；类型按下述核心登记表规则推导，集合外返回 404 `not_found` |
 | `GET /v1/evidence/search` | 任一绑定 | 有界字面证据查询：`start`、`end`、`q`、`limit`、`cursor`；UTC Z非空≤24h，q长1–256，limit默认10且1–10；当前授权、live_best_effort与截断可见；不是硬deadline或完整搜索保证 |
 | `GET /v1/timeline` | 任一绑定 | 等同 activity 列表 |
+| `GET /v1/week-coverage` | 任一绑定，①逐类型复核 | `days` 为 1–7 个逗号分隔的 `start/end`（UTC Z 整秒），每段最长 26 小时、总范围最长 8 天；仅返回覆盖格和授权可用性 |
+| `GET /v1/source-timeline` | 任一绑定，①逐类型复核 | `start`、`end`、`kind`，可带 `source`、`limit`、`cursor`；单类型有界摘录 |
+| `GET /v1/recording-intervals` | 任一绑定，须有 `audio_ref` 读权限 | `start`、`end`（最长 48 小时）、`limit`、`cursor`；只返回录音区间 |
 | `GET /v1/records/{type}/{id}`（可加 `?version=`） | 任一绑定 | 单条 |
 | `GET /v1/records/{type}/{id}/history` | 任一绑定 | 版本历史（`after_version`、`limit`） |
 | `POST /v1/feedback` | 任一绑定 | 提交反馈，见下 |
@@ -184,6 +226,7 @@ JSON 文件，必须是当前用户拥有的普通文件、权限不含 group/ot
 | `POST /v1/management/credentials/{feedback_id}/claim` | 仅 admin | 一次性领取凭据，空请求体；第二次被拒 |
 | `GET /v1/management/results`、`/results/{id}`、`/history/jobs/{id}` | 仅 admin | 管理结果与历史补处理任务状态 |
 | `/plugins/` | 页面本身无需认证 | 插件管理页；必须带结尾斜杠，`/plugins` 返回 404 |
+| `/results/` | 页面本身无需认证；业务读取沿用现有绑定 | 活动与笔记阅读器；必须带结尾斜杠，启用静态页时 `/` 跳转到这里 |
 | `/workspace/` | 页面本身无需认证；默认业务读取须普通API令牌，测试模式自动连接 | flat三文件只读viewer；不加载旧workspace目录prototype；不提供写反馈或外部动作按钮 |
 
 可浏览业务类型从 `ear_contracts.DEFAULT_REGISTRY`（随代码发布的核心登记表，也是 `MemoryStorage` 的默认登记表）推导：仅纳入 `kind` 为 `raw_record`、`semantic`、`rule` 的核心类型，并排除 `plugin_management_feedback`。登记表暂无管理类型标志，⑥ 用 `MANAGEMENT_TYPES` 显式排除该类型，因为插件管理反馈走管理接口；所有 `system_record` 都不纳入。当前结果在原有15类基础上增加两类：静态核心补充 `rule_selection`（`CORE_MVP_BUSINESS_ADDITIONS`，不在随代码发布的登记表里，见 `business.py`）和 `gps_geocode`（见[已采纳 GPS 提案](../../docs/proposals/gps-reverse-geocoding.md)），共17类，列表、单条及历史接口共用此集合，权限仍由①检查。

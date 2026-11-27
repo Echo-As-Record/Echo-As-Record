@@ -59,13 +59,23 @@ def headers(token):
     return {"Authorization": "Bearer " + token}
 
 
+# Test server socket lifecycle, not an HTTP request or worker deadline.
+# The default outlives the SDK's 5-second idle connection pool so that the
+# normal tests don't race a short server timer. Fault tests can opt out.
+LOOPBACK_KEEPALIVE_SECONDS = 30
+
+
 @contextmanager
-def loopback(app):
-    sock = socket.socket()
+def loopback(app, *, timeout_keep_alive: int = LOOPBACK_KEEPALIVE_SECONDS):
+    # asyncio enables TCP_NODELAY on accepted sockets of a prebound listener
+    # only when the socket has an explicit TCP protocol.
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP)
     sock.bind(("127.0.0.1", 0))
     sock.listen(32)
     runner = uvicorn.Server(
-        uvicorn.Config(app, log_level="critical", access_log=False, timeout_keep_alive=1)
+        uvicorn.Config(
+            app, log_level="critical", access_log=False, timeout_keep_alive=timeout_keep_alive
+        )
     )
     thread = threading.Thread(target=runner.run, kwargs={"sockets": [sock]}, daemon=True)
     thread.start()
