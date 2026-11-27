@@ -36,6 +36,7 @@ from ear_contracts import (
     format_utc,
     new_id,
 )
+from ear_contracts.optional_sources import chat_specs
 from ear_extraction import automatic_timeline, course_blocks, orchestration
 from ear_extraction import planning as extraction_planning
 from ear_extraction.activity_duration import meets_activity_floor
@@ -60,6 +61,7 @@ from ear_llm_gateway.models import GatewayError
 from ear_llm_gateway.output_json import OutputSchema
 from ear_storage_client import (
     AppendRaw,
+    AssertTypeRevision,
     Context,
     Create,
     MemoryStorage,
@@ -1103,9 +1105,10 @@ class HostedCourseHarness(SyntheticStorage):
         stride=900,
         active=True,
         origin_offset=0,
+        registry=None,
         **overrides,
     ):
-        super().__init__("extraction", registry=fixture_registry())
+        super().__init__("extraction", registry=registry or fixture_registry())
         self.now = datetime.fromisoformat("2026-11-12T00:00:00Z")
         origin = self.now - timedelta(days=1, seconds=-origin_offset)
         self.windows = tuple(
@@ -5299,3 +5302,346 @@ def test_automatic_timeline_activity_floor_preserves_old_artifact_only_citation(
     assert [c["purpose"] for c in host.gateway_calls] == [_AUTO_PURPOSE] * 2
     assert all(host.semantic(id).version == 1 for id in targets)
     assert b.id in host.semantic(targets[1]).payload["evidence_ids"]
+
+
+def test_chat_evidence_default_off_and_only_supported_in_general_extraction(tmp_path):
+    general = settings(tmp_path, "extraction")
+    assert worker.Settings.model_validate(general).chat_evidence is False
+    assert worker.Settings.model_validate(general | {"chat_evidence": True}).chat_evidence is True
+    with pytest.raises(ValueError, match="chat_evidence_requires_general_extraction"):
+        worker.Settings.model_validate(
+            general | transcript_only_settings() | {"chat_evidence": True}
+        )
+    with pytest.raises(ValueError, match="chat_evidence_requires_general_extraction"):
+        worker.Settings.model_validate(settings(tmp_path, "attribution", chat_evidence=True))
+
+
+class MixedTextHost(HostedCourseHarness):
+    def __init__(self, tmp_path, monkeypatch):
+        super().__init__(
+            tmp_path,
+            monkeypatch,
+            count=1,
+            active=False,
+            registry=fixture_registry().extend_core(*chat_specs()),
+        )
+        self.envelope = Interval(
+            start=datetime.fromisoformat("2026-11-22T14:00:00Z"),
+            end=datetime.fromisoformat("2026-11-22T14:30:00Z"),
+        )
+        self.now = self.envelope.end + timedelta(days=1)
+        self.event = self.feedback()
+        self.config = worker.Settings.model_validate(
+            settings(
+                tmp_path,
+                "extraction",
+                timeout=35,
+                gateway_timeout=630,
+                health_max_age_seconds=731,
+                chat_evidence=True,
+                mixed_text={
+                    "feedback_id": self.event.data_id,
+                    "interval": self.envelope.model_dump(mode="json"),
+                },
+            )
+        )
+        self.delivery = self.event
+
+    def request(self, method, path, body):
+        if path == "/v1/consumers/fetch" and self.delivery is not None:
+            event, self.delivery = self.delivery, None
+            self.calls.append((method, path, body))
+            return 200, {
+                "codec": 1,
+                "status": "delivery",
+                "delivery": {
+                    "event": event.model_dump(mode="json"),
+                    "delivery_token": SECRET,
+                },
+            }
+        if path in {"/v1/consumers/ack", "/v1/consumers/nack"}:
+            self.calls.append((method, path, body))
+            return 200, {"codec": 1, "status": "acked" if path.endswith("/ack") else "retry"}
+        return super().request(method, path, body)
+
+    def start(self):
+        actual_serve = worker.serve_mixed_text
+
+        def serve(service, stop):
+            service.clock = lambda: self.now
+            actual_serve(service, stop)
+
+        with self.monkeypatch.context() as mp:
+            mp.setattr(worker, "serve_mixed_text", serve)
+            worker.run(self.config, threading.Event())
+
+    def text_input(self):
+        start = self.envelope.start
+        self.transcript(self.envelope.end, "OUTSIDE_TRANSCRIPT")
+        transcript = self.transcript(start, "SYNTHETIC_TRANSCRIPT", seconds=60)
+        for revision, text in [(1, "OLD_CHAT_REVISION"), (2, "SYNTHETIC_LATEST_CHAT")]:
+            chat = make_raw(
+                "chat_message",
+                {
+                    "role": "user",
+                    "conversation_id": "synthetic",
+                    "message_id": "one",
+                    "revision": revision,
+                    "text": text,
+                    "tool_calls": [CANARY],
+                },
+                start=start + timedelta(minutes=15),
+            )
+            self.memory.client("adapter").write([AppendRaw(chat)], Context.system()).check()
+        self.memory.client("adapter").write(
+            [
+                AppendRaw(
+                    make_raw(
+                        "voiceprint",
+                        {"speaker": "NON_TEXT_CANARY"},
+                        start=start,
+                    )
+                )
+            ],
+            Context.system(),
+        ).check()
+        self.replies = [
+            {
+                "activities": [
+                    Activity(
+                        start=start,
+                        end=start + timedelta(minutes=16),
+                        title_md="Synthetic activity",
+                        evidence_ids=[transcript.id, chat.id],
+                    ).model_dump(mode="json")
+                ]
+            },
+            {"rule_ids": [self.rule_id]},
+            course_product(transcript.id, chat.id),
+        ]
+        return transcript, chat
+
+
+def test_mixed_text_worker_uses_one_graphless_plan_and_durable_receipts(tmp_path, monkeypatch):
+    host = MixedTextHost(tmp_path, monkeypatch)
+    transcript, chat = host.text_input()
+    host.client.write(
+        [
+            Create(
+                "rule",
+                new_id(),
+                Rule(
+                    scope="synthetic",
+                    instruction=CANARY,
+                    action="calendar",
+                ).model_dump(),
+            )
+        ],
+        Context.system(),
+    ).check()
+    host.start()
+    run = host.run_record(host.event)
+    assert run.payload["status"] == "succeeded", run.payload
+    assert run.payload["detail"] == {
+        "activities": 1,
+        "chat_evidence": {
+            "messages": 1,
+            "attachments": 0,
+            "sessions": 0,
+            "other_rows": 1,
+        },
+    }
+    assert run.payload["model_calls"] == []
+    assert [c["state"] for c in run.payload["gateway_calls"]] == ["returned"] * 3
+    assert host.snapshot_opens == 1
+    assert {q.data_type for _, q in host.queries} == {
+        "activity",
+        "extraction_run",
+        "rule",
+        "transcript_segment",
+        "chat_message",
+        "chat_attachment",
+        "chat_session",
+    }
+    for call in host.gateway_calls:
+        assert call["root_feedback_id"] == host.event.data_id
+        assert "assistant_claim_unverified" in call["data"]["evidence_policy"]
+    assert [c["purpose"] for c in host.gateway_calls] == ["segmentation", "selection", "generation"]
+    for call in (host.gateway_calls[0], host.gateway_calls[-1]):
+        rows = call["data"]["evidence"]
+        assert [r["id"] for r in rows] == [transcript.id, chat.id]
+        assert set(rows[0]) == {"data_type", "event_start", "event_end", "id", "text"}
+    for marker in (CANARY, "NON_TEXT_CANARY", "OLD_CHAT_REVISION", "OUTSIDE_TRANSCRIPT"):
+        assert marker not in repr(host.gateway_calls)
+    assert "SYNTHETIC_TRANSCRIPT" not in repr(run.payload)
+    assert "SYNTHETIC_LATEST_CHAT" not in repr(run.payload)
+    assert host.client.count(Query("action_suggestion")) == 0
+    ops = host.batch_ops(-1)
+    assert {op.data_type for op in ops if isinstance(op, AssertTypeRevision)} == {
+        "rule",
+        "transcript_segment",
+        "chat_message",
+        "chat_attachment",
+        "chat_session",
+    }
+    assert [op.data_type for op in ops if isinstance(op, Create)] == [
+        "activity",
+        "rule_selection",
+        "artifact",
+    ]
+    host.start()  # Terminal restart does not subscribe, fetch, plan or resend.
+    assert sum(path == "/v1/consumers/fetch" for _, path, _ in host.calls) == 1
+    assert host.run_record(host.event) == run
+
+
+@pytest.mark.parametrize(
+    "failure", ["unknown_send", "concurrent_append", "activity_overlap", "empty"]
+)
+def test_mixed_text_worker_fails_closed(tmp_path, monkeypatch, failure):
+    host = MixedTextHost(tmp_path, monkeypatch)
+    host.text_input()
+    if failure == "unknown_send":
+        host.replies[0] = httpx.ReadTimeout("synthetic")
+        error, sends, activities = "gateway_outcome_unknown", 1, 0
+    elif failure == "concurrent_append":
+        final = host.replies[-1]
+
+        def append_during_generation(_):
+            host.transcript(host.envelope.start + timedelta(minutes=20), "LATE_TRANSCRIPT")
+            return final
+
+        host.replies[-1] = append_during_generation
+        error, sends, activities = "gateway_result_not_committed", 3, 0
+    elif failure == "activity_overlap":
+        host.prior_activity(host.envelope.start)
+        error, sends, activities = "mixed_text_activity_overlap", 0, 1
+    else:
+        host.replies[0] = {"activities": [], "empty_reason": CANARY}
+        error, sends, activities = "mixed_text_no_supported_activity", 1, 0
+    host.start()
+    run = host.run_record(host.event)
+    assert run.payload["status"] == "blocked"
+    assert run.payload["error"] == error
+    assert CANARY not in repr(run.payload)
+    host.start()
+    assert len(host.gateway_calls) == sends
+    assert host.client.count(Query("activity")) == activities
+    assert host.client.count(Query("artifact")) == 0
+
+
+@pytest.mark.parametrize("command", ["unrelated", "reextract", "wrong_window"])
+def test_mixed_text_rejects_unpinned_or_nonfresh_feedback(tmp_path, monkeypatch, command):
+    host = MixedTextHost(tmp_path, monkeypatch)
+    if command == "reextract":
+        new = host.feedback(Command(kind="reextract", interval=host.envelope, preview={}))
+    elif command == "wrong_window":
+        new = host.feedback(Command(kind="extract", interval=host.windows[0]))
+    else:
+        new = host.feedback()
+    host.delivery = new
+    if command != "unrelated":
+        host.config = host.config.model_copy(
+            update={
+                "mixed_text": host.config.mixed_text.model_copy(
+                    update={"feedback_id": new.data_id},
+                )
+            }
+        )
+    with pytest.raises(RuntimeError, match="worker_handler_failed"):
+        host.start()
+    assert not host.gateway_calls and host.snapshot_opens == 0
+    assert host.client.count(Query("extraction_run")) == 0
+    assert host.calls[-1][1] == "/v1/consumers/nack"
+
+
+def test_mixed_text_settings_are_private_exact_and_unscheduled(tmp_path):
+    base = settings(
+        tmp_path,
+        "extraction",
+        chat_evidence=True,
+        mixed_text={
+            "feedback_id": new_id(),
+            "interval": {"start": "2026-11-22T05:00:00Z", "end": "2026-11-23T05:00:00Z"},
+        },
+    )
+    config = worker.Settings.model_validate(base)
+    assert config.mixed_text is not None and config.schedule is None
+    for changes in (
+        {"chat_evidence": False},
+        {"schedule": {"start": "2026-11-22T05:00:00Z", "every_seconds": 3600}},
+        transcript_only_settings(),
+        {
+            "mixed_text": {
+                "feedback_id": new_id(),
+                "interval": {
+                    "start": "2026-11-22T05:00:00Z",
+                    "end": "2026-11-23T05:00:01Z",
+                },
+            }
+        },
+    ):
+        with pytest.raises(ValueError):
+            worker.Settings.model_validate(base | changes)
+
+
+@pytest.mark.parametrize("budget", ["rows", "payload", "calls"])
+def test_mixed_text_budget_does_not_send_or_commit_partial_work(tmp_path, monkeypatch, budget):
+    host = MixedTextHost(tmp_path, monkeypatch)
+    transcript, chat = host.text_input()
+    if budget == "rows":
+        monkeypatch.setattr(extraction_planning, "MAX_MIXED_TEXT_ROWS", 1)
+        error, sends = "mixed_text_raw_row_budget_exceeded", 0
+    elif budget == "payload":
+        host.transcript(host.envelope.start + timedelta(minutes=1), "x" * 100_001)
+        error, sends = "mixed_text_input_budget_exceeded", 0
+    else:
+        rules = [new_id() for _ in range(3)]
+        host.client.write(
+            [
+                Create("rule", id, Rule(scope="synthetic", instruction="notes").model_dump())
+                for id in rules
+            ],
+            Context.system(),
+        ).check()
+        host.replies[1:] = [
+            {"rule_ids": [host.rule_id, *rules]},
+            *[course_product(transcript.id, chat.id) for _ in range(3)],
+        ]
+        error, sends = "mixed_text_max_calls_exceeded", 5
+    host.start()
+    run = host.run_record(host.event)
+    assert run.payload["error"] == error
+    assert len(run.payload["gateway_calls"]) == len(host.gateway_calls) == sends
+    assert host.client.count(Query("activity")) == 0
+    assert host.client.count(Query("artifact")) == 0
+    assert host.client.count(Query("rule_selection")) == 0
+
+
+def test_mixed_text_fresh_feedback_cannot_bypass_prior_sending_intent(tmp_path, monkeypatch):
+    host = MixedTextHost(tmp_path, monkeypatch)
+    host.text_input()
+    prior = host.feedback()
+    previous = record(
+        status="blocked",
+        command=Command(
+            kind="extract",
+            interval=host.envelope,
+        ).model_dump(mode="json"),
+        gateway_calls=[{"state": "sending", "call_id": new_id()}],
+    )
+    host.client.write(
+        [
+            PutSystemRecord(
+                "extraction_run",
+                prior.event_id,
+                previous.payload,
+                event_start=host.envelope.start,
+                event_end=host.envelope.end,
+            )
+        ],
+        Context.feedback(prior.data_id),
+    ).check()
+    before = host.run_record(prior)
+    host.start()
+    assert host.run_record(host.event).payload["error"] == "overlapping_unresolved_model_call"
+    assert not host.gateway_calls and host.run_record(prior) == before

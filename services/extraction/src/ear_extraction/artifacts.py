@@ -5,6 +5,7 @@ from __future__ import annotations
 from ear_contracts import RawRecord, SemanticRecord, VersionRef
 from ear_storage_client import Create, DependencyInput, RegisterDependencies, WriteOp
 
+from ear_extraction.chat_evidence import has_grounding, is_chat
 from ear_extraction.domain import Activity, Generated, Rule
 from ear_extraction.persistence import ref
 from ear_extraction.segmentation import Inputs
@@ -20,6 +21,11 @@ def validate_generated(result: Generated, rule: Rule, data: Inputs, *, rejudge: 
         raise ValueError("artifact_requires_text_and_evidence")
     if not set(result.evidence_ids) <= {r.id for r in data.raw}:
         raise ValueError("unknown_evidence_reference")
+    if any(is_chat(r) for r in data.raw) and not has_grounding(
+        result.evidence_ids, {r.id: r for r in data.raw}
+    ):
+        # Assistant claims and session labels cannot be the only support for a note.
+        raise ValueError("artifact_requires_non_claim_evidence")
     plain_markdown(result.body_md)
     if result.action is not None:
         if result.action.kind != rule.action:

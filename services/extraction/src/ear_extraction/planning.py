@@ -3,20 +3,25 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import timedelta
 from itertools import pairwise
 from typing import Any
 
-from ear_contracts import SemanticRecord, VersionRef, new_id
+from ear_contracts import RawRecord, SemanticRecord, VersionRef, new_id
 from ear_storage_client import (
     AssertTypeRevision,
     Create,
+    PermissionDenied,
+    Query,
     Reader,
     RegisterDependencies,
+    SnapshotUnavailable,
     Supersede,
     TimeRange,
     Update,
     WriteOp,
+    iter_query,
 )
 
 from ear_extraction.activity_duration import (
@@ -30,6 +35,14 @@ from ear_extraction.automatic_timeline import (
     AutomaticTimeline,
     ReviewWave,
     segment_automatic_timeline,
+)
+from ear_extraction.chat_evidence import (
+    CHAT_TYPES,
+    chat_counts,
+    grounds,
+    has_grounding,
+    read_chat_evidence,
+    refuse_unreadable_chat,
 )
 from ear_extraction.course_blocks import segment_course_blocks
 from ear_extraction.course_reextract import (
@@ -45,6 +58,7 @@ from ear_extraction.domain import (
     Blocked,
     Command,
     Generated,
+    InputBudgetExceeded,
     Interval,
     Rule,
     SessionCoverageBlocked,
@@ -63,6 +77,47 @@ from ear_extraction.sessions import segment_sessions, validate_session_windows
 from ear_extraction.suggestions import create_suggestion, pending_replacements
 
 Ask = Callable[[str, dict[str, Any], type], Any]
+MAX_MIXED_TEXT_ROWS = 1000
+MIXED_TEXT_TYPES = ("transcript_segment", *CHAT_TYPES)
+
+
+def _mixed_text_input(
+    reader: Reader, interval: Interval
+) -> tuple[list[RawRecord], list[AssertTypeRevision]]:
+    time = TimeRange(interval.start, interval.end)
+    raw: list[RawRecord] = []
+    try:
+        guards = [AssertTypeRevision(kind, reader.type_revision(kind)) for kind in MIXED_TEXT_TYPES]
+        for row in iter_query(reader, Query("transcript_segment", time=time)):
+            if not isinstance(row, RawRecord) or row.data_type != "transcript_segment":
+                raise Blocked("transcript_evidence_invalid")
+            if row.event_start < interval.start or row.event_end > interval.end:
+                raise Blocked("mixed_text_transcript_crosses_window")
+            if len(raw) >= MAX_MIXED_TEXT_ROWS:
+                raise Blocked("mixed_text_raw_row_budget_exceeded")
+            text = row.payload.get("text")
+            if not isinstance(text, str) or not text.strip():
+                raise Blocked("transcript_evidence_invalid")
+            raw.append(row)
+        raw.extend(read_chat_evidence(reader, interval, max_records=MAX_MIXED_TEXT_ROWS - len(raw)))
+    except SnapshotUnavailable:
+        raise
+    except PermissionDenied:
+        raise Blocked("mixed_text_evidence_not_authorized") from None
+    if not any(grounds(row) for row in raw):
+        raise Blocked("mixed_text_no_grounding_evidence")
+    return sorted(raw, key=lambda r: (r.event_start, r.id)), guards
+
+
+def _bounded_text_ask(ask: Ask) -> Ask:
+    def checked(purpose: str, data: dict[str, Any], model: type) -> Any:
+        try:
+            return ask(purpose, data, model)
+        except InputBudgetExceeded:
+            # No splitting, truncation or partial summaries in this pilot.
+            raise Blocked("mixed_text_input_budget_exceeded") from None
+
+    return checked
 
 
 def preview_reextract(reader: Reader, interval: Interval) -> dict:
@@ -134,11 +189,29 @@ def extract_plan(
     timeline_max_calls: int | None = None,
     timeline_review_wave: ReviewWave | None = None,
     timeline_review_concurrency: int = 1,
+    chat_evidence: bool = False,
+    mixed_text: bool = False,
 ) -> tuple[list[WriteOp], dict]:
     validate_summary_rule_config(transcript_only, transcript_summary_rule_id)
+    if chat_evidence and (
+        transcript_only
+        or transcript_summary_rule_id is not None
+        or session_windows
+        or course_blocks
+        or course_draft_guard is not None
+        or scoped_transcript_guard is not None
+        or automatic_timeline is not None
+    ):
+        # Separate strict guard: the audio-only guarded flows (transcript-only, course
+        # sessions, automatic timeline and their historical replacement) never read chat.
+        raise Blocked("chat_evidence_requires_general_flow")
     assert command.interval is not None
     interval = command.interval
     minimum = timedelta(minutes=activity_min_duration_minutes)
+    if mixed_text and (
+        not chat_evidence or command.kind != "extract" or command.preview is not None
+    ):
+        raise Blocked("mixed_text_requires_fresh_chat_extract")
     course_reextract = command.kind == "reextract" and (
         course_draft_guard is not None or automatic_timeline is not None
     )
@@ -208,8 +281,14 @@ def extract_plan(
             counts.append(len(part))
         if scoped_transcript_guard is not None:
             scoped_transcript_guard.raw_counts = tuple(counts)
+    elif mixed_text:
+        raw, revision_guards = _mixed_text_input(reader, interval)
+        ops.extend(revision_guards)
+        ask = _bounded_text_ask(ask)
     else:
-        raw = raw_inputs(reader, interval, transcript_only=transcript_only)
+        raw = raw_inputs(
+            reader, interval, transcript_only=transcript_only, chat_evidence=chat_evidence
+        )
     if old is not None:
         old.check_evidence(raw)
     candidates = None
@@ -219,9 +298,22 @@ def extract_plan(
         # the snapshot lease; the one-time course path takes no snapshot at all.
         if release_snapshot is not None:
             release_snapshot()
+    elif mixed_text:
+        candidates = load_rule_candidates(reader)
+        candidates = replace(
+            candidates,
+            records=[
+                r for r in candidates.records if Rule.model_validate(r.payload).action is None
+            ],
+        )
+        if release_snapshot is not None:
+            release_snapshot()
     session = None
     draft_spans = course_draft_guard.spans if course_draft_guard is not None else None
     detail = {}
+    if chat_evidence:
+        # Counts only (no text/ids): shows whether this run was pure chat or mixed.
+        detail["chat_evidence"] = chat_counts(raw)
     if automatic_timeline is not None:
         assert old is not None and timeline_max_calls is not None
         assert timeline_review_wave is not None
@@ -276,16 +368,25 @@ def extract_plan(
         by_id = {r.id: r for r in raw}  # The session compiler already checked duplicates.
         activity_deps = transcript_dependencies(list(by_id.values()))
     else:
-        result = segment(ask, interval, raw, transcript_only=transcript_only)
+        result = segment(ask, interval, raw, transcript_only=transcript_only, mixed_text=mixed_text)
         by_id = {r.id: r for r in raw}
         activity_deps = transcript_dependencies(raw) if transcript_only else []
         kept: list[Activity] = []
         short: list[Activity] = []
+        claim_only: list[Activity] = []
         for activity in result.activities:
             validate_anonymous_activity(activity)
-            (kept if meets_activity_floor(activity, by_id, minimum) else short).append(activity)
+            if not has_grounding(activity.evidence_ids, by_id):
+                # Only assistant claims or session labels: not an observed activity.
+                claim_only.append(activity)
+            elif meets_activity_floor(activity, by_id, minimum):
+                kept.append(activity)
+            else:
+                short.append(activity)
         detail.update(duration_audit(short))
-        if short:
+        if claim_only:
+            detail["claim_only_candidates"] = len(claim_only)
+        if short or claim_only:
             result = result.model_copy(
                 update={
                     "activities": kept,
@@ -298,12 +399,18 @@ def extract_plan(
         # Generic preview permits whole-family retirement, but here there is no
         # successor/citation guard. Keep all old objects if any proposed fragment
         # was withheld or if the replacement is empty; don't partially retire.
-        if ops and (not result.activities or "below_min_duration_candidates" in detail):
+        if ops and (
+            not result.activities
+            or "below_min_duration_candidates" in detail
+            or "claim_only_candidates" in detail
+        ):
             raise SessionCoverageBlocked(
                 "reextract_incomplete_activity_replacement",
                 detail.get("below_min_duration_rows", 0),
                 detail=detail,
             )
+    if mixed_text and not result.activities:
+        raise SessionCoverageBlocked("mixed_text_no_supported_activity", 0, detail=detail)
     for activity in result.activities:
         # Keep segmentation independent from attribution and only validate its raw references.
         validate_anonymous_activity(activity)
@@ -330,8 +437,18 @@ def extract_plan(
             # Boundary placement and any merge used the entire segmentation input,
             # not just the records cited in this activity or consumed by its rules.
             deps = activity_deps
+        elif mixed_text:
+            time = TimeRange(activity.start, activity.end)
+            current = Inputs(
+                [r for r in raw if time.overlaps(r.event_start, r.event_end)],
+                [],
+                [],
+                mixed_text=True,
+            )
+            # Same generic dependency semantics; immutable raw IDs remain citations.
+            deps = []
         else:
-            current = inputs(reader, activity)
+            current = inputs(reader, activity, chat_evidence=chat_evidence)
             deps = []
         ops.append(RegisterDependencies("activity", aid, deps))
         rules = candidates if candidates is not None else load_rule_candidates(reader)
@@ -353,17 +470,19 @@ def extract_plan(
                 else {}
             ),
         }
-    if not transcript_only or (detail and not result.activities):
+    if not mixed_text and (not transcript_only or (detail and not result.activities)):
         detail["empty_reason"] = result.empty_reason
     return ops, {**detail, "activities": len(result.activities)}
 
 
 def apply_plan(
-    reader: Reader, command: Command, run_id: str, ask: Ask
+    reader: Reader, command: Command, run_id: str, ask: Ask, *, chat_evidence: bool = False
 ) -> tuple[list[WriteOp], dict]:
     activity = semantic(reader, command.target_id, "activity")
     interval = range_of(activity)
-    data = inputs(reader, interval)
+    data = inputs(reader, interval, chat_evidence=chat_evidence)
+    if not chat_evidence:
+        refuse_unreadable_chat(reader, activity.payload.get("evidence_ids"), data.raw)
     ops: list[WriteOp] = []
     if command.kind == "extract_once":
         assert command.rule is not None
@@ -419,7 +538,9 @@ def apply_plan(
     return ops, {"artifact_id": id}
 
 
-def rejudge_plan(reader: Reader, command: Command, ask: Ask) -> ReevaluationPlan:
+def rejudge_plan(
+    reader: Reader, command: Command, ask: Ask, *, chat_evidence: bool = False
+) -> ReevaluationPlan:
     artifact = reader.get(command.target_id) if command.target_id else None
     if not isinstance(artifact, SemanticRecord):
         return unavailable(None, "artifact_missing")
@@ -436,7 +557,17 @@ def rejudge_plan(reader: Reader, command: Command, ask: Ask) -> ReevaluationPlan
         return terminate(
             artifact, "activity_unavailable", [guard, *pending_replacements(reader, {artifact.id})]
         )
-    data = inputs(reader, range_of(activity))
+    data = inputs(reader, range_of(activity), chat_evidence=chat_evidence)
+    if not chat_evidence:
+        # Never rewrite notes from a flow that cannot see the chat rows they cite.
+        refuse_unreadable_chat(
+            reader,
+            [
+                *(activity.payload.get("evidence_ids") or []),
+                *(artifact.payload.get("evidence_ids") or []),
+            ],
+            data.raw,
+        )
     result: Generated = ask(
         "reevaluation",
         {

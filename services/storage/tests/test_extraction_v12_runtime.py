@@ -1,9 +1,19 @@
 """One opt-in isolated PG/HTTP v1.2 wire test. Synthetic model; no audio/calendar."""
 
+from datetime import timedelta
+
 import pytest
-from ear_contracts import Cause, DataChanged, ReevaluationRequested, SemanticRecord, new_id
+from ear_contracts import (
+    Cause,
+    DataChanged,
+    ReevaluationRequested,
+    SemanticRecord,
+    VersionRef,
+    new_id,
+)
+from ear_contracts.optional_sources import chat_specs
 from ear_extraction.demo import DemoGateway, fixture_registry
-from ear_extraction.domain import Command, Interval, Rule
+from ear_extraction.domain import Command, Interval, MixedTextScope, Rule
 from ear_extraction.orchestration import (
     COMPLETION_CONSUMER,
     CONSUMER,
@@ -12,12 +22,23 @@ from ear_extraction.orchestration import (
 )
 from ear_extraction.persistence import records
 from ear_extraction.segmentation import RAW_TYPES
-from ear_storage import PostgresStorage, bootstrap, migrate
+from ear_storage import PostgresStorage, SnapshotLimits, bootstrap, migrate
 from ear_storage.auth import AuthOperator
 from ear_storage.service import StorageService
-from ear_storage_client import AppendRaw, Context, Create, PublishReevaluation, Update
+from ear_storage_client import (
+    AppendRaw,
+    Context,
+    Create,
+    PermissionDenied,
+    PublishReevaluation,
+    Query,
+    RegisterDependencies,
+    Update,
+)
 from ear_storage_client.remote import RemoteStorageClient
+from ear_storage_client.remote_errors import ResourceLimit
 from ear_storage_client.testing import make_raw, ts
+from ear_storage_client.wire import SnapshotProfile
 
 from .test_http_postgres import live_server
 
@@ -182,3 +203,148 @@ def test_v12_selection_and_artifact_finish_over_real_pg_http(pg_dsn):
         assert isinstance(terminal, SemanticRecord) and terminal.superseded
         assert client.get_version(artifact.id, 1) == artifact
         assert not records(client, "action_suggestion")
+
+
+def test_mixed_text_graphless_snapshot_keeps_full_grant_subset_over_real_pg_http(pg_dsn):
+    migrate(pg_dsn)
+    bootstrap(pg_dsn, fixture_registry().extend_core(*chat_specs()))
+    store = PostgresStorage(pg_dsn)
+    start = ts("2026-11-22T14:00:00Z")
+    interval = Interval(start=start, end=start + timedelta(minutes=30))
+    transcript = make_raw(
+        "transcript_segment",
+        {"text": "synthetic transcript"},
+        start=start,
+        end=start + timedelta(minutes=1),
+    )
+    message = make_raw(
+        "chat_message",
+        {
+            "conversation_id": "synthetic",
+            "message_id": "one",
+            "role": "user",
+            "text": "synthetic message",
+        },
+        start=start + timedelta(minutes=12),
+    )
+    voiceprint = make_raw("voiceprint", {}, start=start)
+    store.client("adapter").write(
+        [AppendRaw(r) for r in (transcript, message, voiceprint)],
+        Context.system(),
+    ).check()
+    local = store.client("extraction")
+    rule = new_id()
+    local.write(
+        [Create("rule", rule, Rule(scope="synthetic", instruction="notes").model_dump())],
+        Context.system(),
+    ).check()
+    old = [new_id() for _ in range(22)]
+    local.write(
+        [
+            op
+            for id in old
+            for op in (
+                Create(
+                    "activity",
+                    id,
+                    {},
+                    event_start=start - timedelta(days=1),
+                    event_end=start - timedelta(hours=1),
+                ),
+                RegisterDependencies(
+                    "activity", id, [VersionRef(data_type="rule", id=rule, version=1)]
+                ),
+            )
+        ],
+        Context.system(),
+    ).check()
+    feedback = make_raw(
+        "feedback",
+        {
+            "module": "extraction",
+            "command": Command(kind="extract", interval=interval).model_dump(mode="json"),
+        },
+        start=interval.end,
+    )
+    [event] = (
+        store.client("api")
+        .write([AppendRaw(feedback)], Context.feedback(feedback.id))
+        .check()
+        .events
+    )
+    assert isinstance(event, DataChanged)
+    operator = AuthOperator(pg_dsn)
+    grants = {
+        "transcript_segment",
+        "voiceprint",
+        "chat_message",
+        "chat_session",
+        "chat_attachment",
+        "feedback",
+        "activity",
+        "rule",
+        "artifact",
+        "extraction_run",
+        "rule_selection",
+    }
+    issued = operator.issue_principal("extraction", read_types=grants, subscribe_types=["feedback"])
+    operator.reserve_consumer_identity(CONSUMER, issued.principal_id)
+
+    class Client(RemoteStorageClient):
+        # Same existing wire profile selected by PumpStorage in mixed mode.
+        def snapshot(self, *, profile: SnapshotProfile | None = None):
+            return super().snapshot(profile=profile or "transcript_extraction")
+
+    calls = []
+
+    class Model:
+        def complete(self, call):
+            calls.append(call.purpose)
+            if call.purpose == "segmentation":
+                assert [r["id"] for r in call.data["evidence"]] == [transcript.id, message.id]
+                return {
+                    "activities": [
+                        {
+                            **call.data["interval"],
+                            "title_md": "Synthetic",
+                            "evidence_ids": [transcript.id, message.id],
+                        }
+                    ]
+                }
+            if call.purpose == "selection":
+                return {"rule_ids": [rule]}
+            return {"body_md": "Synthetic note", "evidence_ids": [message.id]}
+
+    with (
+        live_server(StorageService(pg_dsn, snapshot_limits=SnapshotLimits(max_rows=66))) as url,
+        Client(issued.token, url) as client,
+    ):
+        with pytest.raises(ResourceLimit):
+            client.create_snapshot()
+        with client.snapshot() as view:
+            assert view.count(Query("voiceprint")) == 1  # No implicit type filter.
+            assert view.get(message.id) == client.get(message.id)
+            assert view.type_revision("chat_message") == client.type_revision("chat_message")
+            with pytest.raises(PermissionDenied):
+                view.count(Query("gps_point"))
+            with pytest.raises(PermissionDenied):
+                view.dependencies_of(old[0])
+        worker = ExtractionService(
+            client,
+            Model(),
+            chat_evidence=True,
+            mixed_text=MixedTextScope(feedback_id=feedback.id, interval=interval),
+        )
+        worker.handle_event(event)
+        assert client.is_processed(CONSUMER, event.event_id)
+        worker.process(event.event_id)
+        run = client.get_system_record(event.event_id)
+        assert run is not None and run.payload["status"] == "succeeded", run
+        assert client.query(
+            Query("extraction_run", where={"root_feedback_id": feedback.id})
+        ).items == (run,)
+        assert calls == ["segmentation", "selection", "generation"]
+        [artifact] = records(client, "artifact")
+        assert artifact.payload["evidence_ids"] == [message.id]
+        assert len(client.dependencies_of(artifact.id)) == 2
+        assert len(client.dependencies_of(old[0])) == 1
