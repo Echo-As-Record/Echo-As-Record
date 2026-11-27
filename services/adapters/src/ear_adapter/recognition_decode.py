@@ -9,6 +9,8 @@ Borrow the verified, pinned stream at byte zero; the caller owns post-read
 verification. Children get only a sealed anonymous copy on stdin (``fd:``), raw
 PCM or bounded probe output on stdout, no inherited environment or extra FDs,
 and no stderr. External MOV references are disabled. Python writes RIFF sizes.
+The opt-in long path instead spools to unnamed private scratch, handing children
+only a read-only copy of the MOV through stdin and streaming their PCM to disk.
 This is not an OS sandbox. Deploy a maintained build with appropriate isolation.
 Deadlines bound child I/O, not process creation, regular-file reads or kernel
 stalls. Cleanup targets the initial process group; requires normal SIGCHLD and
@@ -27,6 +29,7 @@ import signal
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 import weakref
 from contextlib import suppress
@@ -37,12 +40,18 @@ from typing import BinaryIO
 from ear_adapter.convert import FileRef
 from ear_adapter.native_channels import CaptureInput
 from ear_adapter.native_pipeline import AmbientEvent, ASRResult, RecognitionProvider, SpeakerResult
-from ear_adapter.recognition_process import _read_wav
+from ear_adapter.recognition_process import _read_wav, _wav_extent
 
 _RATE = 16_000
 _INPUT_CAP = 8 << 20
 _PROBE_CAP = 512 << 10
 _PACKET_CAP = 4096
+# Phone captures nominally close at 30 minutes; allow 60 seconds for delayed close.
+LONG_MAX_SECONDS = 31 * 60
+_LONG_INPUT_CAP = 128 << 20
+_LONG_PROBE_CAP = 16 << 20
+_LONG_PACKET_CAP = 90_000
+_COPY_BLOCK = 65_536
 _AAC_FRAME = 1024
 _CLOCK_SLOP = timedelta(milliseconds=1)  # Same timestamp tolerance as RecognitionProcess.
 _WAV_TYPES = ("audio/wav", "audio/x-wav")
@@ -67,34 +76,39 @@ def _input(audio: BinaryIO, size: int) -> bytes:
     return raw
 
 
-def _mdat(raw: bytes) -> tuple[int, int]:
+def _mdat(source: BinaryIO, file_size: int) -> tuple[int, int]:
     # Every byte of the single mdat must be accounted for by visible packets,
     # even when a MOV edit list would otherwise hide packets.
     left = 0
     seen: set[bytes] = set()
     extent = (0, 0)
     for _ in range(32):
-        if left == len(raw):
+        if left == file_size:
             break
-        _require(len(raw) - left >= 8)
-        size, tag = struct.unpack_from(">I4s", raw, left)
+        _require(file_size - left >= 8)
+        source.seek(left)
+        box = source.read(8)
+        _require(len(box) == 8)
+        size, tag = struct.unpack(">I4s", box)
         _require(left != 0 or tag == b"ftyp")
         _require(tag in (b"ftyp", b"moov", b"mdat", b"free", b"skip", b"wide"))
         head = 8
         if size == 1:
-            _require(len(raw) - left >= 16)
-            size = struct.unpack_from(">Q", raw, left + 8)[0]
+            _require(file_size - left >= 16)
+            extended = source.read(8)
+            _require(len(extended) == 8)
+            size = struct.unpack(">Q", extended)[0]
             head = 16
         elif size == 0 and tag == b"mdat":
-            size = len(raw) - left
-        _require(head <= size <= len(raw) - left)
+            size = file_size - left
+        _require(head <= size <= file_size - left)
         if tag in (b"ftyp", b"moov", b"mdat"):
             _require(tag not in seen and size >= head + (8 if tag == b"ftyp" else 1))
             seen.add(tag)
         if tag == b"mdat":
             extent = (left + head, left + size)
         left += size
-    _require(left == len(raw) and len(seen) == 3)
+    _require(left == file_size and len(seen) == 3)
     return extent
 
 
@@ -120,10 +134,17 @@ class _Track:
     full_frames: int  # same, if the decoder emits the whole final AAC access unit
 
 
-def _track(reply: bytearray, extent: tuple[int, int], span: timedelta) -> _Track:
+def _track(
+    reply: bytearray,
+    extent: tuple[int, int],
+    span: timedelta,
+    *,
+    max_seconds: int = 30,
+    packet_cap: int = _PACKET_CAP,
+) -> _Track:
     info = json.loads(reply)
     streams, packets = info["streams"], info["packets"]
-    _require(len(streams) == 1 and isinstance(packets, list) and 0 < len(packets) <= _PACKET_CAP)
+    _require(len(streams) == 1 and isinstance(packets, list) and 0 < len(packets) <= packet_cap)
     s = streams[0]
     codec = s["codec_name"]
     _require(
@@ -137,7 +158,7 @@ def _track(reply: bytearray, extent: tuple[int, int], span: timedelta) -> _Track
     rate = _number(s["sample_rate"])
     _require(16_000 <= rate <= 48_000 and s["time_base"] == f"1/{rate}")
     declared = s["duration_ts"]
-    _require(type(declared) is int and rate <= declared <= 30 * rate)
+    _require(type(declared) is int and rate <= declared <= max_seconds * rate)
     frames = _ceil_frames(declared, rate)
     _require(abs(timedelta(microseconds=round(frames * 1_000_000 / _RATE)) - span) <= _CLOCK_SLOP)
 
@@ -177,13 +198,16 @@ def _track(reply: bytearray, extent: tuple[int, int], span: timedelta) -> _Track
     return _Track(codec, frames, _ceil_frames(declared + tail, rate))
 
 
-def _collect(child: subprocess.Popen[bytes], cap: int, deadline: float) -> bytearray:
+def _collect(
+    child: subprocess.Popen[bytes], cap: int, deadline: float, *, sink: BinaryIO | None = None
+) -> tuple[bytearray, int]:
     # Unlike the model transport (_exchange), these children need seekable
     # stdin and no parent-side pipe writer. Only stdout is pumped.
     assert child.stdout is not None
     fd = child.stdout.fileno()
     os.set_blocking(fd, False)
     output = bytearray()
+    total = 0
     eof = False
     with selectors.DefaultSelector() as sel:
         sel.register(fd, selectors.EVENT_READ)
@@ -198,25 +222,31 @@ def _collect(child: subprocess.Popen[bytes], cap: int, deadline: float) -> bytea
                 if exited.si_code != os.CLD_EXITED or exited.si_status:
                     raise RecognitionDecodeError("audio decoder failed")
                 if eof:
-                    return output
+                    return output, total
             ready = sel.select(0 if exited is not None else min(remaining, 0.05))
             if exited is not None and not ready:
                 raise RecognitionDecodeError("audio decoder left stdout open")
             if ready:
                 try:
-                    part = os.read(fd, min(65_536, cap + 1 - len(output)))
+                    part = os.read(fd, min(_COPY_BLOCK, cap + 1 - total))
                 except BlockingIOError:
                     continue
                 if not part:
                     sel.unregister(fd)
                     eof = True
-                elif len(part) > cap - len(output):
+                elif len(part) > cap - total:
                     raise RecognitionDecodeError("audio decoder output limit")
                 else:
-                    output.extend(part)
+                    if sink is None:
+                        output.extend(part)
+                    else:
+                        _require(sink.write(part) == len(part))
+                    total += len(part)
 
 
-def _run(command: tuple[str, ...], source: BinaryIO, cap: int, deadline: float) -> bytearray:
+def _run_to(
+    command: tuple[str, ...], source: BinaryIO, cap: int, deadline: float, *, sink: BinaryIO | None
+) -> tuple[bytearray, int]:
     if deadline <= time.monotonic():
         raise RecognitionDecodeError("audio decoder timed out")
     source.seek(0)
@@ -233,7 +263,7 @@ def _run(command: tuple[str, ...], source: BinaryIO, cap: int, deadline: float) 
         bufsize=0,
     )
     try:
-        return _collect(child, cap, deadline)
+        return _collect(child, cap, deadline, sink=sink)
     finally:
         try:
             with suppress(ProcessLookupError):
@@ -242,6 +272,19 @@ def _run(command: tuple[str, ...], source: BinaryIO, cap: int, deadline: float) 
             assert child.stdout is not None
             child.stdout.close()
             child.wait(timeout=1)
+
+
+def _run(command: tuple[str, ...], source: BinaryIO, cap: int, deadline: float) -> bytearray:
+    return _run_to(command, source, cap, deadline, sink=None)[0]
+
+
+def _copy(source: BinaryIO, dest: BinaryIO, size: int, deadline: float) -> None:
+    while size:
+        if time.monotonic() >= deadline:
+            raise RecognitionDecodeError("audio decoder timed out")
+        block = source.read(min(size, _COPY_BLOCK))
+        _require(0 < len(block) <= size and dest.write(block) == len(block))
+        size -= len(block)
 
 
 def _wav(pcm: bytearray) -> bytes:
@@ -343,79 +386,149 @@ class FFmpegDecoder:
             pass
         raise RecognitionDecodeError("audio normalization rejected")
 
+    def _probe_command(self) -> tuple[str, ...]:
+        return (
+            self._ffprobe,
+            *_GLOBAL,
+            "-threads",
+            "1",
+            *_MOV,
+            "-codec_whitelist",
+            "aac,alac",
+            "-show_entries",
+            _PROBE_FIELDS,
+            "-of",
+            "json=compact=1",
+            "fd:",
+        )
+
+    def _pcm_command(self, codec: str) -> tuple[str, ...]:
+        return (
+            self._ffmpeg,
+            *_GLOBAL,
+            "-nostdin",
+            "-xerror",
+            "-filter_threads",
+            "1",
+            "-threads",
+            "1",
+            *_MOV,
+            "-codec_whitelist",
+            codec,
+            "-c:a",
+            codec,
+            "-i",
+            "fd:",
+            "-map",
+            "0:a:0",
+            "-vn",
+            "-sn",
+            "-dn",
+            "-map_metadata",
+            "-1",
+            "-map_chapters",
+            "-1",
+            "-ac",
+            "1",
+            "-ar",
+            str(_RATE),
+            "-c:a",
+            "pcm_s16le",
+            "-threads:a",
+            "1",
+            "-f",
+            "s16le",
+            "pipe:1",
+        )
+
     def _m4a(self, raw: bytes, span: timedelta) -> bytes:
-        extent = _mdat(raw)
         with os.fdopen(
             os.memfd_create("", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING), "w+b", buffering=0
         ) as source:
             _require(source.write(raw) == len(raw))
             fcntl.fcntl(source, _ADD_SEALS, _SEALS)
+            extent = _mdat(source, len(raw))
             deadline = time.monotonic() + self._timeout
-            reply = _run(
-                (
-                    self._ffprobe,
-                    *_GLOBAL,
-                    "-threads",
-                    "1",
-                    *_MOV,
-                    "-codec_whitelist",
-                    "aac,alac",
-                    "-show_entries",
-                    _PROBE_FIELDS,
-                    "-of",
-                    "json=compact=1",
-                    "fd:",
-                ),
-                source,
-                _PROBE_CAP,
-                deadline,
-            )
+            reply = _run(self._probe_command(), source, _PROBE_CAP, deadline)
             track = _track(reply, extent, span)
-            pcm = _run(
-                (
-                    self._ffmpeg,
-                    *_GLOBAL,
-                    "-nostdin",
-                    "-xerror",
-                    "-filter_threads",
-                    "1",
-                    "-threads",
-                    "1",
-                    *_MOV,
-                    "-codec_whitelist",
-                    track.codec,
-                    "-c:a",
-                    track.codec,
-                    "-i",
-                    "fd:",
-                    "-map",
-                    "0:a:0",
-                    "-vn",
-                    "-sn",
-                    "-dn",
-                    "-map_metadata",
-                    "-1",
-                    "-map_chapters",
-                    "-1",
-                    "-ac",
-                    "1",
-                    "-ar",
-                    str(_RATE),
-                    "-c:a",
-                    "pcm_s16le",
-                    "-threads:a",
-                    "1",
-                    "-f",
-                    "s16le",
-                    "pipe:1",
-                ),
-                source,
-                2 * track.full_frames,
-                deadline,
-            )
+            pcm = _run(self._pcm_command(track.codec), source, 2 * track.full_frames, deadline)
         _require(len(pcm) in (2 * track.frames, 2 * track.full_frames))
         del pcm[2 * track.frames :]
         return _wav(pcm)
+
+    def _long_pcm(
+        self,
+        audio: BinaryIO,
+        capture: CaptureInput,
+        pcm: BinaryIO,
+        *,
+        deadline: float,
+        scratch_dir: str | None,
+    ) -> tuple[int, str]:
+        """Write to an empty private scratch file. Return frame count and source codec."""
+        try:
+            deadline = min(deadline, time.monotonic() + self._timeout)
+            size = capture.file_ref.size
+            span = capture.ended_at - capture.started_at
+            _require(timedelta(seconds=1) <= span <= timedelta(seconds=LONG_MAX_SECONDS))
+            _require(0 < size <= _LONG_INPUT_CAP and audio.tell() == 0)
+            if capture.media_type in _WAV_TYPES:
+                _require(44 <= size <= (2 * _RATE * LONG_MAX_SECONDS) + 65_536)
+                audio.seek(0, os.SEEK_END)
+                _require(audio.tell() == size)
+                audio.seek(0)
+                offset, n = _wav_extent(audio, size, 2 * _RATE * LONG_MAX_SECONDS, max_chunks=8192)
+                _require(size - n <= 65_536)
+                frames = n // 2
+                _require(
+                    abs(timedelta(microseconds=round(frames * 1_000_000 / _RATE)) - span)
+                    <= _CLOCK_SLOP
+                )
+                audio.seek(offset)
+                _copy(audio, pcm, n, deadline)
+                return frames, "pcm_s16le"
+            _require(capture.media_type == "audio/mp4")
+            # Copy bytes, not the original descriptor/path. Only the parent holds
+            # the writable scratch fd; children receive a fresh read-only description.
+            with tempfile.TemporaryFile(dir=scratch_dir, buffering=0) as spool:
+                _copy(audio, spool, size, deadline)
+                _require(not audio.read(1))
+                with open(f"/proc/self/fd/{spool.fileno()}", "rb", buffering=0) as source:
+                    extent = _mdat(source, size)
+                    reply = _run(self._probe_command(), source, _LONG_PROBE_CAP, deadline)
+                    track = _track(
+                        reply,
+                        extent,
+                        span,
+                        max_seconds=LONG_MAX_SECONDS,
+                        packet_cap=_LONG_PACKET_CAP,
+                    )
+                    del reply
+                    _, n = _run_to(
+                        self._pcm_command(track.codec),
+                        source,
+                        2 * track.full_frames,
+                        deadline,
+                        sink=pcm,
+                    )
+            _require(n in (2 * track.frames, 2 * track.full_frames))
+            pcm.truncate(2 * track.frames)
+            return track.frames, track.codec
+        except RecognitionDecodeError:
+            raise
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+            KeyError,
+            IndexError,
+            OverflowError,
+            RecursionError,
+            AttributeError,
+            subprocess.SubprocessError,
+        ):
+            pass
+        raise RecognitionDecodeError("audio normalization rejected")
 
 
 @dataclass(slots=True)
