@@ -156,7 +156,8 @@ def test_disabled_without_configuration_or_under_either_noauth_role(selection_pa
     assert json.loads(selection_path.read_bytes()) == INITIAL
 
 
-def test_loopback_admin_opt_in_without_api_tokens(selection_path):
+@pytest.mark.parametrize("chat_enabled", [False, True])
+def test_loopback_admin_opt_in_without_api_tokens(selection_path, chat_enabled):
     origin = "http://127.0.0.1:18186"
     raw = settings("http://upstream.invalid", public_origin=origin).model_dump()
     for binding in raw["bindings"]:
@@ -167,6 +168,7 @@ def test_loopback_admin_opt_in_without_api_tokens(selection_path):
         test_no_auth=True,
         test_no_auth_role="admin",
         test_no_auth_model_settings=True,
+        chat_evidence_read=chat_enabled,
         model_settings_file=selection_path,
     )
     for invalid in (
@@ -188,6 +190,7 @@ def test_loopback_admin_opt_in_without_api_tokens(selection_path):
         assert client.get("/v1/session").json() == {
             "test_no_auth": True,
             "test_no_auth_model_settings": True,
+            **({"chat_evidence_read": True} if chat_enabled else {}),
         }
         assert client.put(ROUTE, json=INITIAL).json() == {"code": "origin_required"}
         for bad in (

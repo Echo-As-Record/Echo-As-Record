@@ -50,6 +50,9 @@ reviewed-at: 2026-11-01
 | 环境声 | `ambient_sound` |
 | GPS 点 | `gps_point` |
 | 手机信息 | `phone_info` |
+| 聊天会话 | `chat_session` |
+| 聊天消息 | `chat_message` |
+| 聊天附件 | `chat_attachment` |
 | 用户反馈 | `feedback` |
 
 ## 语义信息类型（`data_type`）

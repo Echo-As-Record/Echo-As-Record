@@ -27,6 +27,9 @@ jobs:
       - name: Plugin management and workspace UI tests
         run: node --test services/api/tests/ui/core.test.js services/api/tests/ui/page.test.js services/api/tests/ui/workspace-flat.test.js
 
+      - name: LibreChat exporter tests
+        run: node --test tools/tests/librechat_export.test.mjs
+
       - name: Install
         run: uv sync --locked
 

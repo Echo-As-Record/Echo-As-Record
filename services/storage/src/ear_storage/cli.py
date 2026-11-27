@@ -44,6 +44,7 @@ def main() -> None:
         choices=(
             "init-identities",
             "bootstrap-core",
+            "bootstrap-chat-source",
             "init-core-identities",
             "snapshot-sweep",
             "migrate",
@@ -72,6 +73,10 @@ def main() -> None:
 
             created = bootstrap_core(dsn)
             print(json.dumps({"status": "created" if created else "unchanged"}))
+        elif args.command == "bootstrap-chat-source":
+            from ear_contracts.optional_sources import chat_source_registry
+
+            bootstrap(dsn, chat_source_registry())
         elif args.command == "init-core-identities":
             from pathlib import Path
 

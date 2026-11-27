@@ -1,0 +1,24 @@
+{
+  "id": "0199f0a0-1111-7aaa-9bbb-000000000201",
+  "data_type": "chat_message",
+  "version": 1,
+  "event_start": "2026-11-26T08:00:00Z",
+  "event_end": "2026-11-26T08:00:00Z",
+  "ingested_at": "2026-11-26T08:10:03Z",
+  "source": {
+    "device": "librechat",
+    "channel": "librechat",
+    "user": "default"
+  },
+  "adapter_version": "librechat-chat/0.1.0",
+  "dedup_key": "librechat:message:c-1:m-2:r2",
+  "payload": {
+    "text": "把第二段改成更正式的语气。",
+    "role": "user",
+    "conversation_id": "c-1",
+    "message_id": "m-2",
+    "parent_message_id": "m-1",
+    "revision": 2,
+    "content_sha256": "3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a"
+  }
+}

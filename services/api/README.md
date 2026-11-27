@@ -52,7 +52,7 @@ HEAD **`84d2d0f` 已包含 `origin/dev ba36543`（PR #20）及此前GPS**；不�
 - 请求 Host 须与该 origin 的主机和端口一致，拒绝 DNS 重绑定主机；仅健康检查额外允许
   容器回环 `127.0.0.1:8086`。带 Origin 的请求仍须完全同源；跨站/同站非同源的
   Sec-Fetch-Site 被拒绝。所有非 GET/HEAD/OPTIONS 请求都须携带匹配的 Origin，命令行写请求亦然。
-- `GET /v1/session` 公开返回 `test_no_auth` 布尔值；仅在启用免登录模型设置时附带 `test_no_auth_model_settings: true`。不返回凭据、绑定或角色。
+- `GET /v1/session` 公开返回 `test_no_auth` 布尔值和显式开启的可选能力，不返回凭据、绑定或角色。
   `/workspace/` 和 `/plugins/` 自动连接后，根据重新验证的 `/v1/me` 显示角色；无令牌输入或登录提示。
   普通用户不发管理请求；管理员自动读取插件目录/管理结果，管理操作仍需手动提交及既有确认。
 - 免登录**不是只读 scope**：选定绑定原有的业务或管理写入口也不要求浏览器令牌。
@@ -70,6 +70,12 @@ HEAD **`84d2d0f` 已包含 `origin/dev ba36543`（PR #20）及此前GPS**；不�
 回执 `/tmp/ear-admin-noauth-20261118.json` 原样保留，不作为最终限制或验收通过依据。
 修复后已实测17类无Bearer业务读取全部200、插件目录与管理结果200，真实Chromium可浏览转写/历史并进入管理区；详细范围见[实现说明](ai-docs/implementation.md)。
 最终证据单独写入 `/tmp/ear-admin-noauth-final-20261118.json`，不改原初始化材料。
+
+#### 可选 LibreChat 证据
+
+`chat_evidence_read` 是独立的严格布尔开关，默认关闭。显式开启后，`GET /v1/source-evidence/{id}` 按 UUIDv7 读取一条聊天记录；不提供列表或搜索。返回 `id`、`kind`、UTC `start`/`end`、最多 20,000 字符的 `text`（会话标题或已存文本），不返回原始记录、文件引用或字节，也不开放通用记录路由。响应不缓存。服务端不把“被活动引用”当作授权；每次读取仍由①复核当前类型权限。
+
+默认需要 Bearer。若同时显式开启 `test_no_auth`，沿用现有回环和 Host/Origin/Sec-Fetch-Site 约束，使用固定普通用户绑定，即使会话角色是管理员也不回退或合并授权。能访问该回环实例的本地进程或转发客户端可按 ID 读取该普通绑定有权读的数据；真实聊天数据应保留 Bearer。`/v1/session` 仅在显式开启时返回 `chat_evidence_read: true`；此分支不改变任何 viewer。
 
 ### 工作台每个页面做什么
 
@@ -168,7 +174,8 @@ JSON 文件，必须是当前用户拥有的普通文件、权限不含 group/ot
 | 方法与路径 | 谁可用 | 说明 |
 |---|---|---|
 | `GET /health/live`、`GET /health/ready` | 无需认证 | 存活；就绪（范围仅为 ⑥ 到 ① 的连通） |
-| `GET /v1/session` | 无需认证 | 最小测试能力标志，无凭据/身份信息 |
+| `GET /v1/session` | 无需认证 | 测试模式标志及已开启的可选能力，无凭据/身份信息 |
+| `GET /v1/source-evidence/{id}` | 显式启用，①复核读权限 | 有界聊天文本投影；关闭时 404 |
 | `GET /v1/me` | 任一绑定 | 当前主体与角色（会先向①复核身份） |
 | `GET /v1/records/{type}` | 任一绑定 | 分页列出（`limit`、`cursor`、`start`、`end`、`include_superseded`）；类型按下述核心登记表规则推导，集合外返回 404 `not_found` |
 | `GET /v1/evidence/search` | 任一绑定 | 有界字面证据查询：`start`、`end`、`q`、`limit`、`cursor`；UTC Z非空≤24h，q长1–256，limit默认10且1–10；当前授权、live_best_effort与截断可见；不是硬deadline或完整搜索保证 |

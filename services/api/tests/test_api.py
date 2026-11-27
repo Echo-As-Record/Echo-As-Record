@@ -65,9 +65,23 @@ def test_business_types_match_core_allowlist():
     )
 
 
+def test_chat_types_stay_opt_in_and_out_of_generic_record_routes():
+    from ear_contracts.optional_sources import CHAT_TYPES
+
+    assert not set(CHAT_TYPES) & DEFAULT_REGISTRY.data_types.keys()
+    assert not set(CHAT_TYPES) & BUSINESS_TYPES
+
+
 @pytest.mark.parametrize(
     "data_type",
-    [*sorted(set(DEFAULT_REGISTRY.data_types) - BUSINESS_TYPES), "unknown_type", "demo_result"],
+    [
+        *sorted(set(DEFAULT_REGISTRY.data_types) - BUSINESS_TYPES),
+        "chat_session",
+        "chat_message",
+        "chat_attachment",
+        "unknown_type",
+        "demo_result",
+    ],
 )
 @pytest.mark.parametrize("suffix", ["", "/{id}", "/{id}?version=1", "/{id}/history"])
 @pytest.mark.parametrize("admin", [False, True])
