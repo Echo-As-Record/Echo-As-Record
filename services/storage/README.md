@@ -16,6 +16,10 @@ doc-type: reference
 - [①实施准备与 P0 拆分](ai-docs/implementation-plan.md)；[P0 契约提案（accepted；P0a a6a1c5a、P0b cf337d1 已提交并随 PR8 合入 dev）](../../docs/proposals/storage-p0-contracts.md)
 - [P1 持久化服务与 P2 Relay 工程指南（P1 已提交 d7c9919；P2/P3 后端已提交 d0d8875，消费者、管理与订阅重配置以 progress 为准）](ai-docs/persistent-service-plan.md)
 
+## 结果页周覆盖
+
+只读的 `POST /v1/coverage/week` 供⑥批量取得最多七个日期区间的 5 分钟占用格。①按当前读授权聚合录音、转写、可选聊天事件和未整体替代的活动；不返回对象标识、逐条时间或正文，不写记录或发事件。活动覆盖复用普通查询的因果来源可见性。接口不需要迁移；⑥的调用及占用格语义见[结果页](../api/README.md#只读活动与笔记)。
+
 ## 当前状态（PR8 已合入 dev 376294d）
 
 **总览（以本段为准）：** PR8 于 2026-11-07T09:32:19Z 合并为 `dev` 376294d（`gh` 只读核对；用户述已审核并合并）。dev 上 CI run 42360158060 success：pytest 1503 passed, 5 skipped, 1 warning in 583.04s，`EAR_RUN_POSTGRES_TESTS`、`EAR_RUN_NATS_TESTS`、`EAR_RUN_BACKUP_TESTS` 均为 1。这是 CI 隔离环境的结果，不是生产验收：**尚无生产启动**；③④⑤未与①完整业务联调；②命令行已支持远程单轮/常驻扫描，真实①双门控联调测试与真实旧 Ear 数据写入临时①已于 2026-11-11 本机跑通（非生产验收）；⑥ [API](../api/README.md)、⑦ [大模型入口](../llm_gateway/README.md)本次获授权开始实现，尚非完成。以下分项保留各提交时的历史记录，其中“未合并”“尚未远程运行”等措辞属历史，不改历史测试数字。
