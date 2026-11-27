@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Authenticated feedback and read-only user gateway"
 requires-python = ">=3.12"
 dependencies = [
+    "ear-adapter",
     "ear-contracts",
     "ear-storage-client",
     "ear-storage",
@@ -19,6 +20,7 @@ ear-mcp = "ear_api.mcp:main"
 ear-api = "ear_api.cli:main"
 
 [tool.uv.sources]
+ear-adapter = { workspace = true }
 ear-contracts = { workspace = true }
 ear-storage-client = { workspace = true }
 ear-storage = { workspace = true }

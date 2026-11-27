@@ -1,0 +1,11 @@
+:root { color-scheme: light dark; font: 1rem/1.55 system-ui, sans-serif; }
+body { margin: 0; }
+main { max-width: 38rem; margin: 2rem auto; padding: 0 1rem; }
+form { margin: 1rem 0; }
+fieldset { display: grid; gap: .35rem; border: 1px solid GrayText; border-radius: .5rem; padding: .9rem; }
+label { display: block; font-weight: 600; }
+fieldset label:not(:first-of-type) { margin-top: .55rem; }
+input, button { font: inherit; max-width: 100%; }
+button { width: fit-content; }
+fieldset button { margin-top: .6rem; }
+[hidden] { display: none !important; }

@@ -339,7 +339,7 @@ $$\sum_{i=1}^{n} i$$
     if (file) return send(200, fs.readFileSync(path.join(STATIC, file)), file.endsWith('.html') ? 'text/html; charset=utf-8' : file.endsWith('.js') ? 'text/javascript; charset=utf-8' : 'text/css');
     const q = new URLSearchParams(search);
     reqs.push({method: req.method, path: pathname, start: q.get('start'), source:q.get('source'), kind:q.get('kind'), cursor:q.get('cursor'), auth: req.headers.authorization === 'Bearer ' + token});
-    if (pathname === '/v1/session') return send(200, JSON.stringify({test_no_auth:noAuth,chat_evidence_read:true}));
+    if (pathname === '/v1/session') return send(200, JSON.stringify({test_no_auth:noAuth,chat_evidence_read:true,recording_upload:true}));
     if (!noAuth && req.headers.authorization !== 'Bearer ' + token) return send(401, '{"code":"unauthenticated"}');
     if (pathname === '/v1/source-timeline') {
       const kind = q.get('kind'), source = q.get('source'), cursor = q.get('cursor');
@@ -445,6 +445,7 @@ $$\sum_{i=1}^{n} i$$
   assert.equal(await evaluate('document.querySelector("#list-title").textContent'), '活动与笔记');
   assert.deepEqual(await evaluate('[...document.querySelectorAll(".list-head nav button")].map(x=>x.id)'), ['previous','next']);
   assert.equal(await evaluate('document.querySelector(".list-panel footer a").pathname'), '/workspace/');
+  assert.equal(await evaluate('document.querySelector("#recording-upload-link:not([hidden])")?.pathname'), '/recording-upload/');
   assert.deepEqual(await evaluate('[...document.querySelectorAll(".icon-rail .rail-icon")].map(x=>x.id)'), ['sidebar-toggle','results-view','timeline-view']);
   assert.deepEqual(await evaluate('[...document.querySelectorAll(".day")].map(x=>x.dataset.date)'),
     ['2026-10-26','2026-10-27','2026-10-28','2026-10-29','2026-10-30','2026-10-31','2026-11-01']);
@@ -707,4 +708,106 @@ $$\sum_{i=1}^{n} i$$
   assert.deepEqual(external, []);
   assert.deepEqual(errors, []);
   t.diagnostic(`Actual Chromium, synthetic data, desktop and mobile 390px; ${reqs.length} GET requests; no external requests or browser errors.`);
+});
+
+// Real Chromium and the packaged page, with a synthetic loopback HTTP API.
+test('recording browser: requires capture time, uploads raw bytes, and displays job progress',
+  {skip: process.env.EAR_WORKSPACE_BROWSER !== '1', timeout: 30000}, async t => {
+  const token = 'W'.repeat(43);
+  const job = '0199f0a0-0000-7aaa-9bbb-000000000001';
+  const uploads = [], reads = [], violations = [];
+  const route = '/v1/recording-uploads';
+  let noAuth = false;
+  const server = http.createServer(async (req, res) => {
+    const send = (code, data, type = 'application/json') => {
+      res.writeHead(code, {'Content-Type': type, ...HEADERS});
+      res.end(data);
+    };
+    if (req.url === '/v1/session') {
+      return send(200, JSON.stringify({test_no_auth: noAuth, recording_upload: true}));
+    }
+    if (req.url === route && req.method === 'POST') {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      uploads.push({headers: req.headers, body: Buffer.concat(chunks).toString()});
+      return send(202, JSON.stringify({id: job, duplicate: false, state: 'queued'}));
+    }
+    if (req.url === route + '/' + job && req.method === 'GET') {
+      reads.push(req.headers.authorization);
+      return send(200, JSON.stringify({id: job, state: 'blocked', attempts: 1, error: 'commit_unknown'}));
+    }
+    const files = {'/recording-upload/': ['html', 'text/html'],
+      '/recording-upload/recording-upload.js': ['js', 'text/javascript'],
+      '/recording-upload/recording-upload.css': ['css', 'text/css']};
+    if (!(req.url in files)) return send(404, '{}');
+    const [ext, type] = files[req.url];
+    return send(200, fs.readFileSync(path.resolve(STATIC, '../recording_page/recording-upload.' + ext)), type + '; charset=utf-8');
+  });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  t.after(() => { server.close(); server.closeAllConnections(); });
+  const origin = 'http://127.0.0.1:' + server.address().port;
+  const cache = path.join(os.homedir(), '.cache/ms-playwright');
+  const chrome = process.env.EAR_CHROME || path.join(cache, fs.readdirSync(cache).filter(n => n.startsWith('chromium_headless_shell')).sort().pop(), 'chrome-headless-shell-linux64/chrome-headless-shell');
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'ear-recording-browser-'));
+  const proc = spawn(chrome, ['--no-sandbox', '--disable-gpu', '--remote-debugging-port=0', '--user-data-dir=' + profile, 'about:blank'], {stdio:['ignore','ignore','pipe']});
+  const exited = new Promise(r => { proc.once('exit', r); proc.once('error', r); });
+  t.after(async () => { proc.kill(); await exited; fs.rmSync(profile, {recursive:true,force:true}); });
+  const debug = await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(Error('Chromium startup timeout')), 10000);
+    proc.once('error', e => { clearTimeout(timeout); reject(e); });
+    proc.stderr.on('data', b => {
+      const m = /DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)/.exec(String(b));
+      if (m) { clearTimeout(timeout); resolve(m[1]); }
+    });
+  });
+  const targets = await (await fetch('http://127.0.0.1:' + debug + '/json')).json();
+  const c = cdp(targets.find(x => x.type === 'page').webSocketDebuggerUrl);
+  await c.ready;
+  t.after(() => c.close());
+  c.on(event => {
+    if (event.method === 'Runtime.exceptionThrown') violations.push(event.params.exceptionDetails.text);
+    if (event.method === 'Network.requestWillBeSent') {
+      const url = event.params.request.url;
+      if ((!url.startsWith(origin + '/') && !url.startsWith('data:')) || url.includes(token)) violations.push(url);
+    }
+  });
+  for (const domain of ['Page', 'Runtime', 'Network']) await c.send(domain + '.enable');
+  const run = async expression => {
+    const r = await c.send('Runtime.evaluate', {expression, returnByValue: true});
+    assert.equal(r.exceptionDetails, undefined, JSON.stringify(r.exceptionDetails));
+    return r.result.value;
+  };
+  const until = async expression => {
+    for (let i = 0; i < 150; i++) { if (await run(expression)) return; await sleep(35); }
+    throw Error('Timed out: ' + expression);
+  };
+  await c.send('Page.navigate', {url: origin + '/recording-upload/'});
+  await until('document.getElementById("connect-form")?.hidden === false');
+  await run(`window.el = id => document.getElementById(id); el('token-input').value = '${token}'; el('connect-form').requestSubmit();`);
+  assert.equal(await run("el('token-input').value"), '');
+  const pick = `const dt = new DataTransfer(); dt.items.add(new File(['RIFF0000WAVE'], 'sample.wav')); el('audio-file').files = dt.files;`;
+  await run(`(() => { ${pick} el('upload-form').requestSubmit(); })()`);
+  assert.deepEqual(uploads, []);
+  await run("el('started-at').value = '2026-11-20T18:01:02'; el('upload-form').requestSubmit();");
+  assert.deepEqual(uploads, []);
+  await run("el('offset').value = '-07:00'; el('upload-form').requestSubmit();");
+  await until(`el('job-id').value === '${job}' && el('status').textContent.includes('已排队')`);
+  assert.equal(uploads.length, 1);
+  const [first] = uploads;
+  assert.equal(first.body, 'RIFF0000WAVE');
+  assert.equal(first.headers['content-type'], 'audio/wav');
+  assert.equal(first.headers['x-recording-started-at'], '2026-11-20T18:01:02-07:00');
+  assert.equal(first.headers.authorization, 'Bearer ' + token);
+  assert.equal(first.headers.origin, origin);
+  await until("el('status').textContent.includes('入库结果未知')");
+  assert.deepEqual(reads, ['Bearer ' + token]);
+  assert.equal(await run('sessionStorage.length + localStorage.length'), 0);
+  noAuth = true;
+  await c.send('Page.reload');
+  await until('document.getElementById("recordings")?.hidden === false');
+  assert.equal(await run('document.getElementById("connect-form").hidden'), true);
+  await run(`(() => { const el = id => document.getElementById(id); el('job-id').value = '${job}'; el('lookup-form').requestSubmit(); })()`);
+  await until("document.getElementById('status').textContent.includes('入库结果未知')");
+  assert.deepEqual(reads, ['Bearer ' + token, undefined]);
+  assert.deepEqual(violations, []);
 });

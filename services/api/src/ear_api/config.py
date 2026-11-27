@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Annotated, Literal, Self
 
 import httpx
+from ear_adapter.native_channels import MAX_AUDIO_BYTES
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 Token = Annotated[SecretStr, Field(min_length=43, max_length=43)]
@@ -42,6 +43,14 @@ class Settings(BaseModel):
     static_dir: Path | None = Path(__file__).with_name("static")
     execution_journal: Path | None = None
     model_settings_file: Path | None = None
+    recording_intake_root: Path | None = None
+    recording_intake_owner: str | None = Field(default=None, strict=True)
+    recording_upload_max_bytes: int = Field(
+        default=MAX_AUDIO_BYTES, strict=True, ge=1, le=MAX_AUDIO_BYTES
+    )
+    recording_upload_timeout: float = Field(
+        default=300, strict=True, gt=0, le=1800, allow_inf_nan=False
+    )
     execution_action_v2: bool = Field(default=False, strict=True)
     chat_evidence_read: bool = Field(default=False, strict=True)
     test_no_auth: bool = Field(default=False, strict=True)
@@ -106,9 +115,31 @@ class Settings(BaseModel):
             for role in roles:
                 if sum(b.role == role for b in self.bindings) != 1:
                     raise ValueError("test_no_auth requires exactly one binding per selected role")
+        if self.recording_intake_root is not None:
+            root = self.recording_intake_root
+            if not root.is_absolute() or not root.name or ".." in root.parts:
+                raise ValueError("recording_intake_root requires an absolute spool path")
+            if self.static_dir is not None:
+                static = self.static_dir.resolve()
+                spool = root.resolve()
+                if static.is_relative_to(spool) or spool.is_relative_to(static):
+                    raise ValueError("recording intake must be separate from static files")
+            if self.public_origin is None:
+                raise ValueError("recording intake requires an explicit public_origin")
+            if self.recording_owner is None:
+                raise ValueError("recording intake requires an explicit ordinary owner binding")
+        elif self.recording_intake_owner is not None:
+            raise ValueError("recording_intake_owner requires recording_intake_root")
         if self.static_dir is not None and not self.static_dir.is_dir():
             raise ValueError("static directory unavailable")
         return self
+
+    @property
+    def recording_owner(self) -> Binding | None:
+        subject = self.recording_intake_owner
+        if subject is None and len(self.bindings) == 1:
+            subject = self.bindings[0].subject
+        return next((b for b in self.bindings if b.role == "user" and b.subject == subject), None)
 
     def authenticate(
         self, authorization: list[str], *, admin: bool = False, session: bool = False

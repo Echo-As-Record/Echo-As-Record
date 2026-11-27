@@ -1,13 +1,15 @@
-"""Standalone FastAPI surface. Storage owns authorization and every resource change."""
+"""Standalone gateway; storage owns authoritative changes, not local audio staging."""
 
 from __future__ import annotations
 
 import re
+from asyncio import Lock
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Literal
 
+from ear_adapter.recording_intake import RecordingIntake
 from ear_contracts import RawRecord, SemanticRecord, SystemRecord, is_id
 from ear_contracts.base import UtcDatetime
 from ear_contracts.optional_sources import CHAT_TYPES
@@ -24,7 +26,7 @@ from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
 
 from ear_api import evidence, source_timeline, transcript_search
-from ear_api.boundary import Boundary, failure, response
+from ear_api.boundary import RECORDING_UPLOADS, Boundary, failure, response
 from ear_api.business import (
     BUSINESS_TYPES,
     feedback_status,
@@ -57,6 +59,7 @@ from ear_api.model_settings import (
     ModelSettingsUnavailable,
 )
 from ear_api.models import FeedbackInput, load_json_object
+from ear_api.recording_upload import accept_recording, recording_status
 from ear_api.upstream import GatewayError, Upstream
 
 
@@ -138,6 +141,11 @@ def create_app(
         ModelSettings(settings.model_settings_file)
         if settings.model_settings_file is not None
         and (not settings.test_no_auth or settings.test_no_auth_model_settings)
+        else None
+    )
+    intake = (
+        RecordingIntake(settings.recording_intake_root)
+        if settings.recording_intake_root is not None
         else None
     )
     if settings.execution_action_v2 and execution is not None:
@@ -232,7 +240,46 @@ def create_app(
             capabilities["test_no_auth_model_settings"] = True
         if settings.chat_evidence_read:
             capabilities["chat_evidence_read"] = True
+        if intake is not None:
+            capabilities["recording_upload"] = True
         return response(capabilities)
+
+    if intake is not None:
+        owner = settings.recording_owner
+        upload_slot = Lock()
+
+        def recording_binding(request: Request) -> Binding:
+            binding = authenticated(request)
+            if binding != owner:
+                raise GatewayError(403, "recording_owner_required")
+            return binding
+
+        @app.post(RECORDING_UPLOADS)
+        async def upload_recording(request: Request):
+            binding = recording_binding(request)
+
+            def verify_owner() -> None:
+                with remote.client(binding):
+                    pass
+
+            # Do not allow many slow callers to fill API scratch storage in parallel.
+            if upload_slot.locked():
+                raise GatewayError(429, "recording_upload_busy")
+            async with upload_slot:
+                receipt = await accept_recording(intake, request, settings, verify_owner)
+            return response(
+                {"id": receipt.id, "duplicate": receipt.duplicate, "state": receipt.state},
+                200 if receipt.duplicate else 202,
+            )
+
+        @app.get(RECORDING_UPLOADS + "/{job_id}")
+        def get_recording_status(job_id: str, request: Request):
+            binding = recording_binding(request)
+            if request.scope["query_string"] or request.scope["ear_api.body"]:
+                raise GatewayError(422, "invalid_input")
+            valid_id(job_id)
+            with remote.client(binding):
+                return response(recording_status(intake, job_id))
 
     @app.get("/v1/source-evidence/{record_id}")
     def source_evidence(record_id: str, request: Request):
@@ -787,6 +834,12 @@ def create_app(
         def results_home() -> Response:
             return RedirectResponse("/results/", status_code=307)
 
+        if intake is not None:
+            app.mount(
+                "/recording-upload",
+                _FlatPageFiles(Path(__file__).with_name("recording_page"), page="recording-upload"),
+                name="recording-upload",
+            )
         app.mount("/results", _FlatPageFiles(settings.static_dir, page="results"), name="results")
         app.mount("/plugins", StaticFiles(directory=settings.static_dir, html=True), name="plugins")
         app.mount(

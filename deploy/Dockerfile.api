@@ -18,6 +18,7 @@ COPY services/llm_gateway/pyproject.toml services/llm_gateway/pyproject.toml
 COPY libs/ear_contracts/src libs/ear_contracts/src
 COPY libs/ear_storage_client/src libs/ear_storage_client/src
 COPY services/storage/src services/storage/src
+COPY services/adapters/src services/adapters/src
 COPY services/extraction/src services/extraction/src
 COPY services/llm_gateway/src services/llm_gateway/src
 COPY services/api/src services/api/src

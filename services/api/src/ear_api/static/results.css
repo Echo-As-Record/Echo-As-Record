@@ -81,7 +81,7 @@ main{margin:0 auto}
 .week-controls button{font-size:.84rem;color:var(--accent);white-space:nowrap}
 button,input,select{border-radius:8px;border:1px solid var(--control-line);background:var(--control);padding:.37rem .62rem}
 button:not(:disabled):hover{background:var(--hover)}
-.list-footer{padding:.5rem .95rem .8rem;font-size:.78rem}
+.list-footer{display:flex;flex-wrap:wrap;gap:.4rem 1rem;padding:.5rem .95rem .8rem;font-size:.78rem}
 .days{display:grid;gap:.45rem;padding:.65rem}
 .week-pages{position:relative;overflow:clip}
 .week-outgoing{position:absolute;inset:0;pointer-events:none}

@@ -727,6 +727,7 @@
       if (!r.ok || typeof r.data.test_no_auth !== 'boolean') { disconnect(`无法连接：${errText(r.error)}`); return; }
       noAuth = r.data.test_no_auth;
       chatEnabled = r.data.chat_evidence_read === true;
+      $('recording-upload-link').hidden = r.data.recording_upload !== true;
       if (!noAuth) { disconnect('输入 API 令牌以查看结果。令牌只在当前页面内存中保留。'); return; }
       net.setNoAuth(); connect();
     }
