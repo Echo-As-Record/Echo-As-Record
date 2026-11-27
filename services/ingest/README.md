@@ -5,7 +5,7 @@ doc-type: reference
 
 # Ingest：手机录音接收服务
 
-接收手机 multipart 上传，写入旧 Ear 已有的 Brain inbox 布局。可按单条事件通知旧 Ear 转写和处理上下文，② adapters 继续读取 Evidence API。本服务不写①，不修改旧 Ear，不承担音频处理或 Octopus 服务发现。
+接收手机 multipart 上传。默认写入旧 Ear 已有的 Brain inbox 布局，可按单条事件通知旧 Ear 转写和处理上下文；另可显式切换到②的原生录音接收队列。本服务不写①，不修改旧 Ear，不承担音频处理或 Octopus 服务发现。
 
 本次实现依据负责人直接授权的接收服务任务；[抽取提案](../../docs/proposals/phone-recorder-extraction.md)已采纳。这里的旧格式、覆盖重传和本机时间目录属于外部 inbox 兼容边界，不改变①的只追加及 UTC 数据契约。
 
@@ -23,11 +23,37 @@ uv run ear-ingest serve --host 0.0.0.0 --port 8791
 | 环境变量 | 含义 |
 |---|---|
 | `EAR_INGEST_TOKEN` | 必需的共享 bearer token；未配置或全空白时启动失败 |
-| `EAR_INGEST_INBOX_ROOT` | 默认 `~/.local/share/ear/inbox/brain`；旧部署可显式设为 `~/.octopus/local/inbox/brain`；测试务必使用临时目录 |
+| `EAR_INGEST_INBOX_ROOT` | 仅旧模式使用，默认 `~/.local/share/ear/inbox/brain`；旧部署可显式设为 `~/.octopus/local/inbox/brain`；测试务必使用临时目录 |
 | `EAR_INGEST_EVENT_URL` | 推荐配置。旧 Ear 可直连的单条事件完整 URL，例如 `http://127.0.0.1:8794/internal/api/ingest/brain-event` |
 | `EAR_INGEST_NOTIFY_URL` | 兼容旧部署，可选的 `/api/ingest/reconcile` 完整 URL。与 EVENT_URL 互斥 |
+| `EAR_INGEST_NATIVE_ROOT` | 显式启用原生模式，设为②原生队列的私有绝对路径。与两种旧通知 URL 均互斥；不读写旧 inbox |
+| `EAR_INGEST_NATIVE_MAX_BYTES` | 原生上传的请求正文上限（含 multipart 开销），默认 134217728 字节，允许 1–536870912；②仍可按媒体类型施加更小的附件上限 |
 
 `GET /health` 无需鉴权，返回 `{"ok": true}`；不检测旧 Ear、磁盘空间或通知连接。CLI 默认绑定 `127.0.0.1:8791`，可用 `--host`、`--port` 修改。文件锁采用 POSIX `flock`，支持本机 macOS/Linux；部署文件系统须支持该锁与原子 rename。
+
+## 原生自动接入（可选）
+
+默认仍为旧模式。为同一接收地址处理上传的所有进程（普通、配对、加密中继）配置同一个 `EAR_INGEST_NATIVE_ROOT`，同时去掉两种旧通知 URL；混用的单个进程会拒绝启动。路径及其父级需符合②原生队列的安全要求，现有父目录不可经软链接，队列为服务所有用户的私有目录。配置旧 `EAR_INGEST_INBOX_ROOT` 不会让原生模式回退或双写。不用旧 Ear、旧 inbox 或旧交付数据库，也不扫描或迁移历史。
+
+- 地址、两条上传路由、Bearer 鉴权、配对、`/health` HMAC 和加密中继协议不变；HTTPS 回退仍需把同一请求转给该接收端。原生上传先鉴权，再校验声明长度和流式实收长度、完整 multipart 结束边界与非空附件。中继在解密过程中限制录音正文和帧开销，验证结束帧后才转入接收端。外层超限返回 413，无成功回执；这些限额不应用到旧模式、配对和实时转写。
+- `timestamp` 必须是 `YYYY-MM-DDTHH:MM:SS[.小数]Z` 或带明确 `±HH:MM` 的会话起点。先规整到 UTC，再加相对毫秒；同一设备（统一小写）、组、段号和类型构成稳定键。不把客户端的 `source`、`X-User-Id`、文件名、请求路由或中继 ticket 当作队列身份。
+- `richVoice` 必须是②支持的音频，原生队列只对音频安排识别。`phoneContext` 独立归档，不等音频，不表示已提取 GPS 或手机状态。接收端将 `phoneIMU`、`phoneNotes` 分别交给②的 `imu`、`notes` 归档类型；**所用 `RecordingIntake` 必须支持相应类型才会成功**。不支持的类型和坏文件返回非 2xx，不回退到旧 Ear，也不伪装成音频或 Context。
+- 仅在共享 intake 确认持久化后返回 `{"ok":true,"record_id":"…","path":"…"}`。原生 `record_id` 是 intake ID；`path` 仍为绝对诊断路径，但指向真实队列目录，不是 Brain JSON。重试相同内容可得到原回执；共享 intake 判定冲突返回 409，不覆盖已受理数据。成功只确认队列或归档，不代表识别成功、数据已写入①或下游可用。
+
+这一步是**同主机、同一受信任本地持久卷**的自动交接：ingest 生产，②消费，二者须由部署者明确配成看到同一队列。分主机不假设有挂载，生产使用前需要经过鉴权的加密 store-and-forward、可靠重试和持久确认；现有手机中继不会替代该服务间交接。
+
+### Octopus 手机上传和独立落地
+
+- 原 Octopus iOS `phone_local` 的 multipart 字段与旧 Brain 路由 `/api/v1/instances/brain___<device>/service/api/v1/record` 兼容；仅当请求已实际送到本接收端、Bearer 由本接收端认可、`timestamp` 遵循以上会话起点约定时，HTTP 原生路径才适用。没有接管 Octopus Manager、PC 发现或登录。查阅的 Octopus iOS `6786977` 源码在部分分段上发送段起始的绝对时间而非会话起点，并可能回退到会话起点；路由和字段无法可靠区分两种来源。未修改该客户端，也不宣称它直接改指后各段时间都正确；需要发送方对齐，或使用下述已知真值的 finalized 事件。
+- 对仍落在其它 Octopus 接收端的文件，`ear-ingest octopus-finalized` 仅提供一个**本机可信生产者**的单次入口。上游必须在真正封口后主动调用并提供最终字节、原始段时间和事件时间；本仓库未安装 Octopus 发布器、监听器或自动投递，现有落地不会自行进入此入口。不要把此命令直接暴露给网络或不受信任的调用者。它不接受文件路径，不搜索旧 inbox、目录或历史清单。
+- 额外显式配置 `EAR_INGEST_OCTOPUS_DEVICE_ID`（唯一允许设备，大小写无关）和 `EAR_INGEST_OCTOPUS_FINALIZED_AFTER`（固定启用时间，带时区）。输入为一行 UTF-8 JSON（含 LF 最多 8192 字节），后接该条附件的原始字节并立即 EOF。对象字段必须恰好如下，字段顺序任意：
+
+  ```text
+  event="record.finalized.v1", device, group_id, segment_index, type, media_type,
+  started_at, ended_at, finalized_at, size, sha256
+  ```
+
+  起止时间为**绝对时间**；无结束时间只允许第 0 段会话 Notes（`ended_at: null`）。结束（无结束用起点）与可信封口时间均不能早于启用时间；封口时间不能超前或超过 24 小时。`size` 为正整数字节数且受原生上限约束，`sha256` 为 64 位小写十六进制。独立校验长度和摘要后才入队；退出 0 且输出 JSON 代表已持久确认，非零不确认。生产者负责保留附件、在允许窗口内重试以及观察非零退出。与 HTTP 路径使用同样的身份，不应同时配置两路投递，尤其是两路时间基准未对齐时。
 
 ## macOS 登录后常驻
 
@@ -53,6 +79,8 @@ python3 services/ingest/scripts/isolate_direct.py --seconds 600
 脚本适用于上面记录的 macOS 用户 LaunchAgent，使用临时配置，计时结束或按 Ctrl-C 后重新加载原配置并验证监听。隔离期间检查 Mac 的局域网 IP 请求失败、备用入口健康，然后用手机的 `upload_probe`、`upload_dispatch` 和真实 inbox 验收。该方法隔离的是接收端直连路径；单凭这三个结果无法识别手机公网请求使用的无线接口。
 
 ## 上传协议
+
+以下详细的旧格式、覆盖重传、无总量限制和文件路径指默认旧模式；原生模式的差异见上文。
 
 - `POST /api/v1/record`；兼容 `POST /api/v1/instances/{instance}/service/api/v1/record`，其中 instance 必须与 `brain___<X-Device-Id>` 大小写无关地一致。
 - `Authorization: Bearer <token>` 必需，常量时间比较，失败 401；在解析上传体前鉴权。

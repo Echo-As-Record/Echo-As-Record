@@ -9,6 +9,7 @@ import tempfile
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, closing
+from typing import BinaryIO
 
 import httpx
 from cryptography.exceptions import InvalidTag
@@ -27,23 +28,66 @@ def derive(secret: str, direction: str, ticket: str) -> bytes:
     )
 
 
-async def decrypt(request: Request, out, key: bytes):
+class _UploadBudget:
+    """Classify from authenticated metadata before spooling a native recording body."""
+
+    def __init__(self, limit: int):
+        self.limit = limit
+        self.prefix: bytearray | None = bytearray()
+        self.upload = False
+        self.body_bytes = 0
+
+    def observe(self, frame: bytes, wire_bytes: int) -> None:
+        if self.prefix is not None:
+            head, newline, rest = frame.partition(b"\n")
+            if len(self.prefix) + len(head) >= 8192:
+                raise ValueError
+            self.prefix.extend(head)
+            if not newline:
+                return
+            meta = json.loads(self.prefix)
+            if not isinstance(meta, dict):
+                raise ValueError
+            self.upload = (meta.get("method"), meta.get("path")) == ("POST", "/api/v1/record")
+            self.prefix = None
+            frame = rest
+        if self.upload:
+            self.body_bytes += len(frame)
+            # Separately bound framing overhead (one authenticated tag per frame).
+            # EarRecorder sends up to 64 KiB per frame.
+            if self.body_bytes > self.limit or wire_bytes > 2 * self.limit + 16384:
+                raise HTTPException(413, "Native recording request too large")
+
+
+async def decrypt(
+    request: Request, out: BinaryIO, key: bytes, *, upload_limit: int | None = None
+) -> None:
     cipher = AESGCM(key)
     buf = bytearray()
     index = 0
+    wire_bytes = 0
     final = False
+    budget = _UploadBudget(upload_limit) if upload_limit is not None else None
     async for part in request.stream():
-        buf.extend(part)
-        while len(buf) >= 4:
-            size = int.from_bytes(buf[:4], "big")
-            if size > CHUNK or final:
-                raise ValueError
-            if len(buf) < 20 + size:
-                break
-            out.write(cipher.decrypt(index.to_bytes(12, "big"), bytes(buf[4 : size + 20]), None))
-            del buf[: size + 20]
-            index += 1
-            final = size == 0
+        # ASGI chunk boundaries are independent of relay frames. Avoid duplicating
+        # an arbitrarily large chunk in the frame buffer.
+        view = memoryview(part)
+        for offset in range(0, len(view), CHUNK):
+            buf.extend(view[offset : offset + CHUNK])
+            while len(buf) >= 4:
+                size = int.from_bytes(buf[:4], "big")
+                if size > CHUNK or final:
+                    raise ValueError
+                if len(buf) < 20 + size:
+                    break
+                frame = cipher.decrypt(index.to_bytes(12, "big"), bytes(buf[4 : size + 20]), None)
+                wire_bytes += 20 + size
+                if budget is not None:
+                    budget.observe(frame, wire_bytes)
+                out.write(frame)
+                del buf[: size + 20]
+                index += 1
+                final = size == 0
     if buf or not final:
         raise ValueError
     out.seek(0)
@@ -88,7 +132,12 @@ def create_relay(pairing: Pairing, origin: FastAPI) -> FastAPI:
             raise HTTPException(403)
         with tempfile.TemporaryFile() as plain:
             try:
-                await decrypt(request, plain, derive(secret, "request", ticket))
+                await decrypt(
+                    request,
+                    plain,
+                    derive(secret, "request", ticket),
+                    upload_limit=getattr(origin.state, "native_upload_limit", None),
+                )
                 meta = json.loads(plain.readline(8192))
                 if meta["device"] != device:
                     raise ValueError
