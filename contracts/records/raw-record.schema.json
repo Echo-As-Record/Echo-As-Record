@@ -22,7 +22,7 @@
     "id": { "$ref": "#/$defs/id", "description": "由写入方生成" },
     "data_type": {
       "$ref": "#/$defs/snake_case",
-      "description": "原始数据类型。MVP 用到：audio_ref、transcript_segment、local_speaker、voiceprint、ambient_sound、gps_point、gps_geocode、phone_info、feedback。以后新增适配器可登记新类型，因此不用枚举"
+      "description": "原始数据类型。MVP 用到：audio_ref、transcript_segment、local_speaker、voiceprint、ambient_sound、gps_point、gps_geocode、phone_info、feedback；聊天适配器增加 chat_session、chat_message、chat_attachment（payload 见 $defs）。以后新增适配器可登记新类型，因此不用枚举"
     },
     "version": {
       "const": 1,
@@ -76,8 +76,66 @@
       "description": "具体内容，字段按 data_type 另行约定。大文件只存引用，格式见 $defs/file_ref"
     }
   },
-  "allOf": [{"if": {"properties": {"data_type": {"const": "gps_geocode"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/gps_geocode"}}}}],
+  "allOf": [
+    {"if": {"properties": {"data_type": {"const": "gps_geocode"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/gps_geocode"}}}},
+    {"if": {"properties": {"data_type": {"const": "chat_session"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/chat_session"}}}},
+    {"if": {"properties": {"data_type": {"const": "chat_message"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/chat_message"}}}},
+    {"if": {"properties": {"data_type": {"const": "chat_attachment"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/chat_attachment"}}}}
+  ],
   "$defs": {
+    "chat_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "同一逻辑对象（会话、消息、消息的某个附件）的第几次修订，从 1 起。缺省按 1 处理。事件时间对一个对象的所有修订相同；读取方对同一对象取 revision 最大的一条，旧修订保留"
+    },
+    "chat_content_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "该修订内容的指纹（不含易变字段）。读取方只比较是否相同，不重新计算"
+    },
+    "chat_session": {
+      "type": "object",
+      "description": "聊天会话元数据（适配器写入）。event_start 与 event_end 相等，取会话创建时间。只是上下文，本身不证明发生过任何活动。",
+      "additionalProperties": true,
+      "required": ["conversation_id"],
+      "properties": {
+        "conversation_id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "revision": { "$ref": "#/$defs/chat_revision" },
+        "content_sha256": { "$ref": "#/$defs/chat_content_sha256" }
+      }
+    },
+    "chat_message": {
+      "type": "object",
+      "description": "聊天消息（适配器写入）。event_start 与 event_end 相等，取消息创建时间；按 [a, b) 查询时与其他单点数据同一规则。role=assistant 的内容只是助手的陈述，不证明所述事情已经完成。",
+      "additionalProperties": true,
+      "required": ["text", "role", "conversation_id", "message_id"],
+      "properties": {
+        "text": { "type": "string" },
+        "role": { "enum": ["user", "assistant"] },
+        "conversation_id": { "type": "string", "minLength": 1 },
+        "message_id": { "type": "string", "minLength": 1 },
+        "parent_message_id": { "type": "string", "minLength": 1, "description": "根消息没有这个字段" },
+        "revision": { "$ref": "#/$defs/chat_revision" },
+        "content_sha256": { "$ref": "#/$defs/chat_content_sha256" }
+      }
+    },
+    "chat_attachment": {
+      "type": "object",
+      "description": "聊天附件（适配器写入）。event_start 与 event_end 相等，取所属消息的创建时间；未关联到消息的文件取自身记录时间。text 是提取文本、文本类文件前缀或安全的元数据行；file_ref 的 path 相对适配器的私有文件卷根，使用方不得因此读取文件字节。",
+      "additionalProperties": true,
+      "required": ["text", "conversation_id", "message_id", "file_id"],
+      "properties": {
+        "text": { "type": "string" },
+        "conversation_id": { "type": "string", "minLength": 1 },
+        "message_id": { "type": "string", "minLength": 1 },
+        "file_id": { "type": "string", "minLength": 1 },
+        "file_ref": { "$ref": "#/$defs/file_ref" },
+        "revision": { "$ref": "#/$defs/chat_revision" },
+        "content_sha256": { "$ref": "#/$defs/chat_content_sha256" }
+      }
+    },
     "gps_geocode": {
       "allOf": [
         {

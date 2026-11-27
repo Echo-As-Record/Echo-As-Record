@@ -1,0 +1,22 @@
+{
+  "id": "0199f0a0-1111-7aaa-9bbb-000000000203",
+  "data_type": "chat_session",
+  "version": 1,
+  "event_start": "2026-11-26T07:58:00Z",
+  "event_end": "2026-11-26T07:58:00Z",
+  "ingested_at": "2026-11-26T08:10:03Z",
+  "source": {
+    "device": "librechat",
+    "channel": "librechat",
+    "user": "default"
+  },
+  "adapter_version": "librechat-chat/0.1.0",
+  "dedup_key": "librechat:session:c-1:r1",
+  "payload": {
+    "conversation_id": "c-1",
+    "title": "周报措辞",
+    "tags": [],
+    "revision": 1,
+    "content_sha256": "5b6e5b6e5b6e5b6e5b6e5b6e5b6e5b6e5b6e5b6e5b6e5b6e5b6e5b6e5b6e5b6e"
+  }
+}
