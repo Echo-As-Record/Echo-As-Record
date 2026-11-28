@@ -103,7 +103,9 @@ def _audio(tmp_path, encoding):
     if ffmpeg is None or ffprobe is None:
         pytest.skip("AAC requires local FFmpeg and ffprobe")
     for binary in (ffmpeg, ffprobe):
-        protocols = subprocess.check_output([binary, "-protocols"], env={}, timeout=5)
+        protocols = subprocess.check_output(
+            [binary, "-hide_banner", "-protocols"], env={}, timeout=5
+        )
         if b"fd" not in protocols.split():
             pytest.skip("AAC requires seekable FFmpeg/ffprobe fd protocol")
     path = tmp_path / "phone.m4a"
@@ -113,17 +115,25 @@ def _audio(tmp_path, encoding):
             "-nostdin",
             "-v",
             "error",
+            "-filter_threads",
+            "1",
             "-f",
             "lavfi",
             "-i",
             "sine=frequency=440:sample_rate=16000:duration=1800",
             "-c:a",
             "aac",
+            "-threads",
+            "1",
+            "-aac_coder",
+            "fast",
+            "-b:a",
+            "24k",
             str(path),
         ],
         check=True,
         env={},
-        timeout=60,
+        timeout=120,
     )
     return path, "audio/mp4", ffmpeg, ffprobe
 
@@ -204,6 +214,16 @@ def _check_reads(web, auth, job, path, media):
     detail = web.get(audio_url, headers=auth)
     assert detail.status_code == 200 and detail.json() == audio
     assert web.get(audio_url).status_code == 401
+    intervals = web.get(
+        "/v1/recording-intervals",
+        headers=auth,
+        params={"start": format_utc(START), "end": format_utc(END)},
+    )
+    assert intervals.status_code == 200, intervals.text
+    assert intervals.json() == {
+        "items": [{"start": format_utc(START), "end": format_utc(END)}],
+        "next_cursor": None,
+    }
     transcripts = sorted(_records(web, auth, "transcript_segment"), key=lambda r: r["event_start"])
     speakers = {s["id"]: s for s in _records(web, auth, "local_speaker")}
     assert len(transcripts) == len(speakers) == 60
