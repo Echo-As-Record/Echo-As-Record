@@ -6,6 +6,7 @@ import asyncio
 import gzip
 import io
 import json
+import tempfile
 import wave
 from collections.abc import Iterator
 from pathlib import Path
@@ -117,6 +118,17 @@ def test_raw_wav_durable_duplicate_conflict_and_worker_states(api):
     result = client.get(status_url, headers=headers()).json()
     assert result == {"id": job["id"], "state": "blocked", "attempts": 1, "error": "commit_unknown"}
     assert client.get(ROUTE + "/" + new_id(), headers=headers()).status_code == 404
+
+
+def test_upload_stages_on_private_spool_without_system_tmp(api, monkeypatch):
+    client, wire, root = api
+    monkeypatch.setattr(tempfile, "tempdir", str(root / "missing-system-temp"))
+    original = set(root.iterdir())
+    assert client.post(ROUTE, headers=UPLOAD, content=wav()).status_code == 202
+    wire.deny_at = wire.calls + 2  # Reject after staging, before committing.
+    assert client.post(ROUTE, headers=UPLOAD, content=wav()).status_code == 401
+    assert set(root.iterdir()) == original
+    assert len(list((root / "blobs").iterdir())) == 1
 
 
 def test_compatible_m4a_and_invalid_container(api):

@@ -7,7 +7,6 @@ import re
 from collections.abc import Callable
 from contextlib import aclosing
 from datetime import UTC, datetime
-from tempfile import TemporaryFile
 from typing import BinaryIO
 
 from ear_adapter.recording_intake import (
@@ -108,8 +107,8 @@ async def accept_recording(
         raise GatewayError(422, "invalid_recording")
     await run_in_threadpool(verify_owner)
     try:
-        # Private, anonymous scratch on the API host, not a caller-named file.
-        with TemporaryFile(mode="w+b", buffering=0) as staged:
+        # Anonymous scratch on the private volume, not the container’s small /tmp.
+        with intake.stage_upload() as staged:
             await stage_body(request, staged, length, settings)
             # Revocation during a slow upload must not publish the staged audio.
             await run_in_threadpool(verify_owner)

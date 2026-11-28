@@ -365,6 +365,20 @@ class RecordingIntake:
                 with db:
                     yield db
 
+    @contextmanager
+    def stage_upload(self) -> Iterator[BinaryIO]:
+        """Anonymous request staging on the private spool volume, before acceptance."""
+        with self._directories() as (root, _):
+            stage = ".request-" + uuid.uuid4().hex
+            fd = _create_file(root, stage)
+            try:
+                # Unlink before writing any bytes. This stage is never a blob or a job.
+                os.unlink(stage, dir_fd=root)
+                with open(fd, "w+b", buffering=0, closefd=False) as stream:
+                    yield stream
+            finally:
+                os.close(fd)
+
     def accept(
         self,
         stream: BinaryIO,

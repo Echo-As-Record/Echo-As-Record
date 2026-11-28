@@ -38,7 +38,7 @@ worker 另行运行；本功能不监视目录、不调用旧 Ear，也不直接
 
 - 手动上传：从结果页的「上传录音」进入 `/recording-upload/`，选择 WAV/M4A，填写实际录音开始日期、时间和当时的 UTC 偏移；不从文件名、修改时间或当前时间猜测。也可输入已有任务编号查看状态。
 - 自动/兼容上传：`POST /v1/recording-uploads`，请求体是 WAV/M4A 原始字节（不是 multipart 或 JSON）。`Content-Type` 使用 `audio/wav` 或 `audio/mp4`（兼容常见 WAV/M4A 别名）；`X-Recording-Started-At` 必须是有明确偏移的 RFC 3339 时间，例如 `2026-11-20T18:01:02-07:00`。客户端用部署的 `public_origin` 作为 `Origin`，请求 Host 必须匹配；令牌只能通过 `Authorization: Bearer …` 传入，不接受 URL 参数或服务器路径。代理需保留 Host/Origin；跨源请求不受理，不提供 CORS。
-- 上传的独立限额是 `recording_upload_max_bytes`（默认/最大 512 MiB）和 `recording_upload_timeout`（默认 300 秒，最大 1800 秒，为接收请求体的总时限）。同一 API 进程一次只收一个上传（忙时 429）。接收期间需有临时磁盘空间；spool 卷也需保留空间。其他 API 仍按 `max_body_bytes` 和 `body_timeout` 的普通规则。
+- 上传的独立限额是 `recording_upload_max_bytes`（默认/最大 512 MiB）和 `recording_upload_timeout`（默认 300 秒，最大 1800 秒，为接收请求体的总时限）。同一 API 进程一次只收一个上传（忙时 429）。上传先在私有 spool 卷匿名暂存，不占用容器 `/tmp`；入队复制期间同卷须能容纳两份上传大小（另加已有数据及元数据）。其他 API 仍按 `max_body_bytes` 和 `body_timeout` 的普通规则。
 - 新文件持久入队返回 `202` 和 `{id, state, duplicate}`；相同字节、相同开始时间的重复提交返回 `200` 和同一 ID；同字节不同开始时间返回 `409`，不会修改原任务。若没有收到回执，可用同样的字节和时间取回原回执。
 - `GET /v1/recording-uploads/{id}` 用相同所有者鉴权，返回 `{id, state, attempts, error}`，不返回路径、文件或转写正文。`queued`/`processing`/`committing` 不是完成，`succeeded` 是确认入库，`failed` 是失败，`blocked` 表示入库结果未知且不会自动重试。`GET /v1/session` 仅在启用时公开 `recording_upload: true`，不披露绑定或 spool。
 
