@@ -48,7 +48,7 @@ def submit(
     return intake.accept(io.BytesIO(wav() if data is None else data), **fields)  # type: ignore
 
 
-def test_duplicate_canonical_start_different_source_and_end(tmp_path: Path) -> None:
+def test_duplicate_canonical_start_and_end_different_source(tmp_path: Path) -> None:
     root = tmp_path / "spool"
     intake = RecordingIntake(root)
     first = submit(intake, ended_at=END)
@@ -57,7 +57,7 @@ def test_duplicate_canonical_start_different_source_and_end(tmp_path: Path) -> N
         source="phone",
         source_id="segment:1",
         started_at="2026-01-01T20:04:05.000000-07:00",
-        ended_at="2026-01-02T03:04:08Z",
+        ended_at="2026-01-01T20:04:07.000000-07:00",
         media_type="audio/x-wav",
     )
     assert (first.id, False, "queued") == (first.id, first.duplicate, first.state)
@@ -73,6 +73,49 @@ def test_duplicate_canonical_start_different_source_and_end(tmp_path: Path) -> N
         assert path.read_bytes() == wav()
         assert stat.S_IMODE(path.stat().st_mode) == 0o400
         assert worker.claim() is None
+
+
+def test_same_phone_id_changed_known_end_is_conflict_before_copy(tmp_path: Path) -> None:
+    class Unreadable(io.BytesIO):
+        def read(self, n: int | None = -1) -> bytes:
+            pytest.fail("conflicting source metadata read from stream")
+
+    root = tmp_path / "spool"
+    source_id = phone_source_id("phone", "group", 0, "audio")
+    first = submit(RecordingIntake(root), source="phone", source_id=source_id, ended_at=END)
+    intake = RecordingIntake(root)
+    with pytest.raises(IntakeConflict, match="end conflict"):
+        intake.accept(
+            Unreadable(wav()),
+            source="phone",
+            source_id=source_id,
+            started_at="2026-01-01T20:04:05-07:00",
+            ended_at="2026-01-01T20:04:07.000001-07:00",
+            media_type="audio/wav",
+        )
+    assert submit(
+        intake,
+        source="phone",
+        source_id=source_id,
+        ended_at="2026-01-01T20:04:07-07:00",
+    ) == ri.Receipt(first.id, True, "queued")
+    assert intake.get(first.id) == dict(id=first.id, state="queued", attempts=0, error=None)
+    assert len(list((root / "blobs").iterdir())) == 1
+    with intake.worker() as worker:
+        job = worker.claim()
+        assert job is not None and job.ended_at == END
+        assert worker.claim() is None
+
+
+def test_conflicting_known_end_never_binds_new_source_id(tmp_path: Path) -> None:
+    intake = RecordingIntake(tmp_path / "spool")
+    first = submit(intake, ended_at=END)
+    with pytest.raises(IntakeConflict, match="end conflict"):
+        submit(intake, source="phone", source_id="not-yet", ended_at="2026-01-02T03:04:08Z")
+    assert not submit(
+        intake, wav(b"\x02"), source="phone", source_id="not-yet", ended_at=END
+    ).duplicate
+    assert intake.get(first.id) == dict(id=first.id, state="queued", attempts=0, error=None)
 
 
 def test_conflicting_timestamp_never_binds_new_source_id(tmp_path: Path) -> None:
@@ -417,6 +460,21 @@ def test_process_death_after_fence_never_replays(tmp_path: Path, state: str) -> 
 
 def _prepare(_job: RecordingJob, _audio: BinaryIO) -> dict[str, object]:
     return {"private": "model output"}
+
+
+def test_legacy_web_result_without_decoded_end_fails_closed(tmp_path: Path) -> None:
+    intake = RecordingIntake(tmp_path / "spool")
+    first = submit(intake)
+    # The v1 spool can contain results saved before explicit decoded-end evidence.
+    with intake.worker() as worker:
+        assert worker.run_one(_prepare)
+    with pytest.raises(IntakeConflict, match="cannot be verified"):
+        submit(intake, source="phone", source_id="not-yet", ended_at=END)
+    assert submit(intake) == ri.Receipt(first.id, True, "succeeded")
+    assert not submit(
+        intake, wav(b"\x02"), source="phone", source_id="not-yet", ended_at=END
+    ).duplicate
+    assert intake.get(first.id) == dict(id=first.id, state="succeeded", attempts=1, error=None)
 
 
 @pytest.mark.parametrize(

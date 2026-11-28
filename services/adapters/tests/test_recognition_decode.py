@@ -12,7 +12,7 @@ import sys
 import time
 import wave
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -488,10 +488,12 @@ def test_optional_ffmpeg_synthetic_roundtrip(codec: str, rate: int, ms: int, cha
         decoder.decode(io.BytesIO(raw), _capture(raw, ms=ms - 3 if ms > 1000 else 1003))
 
 
-def test_spooled_m4a_without_end_uses_one_validated_decode(monkeypatch, tmp_path):
+@pytest.mark.parametrize("first", ["web", "matching_phone", "incompatible_phone"])
+def test_spooled_m4a_end_authority_and_dedup(monkeypatch, tmp_path, first):
     from ear_adapter.recognition_long import ChunkedRecognitionProvider
-    from ear_adapter.recording_intake import RecordingIntake
+    from ear_adapter.recording_intake import IntakeConflict, RecordingIntake, phone_source_id
     from ear_adapter.recording_worker import NativeRecordingPreparation, NativeRecordingPublication
+    from ear_contracts import format_utc
     from ear_storage_client import Query
 
     raw = _fake_media()
@@ -533,28 +535,83 @@ print('{"status":"complete","asr":{"status":"complete","chunks":[],"segments":[]
     )
     provider = ChunkedRecognitionProvider(model, DECODER, scratch_dir=str(tmp_path))
     intake = RecordingIntake(tmp_path / "spool")
-    job = intake.accept(
-        io.BytesIO(raw),
-        source="web",
-        source_id=None,
-        started_at=START.isoformat(),
-        media_type="audio/mp4",
-    )
-    storage = MemoryStorage().client("adapter")
-    with intake.worker() as worker:
-        assert worker.run_one(
-            NativeRecordingPreparation(
-                provider,
-                CFG,
-                normalized_duration=lambda job, audio: provider.decoded_duration(
-                    audio, media_type=job.media_type, size=job.size
-                ),
-            ),
-            NativeRecordingPublication(storage),
+    decoded_end = START + timedelta(seconds=1)
+    # Phone clocks need not match the PCM grid exactly. Use the inclusive limit
+    # to distinguish the published result from a phone end by a full millisecond.
+    phone_end = decoded_end - timedelta(milliseconds=1)
+    bad_end = phone_end - timedelta(microseconds=1)
+    source_id = phone_source_id("phone", "group", 0, "audio")
+
+    def web():
+        return intake.accept(
+            io.BytesIO(raw),
+            source="web",
+            source_id=None,
+            started_at=format_utc(START),
+            media_type="audio/mp4",
         )
-    status = intake.get(job.id)
-    assert status is not None and status["state"] == "succeeded"
-    (ref,) = storage.query(Query("audio_ref")).items
-    assert (ref.event_start, ref.event_end) == (START, START + timedelta(seconds=1))
+
+    def phone(end):
+        offset = UTC if end == bad_end else timezone(timedelta(hours=-7))
+        return intake.accept(
+            io.BytesIO(raw),
+            source="phone",
+            source_id=source_id,
+            started_at=START.astimezone(offset).isoformat(),
+            ended_at=end.astimezone(offset).isoformat(),
+            media_type="audio/mp4",
+        )
+
+    if first == "web":
+        job = web()
+        with pytest.raises(IntakeConflict, match="cannot be verified"):
+            phone(phone_end)
+    else:
+        job = phone(phone_end if first == "matching_phone" else bad_end)
+        duplicate = web()
+        assert (duplicate.id, duplicate.state, duplicate.duplicate) == (job.id, "queued", True)
+    assert not called  # Neither entry point does any media probing/decoding.
+    storage = MemoryStorage().client("adapter")
+    prepare = NativeRecordingPreparation(
+        provider,
+        CFG,
+        normalized_duration=lambda job, audio: provider.decoded_duration(
+            audio, media_type=job.media_type, size=job.size
+        ),
+    )
+    publish = NativeRecordingPublication(storage)
+    with intake.worker() as worker:
+        assert worker.run_one(prepare, publish)
+        saved = worker.get_result(job.id)
     assert [name for name, _ in called] == ["/trusted/ffprobe", "/trusted/ffmpeg"]
     assert called[0][1] == called[1][1]
+
+    intake = RecordingIntake(intake.root)
+    if first == "incompatible_phone":
+        assert saved is None
+        assert storage.count(Query("audio_ref")) == 0
+        assert intake.get(job.id) == dict(
+            id=job.id, state="failed", attempts=1, error="processing_failed"
+        )
+        with pytest.raises(IntakeConflict, match="end conflict"):
+            phone(phone_end)
+    else:
+        (ref,) = storage.query(Query("audio_ref")).items
+        assert (ref.event_start, ref.event_end) == (START, decoded_end)
+        with pytest.raises(IntakeConflict, match="end conflict"):
+            phone(bad_end)
+        for duplicate in (web(), phone(phone_end)):
+            assert (duplicate.id, duplicate.state, duplicate.duplicate) == (
+                job.id,
+                "succeeded",
+                True,
+            )
+        # A second assertion is exact even if it is closer to the PCM end.
+        with pytest.raises(IntakeConflict, match="end conflict"):
+            phone(decoded_end)
+        assert intake.get(job.id) == dict(id=job.id, state="succeeded", attempts=1, error=None)
+        assert storage.query(Query("audio_ref")).items == (ref,)
+    with intake.worker() as worker:
+        assert not worker.run_one(prepare, publish)
+        assert worker.get_result(job.id) == saved
+    assert len(called) == 2

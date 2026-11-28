@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import BinaryIO
 
+from ear_contracts import format_utc
 from ear_storage_client import AppendRaw, Context, InvalidRequest, PermissionDenied, StorageClient
 from ear_storage_client.remote import RemoteStorageClient
 from ear_storage_client.remote_errors import AuthenticationError, ResourceLimit
@@ -17,7 +18,12 @@ from ear_adapter.config import AdapterConfig
 from ear_adapter.convert import FileRef
 from ear_adapter.native_channels import CaptureInput
 from ear_adapter.native_pipeline import RecognitionProvider, prepare_native_records
-from ear_adapter.recording_intake import PublicationRejected, RecordingJob
+from ear_adapter.recording_intake import (
+    DECODED_END_KEY,
+    MEDIA_END_TOLERANCE,
+    PublicationRejected,
+    RecordingJob,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,9 +31,10 @@ class NativeRecordingPreparation:
     """Pure recognition/conversion callback for RecordingWorker.run_one.
 
     Configure a fixed channel and device label for the shared intake, not per retry
-    or uploader. Phone timestamps are supplied at accept; for files without an
-    authoritative end, provide a scoped normalization step that yields the media
-    duration and lets the provider reuse decoded samples, or a duration probe.
+    or uploader. The start comes from intake; the end always comes from decoded
+    media. Supply scoped normalization to reuse the samples in recognition, or
+    a trusted duration callback that validates the media. A supplied phone end
+    is only an assertion against the decoded end.
     """
 
     provider: RecognitionProvider
@@ -41,9 +48,7 @@ class NativeRecordingPreparation:
     def __call__(self, job: RecordingJob, audio: BinaryIO) -> dict[str, object]:
         start = datetime.fromisoformat(job.started_at)
         span: AbstractContextManager[timedelta]
-        if job.ended_at is not None:
-            span = nullcontext(datetime.fromisoformat(job.ended_at) - start)
-        elif self.normalized_duration is not None:
+        if self.normalized_duration is not None:
             span = self.normalized_duration(job, audio)
         elif self.duration is not None:
             span = nullcontext(self.duration(job, audio))
@@ -52,20 +57,28 @@ class NativeRecordingPreparation:
         with span as duration:
             if not isinstance(duration, timedelta) or duration <= timedelta(0):
                 raise ValueError("invalid recording duration")
+            end = start + duration
+            if job.ended_at is not None and (
+                abs(datetime.fromisoformat(job.ended_at) - end) > MEDIA_END_TOLERANCE
+            ):
+                raise ValueError("recording end does not match decoded media")
             capture = CaptureInput(
                 capture_id=job.id,
                 group_id=job.id,
                 record_id=job.id,
                 device_id=self.device_id,
                 started_at=start,
-                ended_at=start + duration,
+                ended_at=end,
                 media_type=job.media_type,
                 file_ref=FileRef(job.relative_path, job.sha256, job.size),
             )
             records = prepare_native_records(
                 capture, audio, provider=self.provider, config=self.config
             )
-        return {"native_batch": encode_request([AppendRaw(r) for r in records], Context.system())}
+        return {
+            DECODED_END_KEY: format_utc(end),
+            "native_batch": encode_request([AppendRaw(r) for r in records], Context.system()),
+        }
 
 
 @dataclass(frozen=True, slots=True)

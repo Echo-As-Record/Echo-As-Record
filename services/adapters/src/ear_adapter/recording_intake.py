@@ -16,7 +16,7 @@ import zlib
 from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import BinaryIO, Literal, NoReturn
 
@@ -25,6 +25,9 @@ from ear_contracts import is_id, new_id
 from ear_adapter.native_channels import MAX_AUDIO_BYTES, ChannelInputError, _parent
 
 MAX_CONTEXT_BYTES = 16 << 20
+# Only for comparing an assertion to decoded media, not for comparing two assertions.
+MEDIA_END_TOLERANCE = timedelta(milliseconds=1)
+DECODED_END_KEY = "decoded_ended_at"
 _MAX_CONTEXT_LINE = 256 << 10
 _MAX_RESULT_BYTES = 16 << 20
 _BLOCK = 128 << 10
@@ -43,7 +46,7 @@ _TIMESTAMP = re.compile(
 
 
 class IntakeConflict(ValueError):
-    """Content, source binding, or capture start conflicts with an accepted recording."""
+    """Content, source binding, or capture timing conflicts with an accepted recording."""
 
 
 class IntakeInvalid(ValueError):
@@ -408,12 +411,15 @@ class RecordingIntake:
             # The final binding is still checked in the serialized write transaction.
             with self._db() as db:
                 prior = db.execute(
-                    "SELECT j.started_at, j.kind, j.media FROM source_bindings s "
+                    "SELECT j.started_at, j.kind, j.media, j.ended_at FROM source_bindings s "
                     "JOIN jobs j ON s.job_id=j.id WHERE s.source=? AND s.source_id=?",
                     (source, source_id),
                 ).fetchone()
-                if prior is not None and tuple(prior) != (start, kind, media):
-                    raise IntakeConflict("recording source metadata conflict")
+                if prior is not None:
+                    if (prior["started_at"], prior["kind"], prior["media"]) != (start, kind, media):
+                        raise IntakeConflict("recording source metadata conflict")
+                    if end is not None and prior["ended_at"] not in (None, end):
+                        raise IntakeConflict("recording end conflict")
         with self._directories() as (_, blobs):
             stage = ".upload-" + uuid.uuid4().hex
             fd = _create_file(blobs, stage)
@@ -461,7 +467,10 @@ class RecordingIntake:
         kind: str,
         media: str,
     ) -> Receipt:
-        row = db.execute("SELECT * FROM jobs WHERE digest=?", (digest,)).fetchone()
+        row = db.execute(
+            "SELECT id, started_at, ended_at, kind, media, size, state FROM jobs WHERE digest=?",
+            (digest,),
+        ).fetchone()
         binding = None
         if source_id is not None:
             binding = db.execute(
@@ -477,6 +486,32 @@ class RecordingIntake:
             size,
         ):
             raise IntakeConflict("recording content metadata conflict")
+        if row is not None and end is not None:
+            asserted = row["ended_at"]
+            if asserted is None:
+                # Web-first: no end was asserted. Don't bind this claim until the
+                # worker has saved a decoded end for these same immutable bytes.
+                decoded = db.execute(
+                    "SELECT json_extract(result, ?) FROM jobs WHERE id=?",
+                    (f"$.{DECODED_END_KEY}", row["id"]),
+                ).fetchone()[0]
+                if not isinstance(decoded, str):
+                    raise IntakeConflict("recording end cannot be verified")
+                try:
+                    verified = datetime.fromisoformat(decoded)
+                    if verified.utcoffset() != timedelta(0) or verified <= datetime.fromisoformat(
+                        start
+                    ):
+                        raise ValueError
+                except ValueError:
+                    raise IntakeStorageError("invalid saved recording end") from None
+                if abs(datetime.fromisoformat(end) - verified) > MEDIA_END_TOLERANCE:
+                    raise IntakeConflict("recording end conflict")
+                # Record the first assertion, not a new publication time. The
+                # result and queue state remain untouched, even after publication.
+                db.execute("UPDATE jobs SET ended_at=? WHERE id=?", (end, row["id"]))
+            elif asserted != end:
+                raise IntakeConflict("recording end conflict")
         name = digest + suffix
         try:
             with _verified_blob(blobs, name, digest, size):
@@ -546,7 +581,7 @@ class RecordingJob:
 
     id: str
     started_at: str
-    ended_at: str | None
+    ended_at: str | None  # Source assertion, never the worker-derived publication boundary.
     media_type: str
     relative_path: str
     sha256: str

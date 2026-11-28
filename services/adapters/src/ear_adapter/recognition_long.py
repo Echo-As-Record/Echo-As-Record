@@ -244,7 +244,7 @@ class ChunkedRecognitionProvider(_RecognitionStages):
     def decoded_duration(
         self, audio: BinaryIO, *, media_type: str, size: int
     ) -> Iterator[timedelta]:
-        """For intake with no trusted end: decode once, then recognize within this scope.
+        """Decode once, then recognize against this media duration within the scope.
 
         Bind PCM to this borrowed stream and the derived duration. Do not stage it
         across retries, job exits, or failed capture construction.

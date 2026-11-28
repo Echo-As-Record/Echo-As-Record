@@ -302,7 +302,8 @@ def test_packaged_worker_once_watch_and_authoritative_reads(config, tmp_path, mo
             assert web.get("/recording-upload/").is_success
             refs = web.get("/v1/records/audio_ref", headers=_WEB_AUTH).json()["items"]
             assert {r["payload"]["upstream"]["capture_id"] for r in refs} == {web_job, phone_job}
-            assert {r["event_end"] for r in refs} == {_WEB_END, "2026-01-02T00:00:00.501000Z"}
+            # Both media streams have 32,007 frames; the phone's rounded end is only an assertion.
+            assert {r["event_end"] for r in refs} == {_WEB_END}
             assert all(r["adapter_version"] == _PROFILE for r in refs)
             transcripts = web.get("/v1/records/transcript_segment", headers=_WEB_AUTH).json()[
                 "items"
