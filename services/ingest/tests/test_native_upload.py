@@ -20,9 +20,12 @@ from fastapi.testclient import TestClient
 
 from .test_ingest import fields
 
-HEADERS = {"Authorization": "Bearer synthetic-secret", "X-Device-Id": "IOS-TEST"}
+DEVICE = "synthetic-earrecorder"
+OTHER_DEVICE = "synthetic-octopus"
+CUTOFF = "2026-01-02T00:00:00Z"
+HEADERS = {"Authorization": "Bearer synthetic-secret", "X-Device-Id": DEVICE.upper()}
 RECORD = "/api/v1/record"
-LEGACY_RECORD = "/api/v1/instances/brain___ios-test/service/api/v1/record"
+LEGACY_RECORD = f"/api/v1/instances/brain___{DEVICE}/service/api/v1/record"
 
 
 @pytest.fixture
@@ -30,6 +33,10 @@ def native_root(tmp_path, monkeypatch):
     tmp_path = tmp_path.resolve()
     monkeypatch.setenv("EAR_INGEST_TOKEN", "synthetic-secret")
     monkeypatch.setenv("EAR_INGEST_NATIVE_ROOT", str(tmp_path / "native"))
+    monkeypatch.setenv("EAR_INGEST_NATIVE_PHONE_DEVICE_ID", DEVICE)
+    monkeypatch.setenv("EAR_INGEST_NATIVE_PHONE_AFTER", CUTOFF)
+    monkeypatch.delenv("EAR_INGEST_OCTOPUS_DEVICE_ID", raising=False)
+    monkeypatch.delenv("EAR_INGEST_OCTOPUS_FINALIZED_AFTER", raising=False)
     monkeypatch.setenv("EAR_INGEST_INBOX_ROOT", str(tmp_path / "legacy"))
     for name in ("EAR_INGEST_EVENT_URL", "EAR_INGEST_NOTIFY_URL", "EAR_INGEST_NATIVE_MAX_BYTES"):
         monkeypatch.delenv(name, raising=False)
@@ -44,10 +51,10 @@ def audio(sample=b"\x01\x00"):
     return out.getvalue()
 
 
-def send(client, *, path=RECORD, content=None, media="audio/wav", data=None):
+def send(client, *, path=RECORD, headers=HEADERS, content=None, media="audio/wav", data=None):
     return client.post(
         path,
-        headers=HEADERS,
+        headers=headers,
         data=fields() if data is None else data,
         files={"file": ("synthetic.bin", audio() if content is None else content, media)},
     )
@@ -82,7 +89,7 @@ def test_native_upload_utc_queue_retry_conflict_and_no_legacy(native_root, monke
         {
             "source": "phone",
             "source_id": "phone-v1:"
-            + hashlib.sha256(f"ios-test:{data['group_id']}:1:audio".encode()).hexdigest(),
+            + hashlib.sha256(f"{DEVICE}:{data['group_id']}:1:audio".encode()).hexdigest(),
             "started_at": "2026-01-02T07:15:00.125000Z",
             "ended_at": "2026-01-02T07:45:00.125000Z",
             "media_type": "audio/wav",
@@ -95,6 +102,38 @@ def test_native_upload_utc_queue_retry_conflict_and_no_legacy(native_root, monke
         assert changed.status_code == 409 and "ok" not in changed.json()
     stored = RecordingIntake(native_root).get(receipt["record_id"])
     assert stored is not None and stored["state"] == "queued"
+    assert not (native_root.parent / "legacy").exists()
+
+
+@pytest.mark.parametrize(
+    "session,accepted",
+    [
+        ("2026-01-01T23:31:00Z", True),  # Later segment in a pre-activation session.
+        ("2026-01-01T16:30:00-07:00", True),  # Inclusive at the cutoff, normalized to UTC.
+        ("2026-01-01T23:29:59.999Z", False),  # Starts before, but ends after activation.
+        ("2025-12-31T23:45:00Z", False),  # Prior-date backlog.
+    ],
+)
+def test_native_uses_segment_start_for_activation(native_root, monkeypatch, session, accepted):
+    from ear_adapter.recording_intake import RecordingIntake
+
+    if not accepted:
+
+        def unexpected(*args, **kwargs):
+            pytest.fail("pre-activation recording reached durable intake")
+
+        monkeypatch.setattr(RecordingIntake, "accept", unexpected)
+    with TestClient(create_app()) as client:
+        reply = send(client, path=LEGACY_RECORD, data=fields(timestamp=session))
+    if accepted:
+        assert reply.status_code == 200, reply.text
+        assert RecordingIntake(native_root).get(reply.json()["record_id"]) is not None
+    else:
+        assert reply.status_code == 400
+        assert reply.json() == {
+            "detail": "Recording segment starts before native upload activation"
+        }
+        assert not list((native_root / "blobs").iterdir())
     assert not (native_root.parent / "legacy").exists()
 
 
@@ -204,6 +243,46 @@ def test_native_and_legacy_notification_fail_before_startup(native_root, monkeyp
     assert not (native_root.parent / "legacy").exists()
 
 
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("EAR_INGEST_NATIVE_PHONE_DEVICE_ID", None),
+        ("EAR_INGEST_NATIVE_PHONE_DEVICE_ID", " "),
+        ("EAR_INGEST_NATIVE_PHONE_DEVICE_ID", "phone-a,phone-b"),
+        ("EAR_INGEST_NATIVE_PHONE_DEVICE_ID", ".."),
+        ("EAR_INGEST_NATIVE_PHONE_AFTER", None),
+        ("EAR_INGEST_NATIVE_PHONE_AFTER", "2026-01-02T00:00:00"),
+        ("EAR_INGEST_NATIVE_PHONE_AFTER", "2026-01-02T00:00:00-00:00"),
+        ("EAR_INGEST_NATIVE_PHONE_AFTER", "0001-01-01T00:00:00+01:00"),
+    ],
+)
+def test_native_requires_explicit_single_device_and_activation(
+    native_root, monkeypatch, key, value
+):
+    if value is None:
+        monkeypatch.delenv(key)
+    else:
+        monkeypatch.setenv(key, value)
+    with pytest.raises(RuntimeError, match=key):
+        create_app()
+    assert not native_root.exists()
+
+
+def test_default_legacy_ignores_native_phone_scope(native_root, monkeypatch):
+    monkeypatch.delenv("EAR_INGEST_NATIVE_ROOT")
+    monkeypatch.setenv("EAR_INGEST_NATIVE_PHONE_AFTER", "not a timestamp")
+    with TestClient(create_app()) as client:
+        response = client.post(
+            f"/api/v1/instances/brain___{OTHER_DEVICE}/service/api/v1/record",
+            headers=HEADERS | {"X-Device-Id": OTHER_DEVICE},
+            data=fields(),
+            files={"file": ("synthetic.wav", audio(), "audio/wav")},
+        )
+    assert response.status_code == 200, response.text
+    assert Path(response.json()["path"]).is_relative_to(native_root.parent / "legacy")
+    assert not native_root.exists()
+
+
 def encoded_upload():
     # Synthetic MP4 container header: exercises the actual EarRecorder MIME, not decoding.
     mp4 = b"\x00\x00\x00\x10ftypM4A \x00\x00\x00\x00\x00\x00\x00\x0cmdatdata"
@@ -259,13 +338,44 @@ def test_native_counts_actual_bytes_and_authenticates_before_body(native_root, m
     asyncio.run(run())
 
 
+@pytest.mark.parametrize(
+    "path",
+    [RECORD, LEGACY_RECORD, f"/api/v1/instances/brain___{OTHER_DEVICE}/service/api/v1/record"],
+)
+def test_native_rejects_out_of_scope_device_before_body(native_root, path):
+    async def run():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_app()), base_url="http://test"
+        ) as client:
+
+            async def must_not_read():
+                pytest.fail("out-of-scope phone body was read")
+                yield b""  # pragma: no cover
+
+            denied = await client.post(
+                path,
+                headers=HEADERS
+                | {
+                    "X-Device-Id": OTHER_DEVICE,
+                    "X-User-Id": DEVICE,
+                    "Content-Type": "multipart/form-data; boundary=synthetic",
+                },
+                content=must_not_read(),
+            )
+            assert denied.status_code == 403 and "record_id" not in denied.json()
+
+    asyncio.run(run())
+    assert not list((native_root / "blobs").iterdir())
+    assert not (native_root.parent / "legacy").exists()
+
+
 def test_encrypted_relay_native_durable_ack_and_limits(native_root, monkeypatch):
     from ear_adapter.recording_intake import RecordingIntake
 
     media, body = encoded_upload()
     monkeypatch.setenv("EAR_INGEST_NATIVE_MAX_BYTES", str(len(body)))
     pairing = Pairing(native_root.parent / "pairing")
-    device = "ios-test"
+    device = DEVICE
     ticket = "a" * 32
     # Claim a synthetic invitation through the real HTTP pairing route.
     client = TestClient(create_app(pairing))
@@ -330,6 +440,44 @@ def test_encrypted_relay_native_durable_ack_and_limits(native_root, monkeypatch)
         assert (item := RecordingIntake(native_root).get(record_id)) and item["state"] == "queued"
 
 
+def test_native_relay_rejects_other_paired_device_after_metadata(native_root):
+    pairing = Pairing(native_root.parent / "pairing")
+    ticket = "d" * 32
+    invitation = parse_qs(urlsplit(pairing.invite("")).query)["code"][0]
+    origin = create_app(pairing)
+    with TestClient(origin) as client:
+        response = client.post(
+            "/api/v1/pair",
+            headers={"X-Device-Id": OTHER_DEVICE, "X-Ear-Invitation": invitation},
+        )
+        assert response.status_code == 200
+        secret = response.json()["token"]
+    meta = json.dumps({"method": "POST", "path": RECORD, "device": OTHER_DEVICE}).encode() + b"\n"
+    cipher = AESGCM(derive(secret, "request", ticket))
+
+    async def body():
+        yield len(meta).to_bytes(4, "big") + cipher.encrypt(bytes(12), meta, None)
+        pytest.fail("out-of-scope paired upload body was read after authenticated metadata")
+
+    async def run():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_relay(pairing, origin)),
+            base_url="http://test",
+        ) as relay:
+            assert (
+                await relay.get("/health", params={"device": OTHER_DEVICE, "challenge": ticket})
+            ).status_code == 200
+            reply = await relay.post(
+                "/api/v1/relay",
+                headers={"X-Device-Id": OTHER_DEVICE, "X-Ear-Request": ticket},
+                content=body(),
+            )
+            assert reply.status_code == 403 and "X-Ear-Receipt" not in reply.headers
+
+    asyncio.run(run())
+    assert not list((native_root / "blobs").iterdir())
+
+
 def test_octopus_finalized_is_opt_in_scoped_and_verifies_bytes(native_root, monkeypatch):
     from ear_adapter.recording_intake import RecordingIntake
 
@@ -339,7 +487,7 @@ def test_octopus_finalized_is_opt_in_scoped_and_verifies_bytes(native_root, monk
     start = end - timedelta(seconds=2)
     event = {
         "event": "record.finalized.v1",
-        "device": "IOS-TEST",
+        "device": OTHER_DEVICE.upper(),
         "group_id": "synthetic-group",
         "segment_index": 0,
         "type": "richVoice",
@@ -356,7 +504,7 @@ def test_octopus_finalized_is_opt_in_scoped_and_verifies_bytes(native_root, monk
 
     with pytest.raises(ValueError, match="not enabled"):
         submit()
-    monkeypatch.setenv("EAR_INGEST_OCTOPUS_DEVICE_ID", "ios-test")
+    monkeypatch.setenv("EAR_INGEST_OCTOPUS_DEVICE_ID", OTHER_DEVICE)
     monkeypatch.setenv("EAR_INGEST_OCTOPUS_FINALIZED_AFTER", (now - timedelta(hours=1)).isoformat())
     for invalid in (
         {"device": "other"},
@@ -375,21 +523,19 @@ def test_octopus_finalized_is_opt_in_scoped_and_verifies_bytes(native_root, monk
         with pytest.raises(ValueError):
             submit(content)
     assert not native_root.exists()
-    first = submit()
-    assert first == submit()
+    # Finalized-only deployment never sets the native HTTP device or timestamp cutoff.
+    with monkeypatch.context() as finalized_only:
+        finalized_only.delenv("EAR_INGEST_NATIVE_PHONE_DEVICE_ID")
+        finalized_only.delenv("EAR_INGEST_NATIVE_PHONE_AFTER")
+        with pytest.raises(RuntimeError, match="EAR_INGEST_NATIVE_PHONE_DEVICE_ID"):
+            create_app()
+        assert not native_root.exists()
+        first = submit()
+        assert first == submit()
+    # Being authorized for the finalized stream does not enroll a device for HTTP.
     with TestClient(create_app()) as client:
-        via_http = send(
-            client,
-            path=LEGACY_RECORD,
-            data=fields(
-                timestamp=start.isoformat(),
-                group_id=event["group_id"],
-                segment_meta='{"segmentIndex":0}',
-                segment_start_ms="0",
-                segment_end_ms="2000",
-            ),
-        )
-    assert via_http.json() == first
+        denied = client.post(RECORD, headers=HEADERS | {"X-Device-Id": OTHER_DEVICE})
+        assert denied.status_code == 403 and "record_id" not in denied.json()
     assert (item := RecordingIntake(native_root).get(first["record_id"])) and item[
         "state"
     ] == "queued"

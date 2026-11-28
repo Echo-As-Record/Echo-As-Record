@@ -31,8 +31,9 @@ def derive(secret: str, direction: str, ticket: str) -> bytes:
 class _UploadBudget:
     """Classify from authenticated metadata before spooling a native recording body."""
 
-    def __init__(self, limit: int):
+    def __init__(self, limit: int, upload_allowed: bool):
         self.limit = limit
+        self.upload_allowed = upload_allowed
         self.prefix: bytearray | None = bytearray()
         self.upload = False
         self.body_bytes = 0
@@ -49,6 +50,8 @@ class _UploadBudget:
             if not isinstance(meta, dict):
                 raise ValueError
             self.upload = (meta.get("method"), meta.get("path")) == ("POST", "/api/v1/record")
+            if self.upload and not self.upload_allowed:
+                raise HTTPException(403, "Device is not enabled for native recording uploads")
             self.prefix = None
             frame = rest
         if self.upload:
@@ -60,14 +63,19 @@ class _UploadBudget:
 
 
 async def decrypt(
-    request: Request, out: BinaryIO, key: bytes, *, upload_limit: int | None = None
+    request: Request,
+    out: BinaryIO,
+    key: bytes,
+    *,
+    upload_limit: int | None = None,
+    upload_allowed: bool = True,
 ) -> None:
     cipher = AESGCM(key)
     buf = bytearray()
     index = 0
     wire_bytes = 0
     final = False
-    budget = _UploadBudget(upload_limit) if upload_limit is not None else None
+    budget = _UploadBudget(upload_limit, upload_allowed) if upload_limit is not None else None
     async for part in request.stream():
         # ASGI chunk boundaries are independent of relay frames. Avoid duplicating
         # an arbitrarily large chunk in the frame buffer.
@@ -94,6 +102,8 @@ async def decrypt(
 
 
 def create_relay(pairing: Pairing, origin: FastAPI) -> FastAPI:
+    native_phone = getattr(origin.state, "native_phone", None)
+
     @asynccontextmanager
     async def lifespan(app):
         async with origin.router.lifespan_context(origin):
@@ -136,7 +146,8 @@ def create_relay(pairing: Pairing, origin: FastAPI) -> FastAPI:
                     request,
                     plain,
                     derive(secret, "request", ticket),
-                    upload_limit=getattr(origin.state, "native_upload_limit", None),
+                    upload_limit=native_phone.limit if native_phone is not None else None,
+                    upload_allowed=native_phone is None or device.lower() == native_phone.device,
                 )
                 meta = json.loads(plain.readline(8192))
                 if meta["device"] != device:

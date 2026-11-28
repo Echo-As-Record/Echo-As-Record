@@ -42,6 +42,7 @@ _API_STORAGE = "s" * 43
 _WEB = "u" * 43
 _WEB_AUTH = {"Authorization": "Bearer " + _WEB}
 _INGEST = "synthetic-phone-ingest"
+_PHONE_DEVICE = "synthetic-earrecorder-e2e"
 _PROFILE = "ear-native/0.1.0+synthetic-worker-test"
 _ROUTE = "/v1/recording-uploads"
 
@@ -215,7 +216,7 @@ def _phone(ingest: TestClient, *, milliseconds: int, sample: int, frames: int) -
         "/api/v1/record",
         data=form,
         files={"file": ("fixture.wav", _wav(frames, sample), "audio/wav")},
-        headers={"Authorization": "Bearer " + _INGEST, "X-Device-Id": "synthetic-test"},
+        headers={"Authorization": "Bearer " + _INGEST, "X-Device-Id": _PHONE_DEVICE},
     )
     assert reply.is_success, reply.text
     return reply.json()["record_id"]
@@ -227,6 +228,8 @@ def test_packaged_worker_once_watch_and_authoritative_reads(config, tmp_path, mo
     intake = RecordingIntake(root)
     wire = _StorageWire(intake)
     monkeypatch.setenv("EAR_INGEST_NATIVE_ROOT", str(root))
+    monkeypatch.setenv("EAR_INGEST_NATIVE_PHONE_DEVICE_ID", _PHONE_DEVICE)
+    monkeypatch.setenv("EAR_INGEST_NATIVE_PHONE_AFTER", _START)
     monkeypatch.setenv("EAR_INGEST_TOKEN", _INGEST)
     monkeypatch.setenv("EAR_INGEST_INBOX_ROOT", str(tmp_path / "must-not-exist"))
     for name in ("EAR_INGEST_EVENT_URL", "EAR_INGEST_NOTIFY_URL", "EAR_INGEST_NATIVE_MAX_BYTES"):

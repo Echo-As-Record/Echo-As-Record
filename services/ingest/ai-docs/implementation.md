@@ -1,7 +1,7 @@
 ---
 audience: ai
 doc-type: reference
-based-on: 用户 2026-11-13 services/ingest 实现任务；docs/proposals/phone-recorder-extraction.md 3.5；docs/design/design-v1.2.md 3.4；services/adapters 包结构；本机 brain channel 与旧 Ear 只读源码及 2026-11-12 会话样本；原生上传实现任务（dev e9590ae，Octopus iOS 6786977 源码及 RecordingIntake 协作接口）；用户本轮 Octopus 封口导出桥接任务
+based-on: 用户 2026-11-13 services/ingest 实现任务；docs/proposals/phone-recorder-extraction.md 3.5；docs/design/design-v1.2.md 3.4；services/adapters 包结构；本机 brain channel 与旧 Ear 只读源码及 2026-11-12 会话样本；原生上传实现任务（dev e9590ae，Octopus iOS 6786977 源码及 RecordingIntake 协作接口）；用户本轮 Octopus 封口导出桥接任务；基线 d868bad 上用户明确要求按已核验设备和固定启用时间限定原生 HTTP
 ---
 
 # Ingest 实现与兼容依据
@@ -16,8 +16,8 @@ based-on: 用户 2026-11-13 services/ingest 实现任务；docs/proposals/phone-
 | `src/ear_ingest/delivery.py` | SQLite 记录未完成发布、单条投递、退避与旧 Ear 的受理回执 |
 | `src/ear_ingest/store.py` | 实例锁、查找重传、分块复制、原子替换、旧附件清理 |
 | `src/ear_ingest/app.py` | 鉴权、两种 URL、health、可选定向投递 worker 与历史 reconcile 通知 |
-| `src/ear_ingest/native.py` / `limited.py` | 共享 intake 交接、严格 UTC 和标识转换、仅 native 的 multipart 字节数和结束边界校验 |
-| `src/ear_ingest/relay.py` | 确认加密结束帧后转发；在原生录音路由上预先限制解密临时文件的大小 |
+| `src/ear_ingest/native.py` / `limited.py` | HTTP 独立启动范围 `phone_config()`，与封口 CLI 共用队列配置 `config()` 和 intake 交接；严格 UTC/标识转换、仅 native 的 multipart 字节数和结束边界校验 |
+| `src/ear_ingest/relay.py` | 确认加密结束帧后转发；由通过鉴权的元数据识别原生录音请求，在接收余下正文之前限制设备和字节数 |
 | `src/ear_ingest/octopus_finalized.py` | stdin 限定设备、启用时间及单条已封口显式事件，不接受路径或扫描 |
 | `src/ear_ingest/octopus_bridge.py` | [专用封口导出](../octopus-bridge.md)单次生产器；复用 OctopusInboxChannel 的路径固定与重查，不复用其基于旧 timestamp 加 offset 的时间解释；校验后交给 finalized 接收入口或输出 wire frame |
 | `src/ear_ingest/__main__.py` | `ear-ingest serve` 启动 |

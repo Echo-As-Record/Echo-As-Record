@@ -15,10 +15,11 @@ from ear_ingest.app import create_app
 from fastapi.testclient import TestClient
 
 from .test_ingest import fields
-from .test_native_upload import audio, send
+from .test_native_upload import HEADERS, audio, send
 
 SLOT = "a" * 32
 OTHER = "b" * 32
+DEVICE = "synthetic-finalized"
 OFFSET = timezone(timedelta(hours=-7))
 
 
@@ -49,12 +50,12 @@ def export(tmp_path, monkeypatch):
     data = audio()
     config = {
         "format": "octopus-raw-finalized-export.v1",
-        "device": "IOS-TEST",
+        "device": DEVICE.upper(),
         "enabled_after": z(cutoff),
     }
     event = {
         "event": "record.finalized.v1",
-        "device": "iOS-Test",
+        "device": DEVICE,
         "group_id": "Synthetic-Group",
         "segment_index": 7,
         "type": "richVoice",
@@ -65,12 +66,18 @@ def export(tmp_path, monkeypatch):
         "sha256": hashlib.sha256(data).hexdigest(),
         "size": len(data),
     }
-    for key in ("EAR_INGEST_EVENT_URL", "EAR_INGEST_NOTIFY_URL", "EAR_INGEST_NATIVE_MAX_BYTES"):
+    for key in (
+        "EAR_INGEST_EVENT_URL",
+        "EAR_INGEST_NOTIFY_URL",
+        "EAR_INGEST_NATIVE_MAX_BYTES",
+        "EAR_INGEST_NATIVE_PHONE_DEVICE_ID",
+        "EAR_INGEST_NATIVE_PHONE_AFTER",
+    ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("EAR_INGEST_TOKEN", "synthetic-secret")
     monkeypatch.setenv("EAR_INGEST_NATIVE_ROOT", str(destination))
     monkeypatch.setenv("EAR_INGEST_INBOX_ROOT", str(legacy))
-    monkeypatch.setenv("EAR_INGEST_OCTOPUS_DEVICE_ID", "ios-test")
+    monkeypatch.setenv("EAR_INGEST_OCTOPUS_DEVICE_ID", DEVICE)
     monkeypatch.setenv("EAR_INGEST_OCTOPUS_FINALIZED_AFTER", z(cutoff))
     private(root / "scope.json", line(config))
     return SimpleNamespace(
@@ -100,7 +107,9 @@ def run(export, capsys, **options):
     return code, json.loads(stdout)["slots"] if stdout else {}, stderr
 
 
-def test_bridge_persists_exact_physical_times_and_deduplicates_with_http(export, capsys):
+def test_bridge_persists_exact_physical_times_and_deduplicates_with_http(
+    export, capsys, monkeypatch
+):
     stage(export)
     code, slots, stderr = run(export, capsys)
     assert code == 0 and not stderr
@@ -114,11 +123,16 @@ def test_bridge_persists_exact_physical_times_and_deduplicates_with_http(export,
             (z(export.start), z(export.end))
         ]
         assert db.execute("SELECT source, source_id FROM source_bindings").fetchall() == [
-            ("phone", phone_source_id("ios-test", "Synthetic-Group", 7, "audio"))
+            ("phone", phone_source_id(DEVICE, "Synthetic-Group", 7, "audio"))
         ]
+    # Deliberately enroll the same synthetic ID for the independent HTTP scope to
+    # prove that equal, independently known timestamps still share intake identity.
+    monkeypatch.setenv("EAR_INGEST_NATIVE_PHONE_DEVICE_ID", DEVICE)
+    monkeypatch.setenv("EAR_INGEST_NATIVE_PHONE_AFTER", z(export.cutoff))
     with TestClient(create_app()) as client:
         direct = send(
             client,
+            headers=HEADERS | {"X-Device-Id": DEVICE},
             data=fields(
                 group_id=export.event["group_id"],
                 timestamp=z(export.start - timedelta(seconds=10)),

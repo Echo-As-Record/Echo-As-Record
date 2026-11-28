@@ -3,9 +3,12 @@
 import hashlib
 import os
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO
+
+from ear_ingest.record import component
 
 if TYPE_CHECKING:
     from ear_adapter.recording_intake import RecordingIntake
@@ -27,6 +30,7 @@ _MEDIA_TYPE = re.compile(r"[a-z0-9][a-z0-9!#$&^_.+-]{0,63}/[a-z0-9][a-z0-9!#$&^_
 
 
 def config() -> tuple[Path, int] | None:
+    """Shared destination and byte limit, also used by the finalized event CLI."""
     value = os.environ.get("EAR_INGEST_NATIVE_ROOT", "")
     if not value:
         return None
@@ -36,6 +40,35 @@ def config() -> tuple[Path, int] | None:
     if not root.is_absolute() or not value.strip():
         raise RuntimeError("EAR_INGEST_NATIVE_ROOT must be an absolute path")
     return root, max_bytes()
+
+
+@dataclass(frozen=True, slots=True)
+class PhoneConfig:
+    root: Path
+    limit: int
+    device: str
+    after: datetime
+
+
+def phone_config() -> PhoneConfig | None:
+    """Only the HTTP listeners need the operator-verified session-clock source."""
+    options = config()
+    if options is None:
+        return None
+    root, limit = options
+    try:
+        device = component(os.environ.get("EAR_INGEST_NATIVE_PHONE_DEVICE_ID", "")).lower()
+    except ValueError:
+        raise RuntimeError(
+            "EAR_INGEST_NATIVE_PHONE_DEVICE_ID must be one valid device ID"
+        ) from None
+    try:
+        after = utc_datetime(os.environ.get("EAR_INGEST_NATIVE_PHONE_AFTER", ""))
+    except (ValueError, OverflowError):
+        raise RuntimeError(
+            "EAR_INGEST_NATIVE_PHONE_AFTER must be a timestamp with a known offset"
+        ) from None
+    return PhoneConfig(root, limit, device, after)
 
 
 def max_bytes() -> int:
@@ -55,7 +88,7 @@ def phone_times(payload: dict[str, Any]) -> tuple[datetime, datetime | None]:
     anchor = utc_datetime(payload["timestamp"])
     start = int(payload["segment_start_ms"])
     end = int(payload["segment_end_ms"])
-    # Session-wide Octopus notes have no end; the phone protocol sends two zero offsets.
+    # Session-wide notes have no end; the phone protocol sends two zero offsets.
     return anchor + timedelta(milliseconds=start), (
         anchor + timedelta(milliseconds=end) if end > start else None
     )

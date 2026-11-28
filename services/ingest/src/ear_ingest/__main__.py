@@ -55,7 +55,7 @@ def main() -> None:
         uvicorn.run(create_app(), host=args.host, port=args.port)
         return
     if args.command != "pair":
-        native.config()  # Reject mixed configuration before opening pairing state.
+        native.phone_config()  # Reject invalid HTTP configuration before opening pairing state.
     pairing = Pairing(Path(os.getenv("EAR_PAIRING_HOME", DEFAULT_HOME)).expanduser())
     if args.command == "relay":
         from ear_ingest.relay import create_relay

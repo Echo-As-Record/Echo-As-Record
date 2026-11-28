@@ -49,6 +49,7 @@ pytestmark = [
 START = datetime(2026, 1, 1, 23, 59, 58, 500000, tzinfo=UTC)
 END = START + timedelta(minutes=30)
 PROFILE = "ear-native/0.1.0+synthetic-postgres-nats"
+PHONE_DEVICE = "synthetic-earrecorder-storage"
 ROUTE = "/v1/recording-uploads"
 ADAPTER_READS = {
     "audio_ref",
@@ -161,7 +162,7 @@ def _post_phone(http, path, media, token):
             "/api/v1/record",
             data=form,
             files={"file": (path.name, f, media)},
-            headers=headers(token) | {"X-Device-Id": "synthetic-phone"},
+            headers=headers(token) | {"X-Device-Id": PHONE_DEVICE},
         )
     assert response.status_code == 200, response.text
     return response.json()["record_id"]
@@ -318,6 +319,8 @@ def test_native_phone_web_duplicate_reaches_official_reads(
         if key.startswith("EAR_INGEST_") or key == "EAR_TRANSCRIPTION_URL":
             monkeypatch.delenv(key)
     monkeypatch.setenv("EAR_INGEST_NATIVE_ROOT", str(spool))
+    monkeypatch.setenv("EAR_INGEST_NATIVE_PHONE_DEVICE_ID", PHONE_DEVICE)
+    monkeypatch.setenv("EAR_INGEST_NATIVE_PHONE_AFTER", format_utc(START))
     monkeypatch.setenv("EAR_INGEST_TOKEN", phone_token)
     monkeypatch.setenv("EAR_INGEST_INBOX_ROOT", str(tmp_path / "must-not-exist"))
 
