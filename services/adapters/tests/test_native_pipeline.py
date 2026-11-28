@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import BinaryIO
 from unittest.mock import Mock
 
+import httpx
 import pytest
 from ear_adapter.config import AdapterConfig
 from ear_adapter.convert import AmbientEvent, FileRef
@@ -27,12 +28,15 @@ from ear_adapter.native_pipeline import (
     ingest_native,
     native_audio_ref_id,
 )
+from ear_adapter.recording_intake import RecordingIntake, RecordingJob
+from ear_adapter.recording_worker import NativeRecordingPreparation, NativeRecordingPublication
 from ear_adapter.runtime import AlreadyIngested, Failed, Ingested, Pending, ingest_capture
 from ear_adapter.testing import FakeLocator, FakeSource, evidence_json
-from ear_contracts import DataChanged, RawRecord
+from ear_contracts import DataChanged, RawRecord, format_utc
 from ear_storage_client import MemoryStorage, Query
 from ear_storage_client.remote import RemoteStorageClient
 from ear_storage_client.remote_errors import CommitUnknown, ResourceLimit
+from ear_storage_client.wire import decode_request, encode_result
 
 
 def _wav() -> bytes:
@@ -527,3 +531,66 @@ def test_batch_limit_never_splits(tmp_path: Path, capture: CaptureInput) -> None
     )
     assert isinstance(outcome, Failed)
     assert remote.write.call_count == 1 and len(remote.write.call_args.args[0]) == 5
+
+
+@pytest.mark.parametrize(
+    "response", ["success", "definite_rejection", "lost_commit", "bad_receipt"]
+)
+def test_recording_worker_native_publication(tmp_path: Path, response: str) -> None:
+    intake = RecordingIntake(tmp_path / "spool")
+    receipt = intake.accept(
+        io.BytesIO(WAV),
+        source="web",
+        source_id=None,
+        started_at=format_utc(START),
+        media_type="audio/wav",
+    )
+    authority = MemoryStorage().client("adapter")
+    sent = 0
+
+    def duration(_job: RecordingJob, audio: BinaryIO) -> timedelta:
+        assert audio.read() == WAV
+        return END - START
+
+    def endpoint(request: httpx.Request) -> httpx.Response:
+        nonlocal sent
+        sent += 1
+        assert request.method == "POST" and request.url.path == "/v1/batches"
+        message = json.loads(request.content)
+        assert message.pop("request_id") == receipt.id
+        ops, context = decode_request(json.dumps(message))
+        if response == "definite_rejection":
+            return httpx.Response(413)
+        result = authority.write(ops, context)
+        if response == "lost_commit":
+            raise httpx.ReadTimeout("private response body")
+        if response == "bad_receipt":
+            result = replace(result, results=result.results[:-1])
+        return httpx.Response(200, text=encode_result(result))
+
+    provider = _FakeProvider()
+    prepare = NativeRecordingPreparation(provider, FIXTURE_CONFIG, duration)
+    with RemoteStorageClient(
+        "S" * 43, "http://127.0.0.1", transport=httpx.MockTransport(endpoint)
+    ) as remote:
+        with intake.worker() as worker:
+            assert worker.run_one(prepare, NativeRecordingPublication(remote))
+            assert worker.get_result(receipt.id) is not None
+        with RecordingIntake(intake.root).worker() as worker:
+            assert not worker.run_one(prepare, NativeRecordingPublication(remote))
+    assert provider.calls == ["asr", "speaker", "ambient"]
+    assert sent == 1
+    status = intake.get(receipt.id)
+    assert status is not None
+    if response == "definite_rejection":
+        assert status["state"] == "failed"
+        assert authority.count(Query(data_type="audio_ref")) == 0
+    else:
+        assert status["state"] == ("succeeded" if response == "success" else "blocked")
+        records = authority.query(Query(data_type="audio_ref")).items
+        assert len(records) == 1
+        audio_ref = records[0]
+        assert isinstance(audio_ref, RawRecord)
+        assert audio_ref.event_start == START and audio_ref.event_end == END
+        assert (intake.root / audio_ref.payload["file_ref"]["path"]).read_bytes() == WAV
+        assert authority.count(Query(data_type="transcript_segment")) == 1

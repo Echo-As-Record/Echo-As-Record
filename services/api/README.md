@@ -23,6 +23,27 @@ HEAD **`84d2d0f` 已包含 `origin/dev ba36543`（PR #20）及此前GPS**；不�
 - [动态插件 MVP](../../docs/design/plugins-mvp.md)（管理页与异步反馈）、[工作分解 v1.2](../../docs/design/work-breakdown-v1.2.md)（⑥一节，含验收标准）
 - [实现说明与验证记录](ai-docs/implementation.md)；[全局实施计划](../../ai-docs/plans/mvp-implementation.md)；[①当前状态](../storage/ai-docs/progress.md)；[⑦大模型入口](../llm_gateway/README.md)
 
+## 原生录音上传（默认关闭）
+
+在受保护的 API JSON 配置中显式设置 `recording_intake_root`（绝对路径）和 `public_origin`。
+只有一个绑定且其角色为 `user` 时可省略 `recording_intake_owner`；有多个绑定时必须设置为
+唯一获准的普通用户 `subject`，管理员令牌不能代用。⑥每次提交和查状态均复核该绑定在①的当前身份。
+已显式启用的回环 `test_no_auth` 沿用业务端点的固定普通用户绑定，不改用管理员身份；不要将免登录实例对外暴露。
+
+将这个私有本地 spool 配给同一用户的接收端和处理 worker。目录必须由运行 API/worker 的同一 UID 拥有，
+权限 `0700`，不可位于静态文件目录中；仅记录根目录最后一层可由 spool 创建，部署负责提供父目录和持久卷。
+容器内 API 的 UID 为 `10001`。该配置授权所有者按 ID 查询本 spool 的音频处理状态（包括通过兼容渠道进入的音频）；
+不得用同一个 spool 隔离不同用户，一旦已有录音也不要把同一 spool 改配给另一主体。
+worker 另行运行；本功能不监视目录、不调用旧 Ear，也不直接向①写原始数据。
+
+- 手动上传：从结果页的「上传录音」进入 `/recording-upload/`，选择 WAV/M4A，填写实际录音开始日期、时间和当时的 UTC 偏移；不从文件名、修改时间或当前时间猜测。也可输入已有任务编号查看状态。
+- 自动/兼容上传：`POST /v1/recording-uploads`，请求体是 WAV/M4A 原始字节（不是 multipart 或 JSON）。`Content-Type` 使用 `audio/wav` 或 `audio/mp4`（兼容常见 WAV/M4A 别名）；`X-Recording-Started-At` 必须是有明确偏移的 RFC 3339 时间，例如 `2026-11-20T18:01:02-07:00`。客户端用部署的 `public_origin` 作为 `Origin`，请求 Host 必须匹配；令牌只能通过 `Authorization: Bearer …` 传入，不接受 URL 参数或服务器路径。代理需保留 Host/Origin；跨源请求不受理，不提供 CORS。
+- 上传的独立限额是 `recording_upload_max_bytes`（默认/最大 512 MiB）和 `recording_upload_timeout`（默认 300 秒，最大 1800 秒，为接收请求体的总时限）。同一 API 进程一次只收一个上传（忙时 429）。上传先在私有 spool 卷匿名暂存，不占用容器 `/tmp`；入队复制期间同卷须能容纳两份上传大小（另加已有数据及元数据）。其他 API 仍按 `max_body_bytes` 和 `body_timeout` 的普通规则。
+- 新文件持久入队返回 `202` 和 `{id, state, duplicate}`；相同字节、相同开始时间的重复提交返回 `200` 和同一 ID；同字节不同开始时间返回 `409`，不会修改原任务。若没有收到回执，可用同样的字节和时间取回原回执。
+- `GET /v1/recording-uploads/{id}` 用相同所有者鉴权，返回 `{id, state, attempts, error}`，不返回路径、文件或转写正文。`queued`/`processing`/`committing` 不是完成，`succeeded` 是确认入库，`failed` 是失败，`blocked` 表示入库结果未知且不会自动重试。`GET /v1/session` 仅在启用时公开 `recording_upload: true`，不披露绑定或 spool。
+
+源码接口和 worker 的故障恢复边界见[原生录音接入说明](../adapters/ai-docs/recording-intake.md)。
+
 ## 网页大模型设置（显式部署启用）
 
 在插件管理页进入 `/model-settings/`；配置 `model_settings_file` 后，管理员可查看、修改保存的模型 ID。默认使用管理员 Bearer；测试免登录模式默认不启用 `GET/PUT /v1/settings/model`。仅在显式回环管理员模式额外开启 `test_no_auth_model_settings: true` 时，网页才自动连入这两个端点，无需 Bearer。两种模式都复核①当前管理权限；免登录写请求仍要求匹配配置的同源 Origin。更新按修订号比较并原子写入；旧修订返回409，需要重新读取。保存不发起模型请求；由操作者重启⑦后读取新值，页面不把保存值当作正在运行的配置。第一版固定上游，网页不编辑地址或 API key。配置和验证边界见[⑦部署说明](../llm_gateway/README.md#直连-new-api可选)。

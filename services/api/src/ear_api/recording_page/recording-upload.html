@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex">
+  <title>上传录音 · Ear</title>
+  <link rel="stylesheet" href="recording-upload.css">
+  <script src="recording-upload.js" defer></script>
+</head>
+<body>
+  <main>
+    <nav aria-label="页面导航"><a href="/results/">返回活动与笔记</a></nav>
+    <h1>上传录音</h1>
+    <p>选择一个 WAV 或 M4A 文件，填写录音真正开始的时间。上传完成只表示文件已接收，不表示已转写或入库。</p>
+    <form id="connect-form" method="post" autocomplete="off" hidden>
+      <label for="token-input">录音所有者的 Ear API 令牌</label>
+      <input id="token-input" type="password" required maxlength="43" autocomplete="off" spellcheck="false" autocapitalize="off">
+      <button type="submit">连接</button>
+      <p>令牌只保留在当前页面内存中。</p>
+    </form>
+    <section id="recordings" hidden>
+      <form id="upload-form" method="post" autocomplete="off">
+        <fieldset id="upload-fields">
+          <legend>新录音</legend>
+          <label for="audio-file">录音文件（WAV 或 M4A）</label>
+          <input id="audio-file" type="file" accept=".wav,.m4a,audio/wav,audio/mp4" required>
+          <label for="started-at">录音开始日期与时间</label>
+          <input id="started-at" type="datetime-local" step="1" required>
+          <label for="offset">时区（录音当时相对 UTC 的偏移）</label>
+          <input id="offset" type="text" placeholder="例如 +08:00 或 -07:00" pattern="[+\-][0-9]{2}:[0-9]{2}" maxlength="6" aria-describedby="offset-hint" spellcheck="false" required>
+          <small id="offset-hint">UTC 请填 +00:00；使用夏令时的地区请填写录音当日实际偏移。</small>
+          <button type="submit">上传录音</button>
+        </fieldset>
+      </form>
+      <form id="lookup-form" method="post" autocomplete="off">
+        <fieldset id="lookup-fields">
+          <legend>查看处理状态</legend>
+          <label for="job-id">任务编号</label>
+          <input id="job-id" type="text" maxlength="36" required spellcheck="false" autocapitalize="off">
+          <button type="submit">查询状态</button>
+        </fieldset>
+      </form>
+      <button id="disconnect" type="button" hidden>断开并清除令牌</button>
+    </section>
+    <p id="status" role="status" aria-live="polite">正在检查登录方式…</p>
+  </main>
+</body>
+</html>

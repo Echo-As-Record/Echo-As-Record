@@ -5,7 +5,7 @@ doc-type: reference
 
 # Ingest：手机录音接收服务
 
-接收手机 multipart 上传，写入旧 Ear 已有的 Brain inbox 布局。可按单条事件通知旧 Ear 转写和处理上下文，② adapters 继续读取 Evidence API。本服务不写①，不修改旧 Ear，不承担音频处理或 Octopus 服务发现。
+接收手机 multipart 上传。默认写入旧 Ear 已有的 Brain inbox 布局，可按单条事件通知旧 Ear 转写和处理上下文；另可显式切换到②的原生录音接收队列。本服务不写①，不修改旧 Ear，不承担音频处理或 Octopus 服务发现。
 
 本次实现依据负责人直接授权的接收服务任务；[抽取提案](../../docs/proposals/phone-recorder-extraction.md)已采纳。这里的旧格式、覆盖重传和本机时间目录属于外部 inbox 兼容边界，不改变①的只追加及 UTC 数据契约。
 
@@ -23,11 +23,45 @@ uv run ear-ingest serve --host 0.0.0.0 --port 8791
 | 环境变量 | 含义 |
 |---|---|
 | `EAR_INGEST_TOKEN` | 必需的共享 bearer token；未配置或全空白时启动失败 |
-| `EAR_INGEST_INBOX_ROOT` | 默认 `~/.local/share/ear/inbox/brain`；旧部署可显式设为 `~/.octopus/local/inbox/brain`；测试务必使用临时目录 |
+| `EAR_INGEST_INBOX_ROOT` | 仅旧模式使用，默认 `~/.local/share/ear/inbox/brain`；旧部署可显式设为 `~/.octopus/local/inbox/brain`；测试务必使用临时目录 |
 | `EAR_INGEST_EVENT_URL` | 推荐配置。旧 Ear 可直连的单条事件完整 URL，例如 `http://127.0.0.1:8794/internal/api/ingest/brain-event` |
 | `EAR_INGEST_NOTIFY_URL` | 兼容旧部署，可选的 `/api/ingest/reconcile` 完整 URL。与 EVENT_URL 互斥 |
+| `EAR_INGEST_NATIVE_ROOT` | ②原生队列的私有绝对路径。HTTP 进程还必须同时设置以下两个 PHONE 变量才会启动原生模式。与两种旧通知 URL 均互斥；不读写旧 inbox |
+| `EAR_INGEST_NATIVE_PHONE_DEVICE_ID` | 原生 HTTP 唯一允许的设备 ID，大小写无关。必须是操作者拥有且已核验使用 EarRecorder 会话时钟的设备，不是任意 iOS 设备 |
+| `EAR_INGEST_NATIVE_PHONE_AFTER` | 原生 HTTP 的固定启用时刻，使用带已知偏移的时间（建议 UTC `Z`）。以**实际段起点**为准，从该时刻起接收，不补旧段 |
+| `EAR_INGEST_NATIVE_MAX_BYTES` | 原生上传的请求正文上限（含 multipart 开销），默认 134217728 字节，允许 1–536870912；②仍可按媒体类型施加更小的附件上限 |
 
 `GET /health` 无需鉴权，返回 `{"ok": true}`；不检测旧 Ear、磁盘空间或通知连接。CLI 默认绑定 `127.0.0.1:8791`，可用 `--host`、`--port` 修改。文件锁采用 POSIX `flock`，支持本机 macOS/Linux；部署文件系统须支持该锁与原子 rename。
+
+## 原生自动接入（可选）
+
+默认仍为旧模式。仅在已核验设备上启用原生 HTTP：用可信渠道确认操作者持有的设备及 EarRecorder 版本，核对非首段上传的 `timestamp` 与独立记录的会话起点一致，并且加上段偏移后与实际段起点一致。仅向该客户端发放用于该接收端的上传凭据，不与 Octopus 或未核验的客户端共用；设备头不是客户端证明，持有同一凭据的其他客户端也能声称自己是该设备。无法核验或隔离凭据时，不要开启原生 HTTP。升级或更换采集端后重新核验。
+
+为同一接收地址处理上传的所有进程（普通、配对、加密中继）配置相同的 `EAR_INGEST_NATIVE_ROOT` 和两个 PHONE 变量，同时去掉两种旧通知 URL；缺失、无效或混用的配置拒绝启动。选择启用时的固定时间，不要用每次重启的当前时间，也不要为接收积压而把时间回拨。仅配置 PHONE 变量、未设 ROOT 时仍是旧模式。路径及其父级需符合②原生队列的安全要求，现有父目录不可经软链接，队列为服务所有用户的私有目录。配置旧 `EAR_INGEST_INBOX_ROOT` 不会让原生模式回退或双写。不用旧 Ear、旧 inbox 或旧交付数据库，也不扫描或迁移历史。
+
+- 地址、两条上传路由、Bearer 鉴权、配对、`/health` HMAC 和加密中继协议不变；HTTPS 回退仍需把同一请求转给该接收端。原生上传先鉴权，再比较当前请求唯一的 `X-Device-Id`，非配置设备返回 403，不读取 multipart 正文。中继在鉴权并解出录音请求的元数据后执行同一设备限制，再读取剩余正文并检查正文与帧开销；验证结束帧后才转入接收端。外层设备不符（403）或超限（413）不产生中继回执。长度、设备范围限制不应用到旧模式、配对、健康检查和实时转写。
+- `timestamp` 必须是 `YYYY-MM-DDTHH:MM:SS[.小数]Z` 或带明确 `±HH:MM` 的会话起点。先规整到 UTC，再加相对毫秒。以计算出的段起点与固定启用时刻比较：早于启用即返回 400，不入队、不归档、无持久确认，即使段结束晚于启用；会话较早但段起点达到启用时刻的段可以接收。同一设备（统一小写）、组、段号和类型构成稳定键。不从客户端的 `source`、`X-User-Id`、文件名、设备名前缀、路由或中继 ticket 推断时间基准。
+- `richVoice` 必须是②支持的音频，原生队列只对音频安排识别。`phoneContext` 独立归档，不等音频，不表示已提取 GPS 或手机状态。接收端将 `phoneIMU`、`phoneNotes` 分别交给②的 `imu`、`notes` 归档类型；**所用 `RecordingIntake` 必须支持相应类型才会成功**。不支持的类型和坏文件返回非 2xx，不回退到旧 Ear，也不伪装成音频或 Context。
+- 仅在共享 intake 确认持久化后返回 `{"ok":true,"record_id":"…","path":"…"}`。原生 `record_id` 是 intake ID；`path` 仍为绝对诊断路径，但指向真实队列目录，不是 Brain JSON。重试相同内容可得到原回执；共享 intake 判定冲突返回 409，不覆盖已受理数据。成功只确认队列或归档，不代表识别成功、数据已写入①或下游可用。
+
+这一步是**同主机、同一受信任本地持久卷**的自动交接：ingest 生产，②消费，二者须由部署者明确配成看到同一队列。分主机不假设有挂载，生产使用前需要经过鉴权的加密 store-and-forward、可靠重试和持久确认；现有手机中继不会替代该服务间交接。
+
+容量：为共享 spool 使用专用、有配额的持久卷并监控剩余空间。HTTP multipart 的大附件和加密中继的解密正文仍使用进程的临时目录；启动原生进程前，将 `TMPDIR` 指向预先创建的服务私有、有限额且容量足够的目录（不要依赖容器的小 `/tmp`）。按并发预留直接上传的 multipart 暂存和 spool 写入；中继再多一份解密正文。请求字节上限不是卷容量或并发上限。
+
+### Octopus 手机上传和独立落地
+
+- **Octopus iOS 不可直连原生 HTTP**，旧 Brain 路由兼容不代表时钟兼容。查阅的 Octopus iOS `6786977` 在部分分段上传段起始的绝对时间，也可能回退到会话起点；无法由 HTTP 字段可靠区分，重复加偏移会移动记录时间。请继续使用旧模式，或仅在独立核验原始段时间和真实封口之后使用下述 finalized 入口；不接管 Octopus Manager、PC 发现或登录。
+- 对仍落在其它 Octopus 接收端的文件，`ear-ingest octopus-finalized` 仅提供一个**本机可信生产者**的单次入口。上游必须在真正封口后主动调用并提供最终字节、原始段时间和事件时间；不要把此命令直接暴露给网络或不受信任的调用者。它不接受文件路径，不搜索旧 inbox、目录或历史清单。
+- 额外显式配置 `EAR_INGEST_OCTOPUS_DEVICE_ID`（唯一允许设备，大小写无关）和 `EAR_INGEST_OCTOPUS_FINALIZED_AFTER`（固定启用时间，带时区）。这两个变量只授权可信封口事件，不会启用原生 HTTP；仅运行封口入口不需要 PHONE 变量。输入为一行 UTF-8 JSON（含 LF 最多 8192 字节），后接该条附件的原始字节并立即 EOF。对象字段必须恰好如下，字段顺序任意：
+
+  ```text
+  event="record.finalized.v1", device, group_id, segment_index, type, media_type,
+  started_at, ended_at, finalized_at, size, sha256
+  ```
+
+  起止时间为**绝对时间**；无结束时间只允许第 0 段会话 Notes（`ended_at: null`）。结束（无结束用起点）与可信封口时间均不能早于启用时间；封口时间不能超前或超过 24 小时。`size` 为正整数字节数且受原生上限约束，`sha256` 为 64 位小写十六进制。独立校验长度和摘要后才入队；退出 0 且输出 JSON 代表已持久确认，非零不确认。生产者负责保留附件、在允许窗口内重试以及观察非零退出。与 HTTP 路径使用同样的身份，不应同时配置两路投递，尤其是两路时间基准未对齐时。
+
+- `ear-ingest octopus-bridge` 可由操作者单次运行，从 Octopus 拥有的专用原始封口导出读取有界批次，校验后通过同一 finalized 入口入队；也可以只输出一条已校验的 wire frame，交给异机接收端。不安装 Octopus 钩子，不读取旧 Ear，不调度或补扫历史。前置条件、导出格式和重试见 [Octopus 封口导出接入](octopus-bridge.md)。若只有旧 Ear 拥有的挂载，或上游无法提供确切的物理段时间及封口事件，则不能激活。
 
 ## macOS 登录后常驻
 
@@ -53,6 +87,8 @@ python3 services/ingest/scripts/isolate_direct.py --seconds 600
 脚本适用于上面记录的 macOS 用户 LaunchAgent，使用临时配置，计时结束或按 Ctrl-C 后重新加载原配置并验证监听。隔离期间检查 Mac 的局域网 IP 请求失败、备用入口健康，然后用手机的 `upload_probe`、`upload_dispatch` 和真实 inbox 验收。该方法隔离的是接收端直连路径；单凭这三个结果无法识别手机公网请求使用的无线接口。
 
 ## 上传协议
+
+以下详细的旧格式、覆盖重传、无总量限制和文件路径指默认旧模式；原生模式的差异见上文。
 
 - `POST /api/v1/record`；兼容 `POST /api/v1/instances/{instance}/service/api/v1/record`，其中 instance 必须与 `brain___<X-Device-Id>` 大小写无关地一致。
 - `Authorization: Bearer <token>` 必需，常量时间比较，失败 401；在解析上传体前鉴权。

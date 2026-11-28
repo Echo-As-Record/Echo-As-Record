@@ -13,7 +13,7 @@ from pathlib import Path
 from threading import Lock
 from typing import BinaryIO, Literal, Protocol
 
-from ear_contracts import RawRecord, format_utc
+from ear_contracts import NewRawRecord, RawRecord, format_utc
 from ear_storage_client import InvalidRequest, StorageClient
 from ear_storage_client.remote_errors import ServiceUnavailable
 
@@ -32,6 +32,7 @@ __all__ = [
     "SpeakerResult",
     "ingest_native",
     "native_audio_ref_id",
+    "prepare_native_records",
 ]
 
 NATIVE_ADAPTER_VERSION = "ear-native/0.1.0"
@@ -319,6 +320,64 @@ def _ambient(events: tuple[AmbientEvent, ...], capture: CaptureInput) -> tuple[A
     return tuple(checked)
 
 
+class NativePreparationFailed(ValueError):
+    """A native provider or conversion failed without exposing its inputs."""
+
+
+def prepare_native_records(
+    capture: CaptureInput,
+    audio: BinaryIO,
+    *,
+    provider: RecognitionProvider,
+    config: AdapterConfig,
+) -> list[NewRawRecord]:
+    """Build a native batch from a verified private stream; never touch storage.
+
+    The caller owns the stream and must validate it against the capture first.
+    """
+    stage = "ASR"
+    try:
+        cfg = _config(config)
+        key = _input_key(capture, cfg)
+        audio.seek(0)
+        asr = provider.asr(audio, capture)
+        asr, chunks = _asr(asr, capture)
+        stage = "speaker"
+        speakers = ()
+        if asr.segments:
+            audio.seek(0)
+            speakers = _speakers(provider.speakers(audio, capture, asr), asr)
+        stage = "ambient"
+        audio.seek(0)
+        events = _ambient(provider.ambient(audio, capture), capture)
+        stage = "conversion"
+        records = audio_records(
+            config=cfg,
+            device_id=capture.device_id,
+            ckey=key,
+            started_at=capture.started_at,
+            ended_at=capture.ended_at,
+            audio_file=capture.file_ref,
+            media_type=capture.media_type,
+            upstream={
+                "service": "ear-native",
+                "capture_id": capture.capture_id,
+                "record_id": capture.record_id,
+                "group_id": capture.group_id,
+            },
+            chunks=chunks,
+            segments=asr.segments,
+            resolutions=speakers,
+            events=events,
+        )
+        if audio.closed:
+            raise _InvalidResult
+        return records
+    except Exception:
+        # Providers can include paths, text or vendor responses in errors.
+        raise NativePreparationFailed(f"native {stage} failed or incomplete") from None
+
+
 def ingest_native(
     capture: CaptureInput,
     *,
@@ -343,7 +402,6 @@ def ingest_native(
         return Failed(capture.capture_id, "invalid native adapter configuration")
     key = _input_key(capture, cfg)
     marker_id = deterministic_id(capture.started_at, "audio_ref", cfg.adapter_version, key)
-    stage = "ASR"
 
     def existing() -> Outcome | None:
         old = storage.get(marker_id)
@@ -372,41 +430,9 @@ def ingest_native(
                 if initial is not None:
                     return initial
                 try:
-                    asr = provider.asr(audio, capture)
-                    asr, chunks = _asr(asr, capture)
-                    stage = "speaker"
-                    speakers = ()
-                    if asr.segments:
-                        audio.seek(0)
-                        speakers = _speakers(provider.speakers(audio, capture, asr), asr)
-                    stage = "ambient"
-                    audio.seek(0)
-                    events = _ambient(provider.ambient(audio, capture), capture)
-                    stage = "conversion"
-                    records = audio_records(
-                        config=cfg,
-                        device_id=capture.device_id,
-                        ckey=key,
-                        started_at=capture.started_at,
-                        ended_at=capture.ended_at,
-                        audio_file=capture.file_ref,
-                        media_type=capture.media_type,
-                        upstream={
-                            "service": "ear-native",
-                            "capture_id": capture.capture_id,
-                            "record_id": capture.record_id,
-                            "group_id": capture.group_id,
-                        },
-                        chunks=chunks,
-                        segments=asr.segments,
-                        resolutions=speakers,
-                        events=events,
-                    )
-                    if audio.closed:
-                        raise _InvalidResult
-                except Exception:
-                    # Providers can include paths, text or vendor responses in errors.
-                    return Failed(capture.capture_id, f"native {stage} failed or incomplete")
+                    records = prepare_native_records(capture, audio, provider=provider, config=cfg)
+                except NativePreparationFailed as exc:
+                    return Failed(capture.capture_id, str(exc))
                 publication.enter_context(_PUBLISH)
                 winner = existing()
                 if winner is not None:

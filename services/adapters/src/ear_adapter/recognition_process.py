@@ -19,6 +19,7 @@ OS process creation or kernel stalls; the launcher is the hard boundary.
 
 from __future__ import annotations
 
+import io
 import json
 import math
 import os
@@ -30,6 +31,7 @@ import subprocess
 import sys
 import time
 import weakref
+from abc import ABC, abstractmethod
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -72,30 +74,52 @@ def _require(ok: bool) -> None:
         raise ValueError
 
 
-def _read_wav(audio: BinaryIO, capture: CaptureInput) -> tuple[bytes, datetime, bool]:
-    size = capture.file_ref.size
-    _require(capture.media_type in ("audio/wav", "audio/x-wav") and 44 <= size <= _MAX_WAV)
-    _require(audio.tell() == 0)
-    raw = audio.read(size + 1)
-    _require(len(raw) == size and raw[:4] == b"RIFF" and raw[8:12] == b"WAVE")
-    _require(struct.unpack_from("<I", raw, 4)[0] == size - 8)
-    pos, formatted, pcm = 12, False, b""
+class _PartialRecognition(RecognitionProcessError):
+    """The pinned worker reported incomplete ASR (exit 3); not silence."""
+
+
+def _wav_extent(
+    audio: BinaryIO, size: int, max_pcm: int, *, max_chunks: int | None = None
+) -> tuple[int, int]:
+    """Find the sole canonical PCM data extent, without reading any metadata bodies."""
+    head = audio.read(12)
+    _require(len(head) == 12 and head[:4] == b"RIFF" and head[8:] == b"WAVE")
+    _require(struct.unpack_from("<I", head, 4)[0] == size - 8)
+    pos, formatted, offset, pcm_size = 12, False, 0, 0
+    chunks = 0
     while pos < size:
-        _require(pos + 8 <= size)
-        tag, length = struct.unpack_from("<4sI", raw, pos)
+        chunks += 1
+        _require((max_chunks is None or chunks <= max_chunks) and pos + 8 <= size)
+        audio.seek(pos)
+        header = audio.read(8)
+        _require(len(header) == 8)
+        tag, length = struct.unpack("<4sI", header)
         left = pos + 8
         pos = left + length + length % 2
         _require(pos <= size)
         if tag == b"fmt ":
             _require(not formatted and length == 16)
-            _require(struct.unpack_from("<HHIIHH", raw, left) == _PCM_FORMAT)
+            fmt = audio.read(16)
+            _require(len(fmt) == 16 and struct.unpack("<HHIIHH", fmt) == _PCM_FORMAT)
             formatted = True
         elif tag == b"data":
-            _require(formatted and not pcm and 2 * _RATE <= length <= _MAX_PCM and length % 2 == 0)
-            pcm = raw[left : left + length]
+            _require(formatted and not pcm_size and 2 * _RATE <= length <= max_pcm)
+            _require(length % 2 == 0)
+            offset, pcm_size = left, length
         else:
             _require(tag in _OPTIONAL_WAV_TAGS)
-    _require(bool(pcm))
+    _require(bool(pcm_size))
+    return offset, pcm_size
+
+
+def _read_wav(audio: BinaryIO, capture: CaptureInput) -> tuple[bytes, datetime, bool]:
+    size = capture.file_ref.size
+    _require(capture.media_type in ("audio/wav", "audio/x-wav") and 44 <= size <= _MAX_WAV)
+    _require(audio.tell() == 0)
+    raw = audio.read(size + 1)
+    _require(len(raw) == size)
+    offset, length = _wav_extent(io.BytesIO(raw), size, _MAX_PCM)
+    pcm = raw[offset : offset + length]
     end = capture.started_at + timedelta(microseconds=round((len(pcm) // 2) * 1_000_000 / _RATE))
     _require(abs(capture.ended_at - end) <= timedelta(milliseconds=1))
     # Do not send even allowed WAV metadata (which might contain identifiers).
@@ -145,6 +169,12 @@ def _exchange(child: subprocess.Popen[bytes], wav: bytes, deadline: float) -> by
             # pipes is not allowed to hold up the caller until the deadline.
             exited = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
             if exited is not None:
+                if (
+                    exited.si_code == os.CLD_EXITED
+                    and exited.si_status == 3
+                    and offset == len(data)
+                ):
+                    raise _PartialRecognition("recognition worker failed")
                 if exited.si_code != os.CLD_EXITED or exited.si_status or offset != len(data):
                     raise RecognitionProcessError("recognition worker failed")
                 if eof:
@@ -399,62 +429,16 @@ class _Staged:
     ambient: tuple[AmbientEvent, ...]
 
 
-class RecognitionProcess(RecognitionProvider):
-    """One process per ASR call; consume later stages once, on the same capture.
+class _RecognitionStages(RecognitionProvider, ABC):
+    @abstractmethod
+    def asr(self, audio: BinaryIO, capture: CaptureInput) -> ASRResult: ...
 
-    Use serially with ingest_native. The input is the borrowed, pinned stream;
-    the subprocess sees only normalized audio bytes and capture UTC boundaries.
-    The timeout is in seconds (default 245, maximum 300), plus bounded reap.
-    """
-
-    def __init__(self, command: tuple[str, ...], *, timeout: float = 245.0) -> None:
-        if (
-            sys.platform != "linux"
-            or type(command) is not tuple
-            or not command
-            or not all(type(arg) is str and arg and "\0" not in arg for arg in command)
-            or not os.path.isabs(command[0])
-            or any(arg.split("=", 1)[0] in ("--started-at", "--ended-at") for arg in command)
-            or type(timeout) not in (int, float)
-            or not 0 < timeout <= 300
-        ):
-            raise ValueError("invalid recognition process configuration")
-        self._command = command
-        self._timeout = timeout
+    def __init__(self) -> None:
         self._pending: _Staged | None = None
 
     def _discard(self, stream: weakref.ReferenceType[BinaryIO]) -> None:
         if self._pending is not None and self._pending.stream is stream:
             self._pending = None
-
-    def asr(self, audio: BinaryIO, capture: CaptureInput) -> ASRResult:
-        self._pending = None
-        failed: Literal["input", "process", "result"] = "input"
-        try:
-            stream = weakref.ref(audio, self._discard)
-            wav, end, silent = _read_wav(audio, capture)
-            command = (
-                *self._command,
-                "--started-at",
-                format_utc(capture.started_at),
-                "--ended-at",
-                format_utc(capture.ended_at),
-            )
-            failed = "process"
-            raw = _run(command, wav, self._timeout)
-            failed = "result"
-            asr, speakers, ambient = _result(raw, capture, end, silent)
-        except RecognitionProcessError:
-            raise
-        except (OSError, ValueError, TypeError, OverflowError, subprocess.SubprocessError):
-            # Raise outside the handler so the original exception/body is not chained.
-            pass
-        else:
-            self._pending = _Staged(
-                stream, capture, asr if asr.segments else None, speakers, ambient
-            )
-            return asr
-        raise RecognitionProcessError(f"recognition worker {failed} rejected")
 
     def _stage(self, audio: BinaryIO, capture: CaptureInput) -> _Staged:
         staged, self._pending = self._pending, None
@@ -485,3 +469,72 @@ class RecognitionProcess(RecognitionProvider):
         if staged.asr is not None:
             raise RecognitionProcessError("recognition stage mismatch")
         return staged.ambient
+
+
+class RecognitionProcess(_RecognitionStages):
+    """One process per ASR call; consume later stages once, on the same capture.
+
+    Use serially with ingest_native. The input is the borrowed, pinned stream;
+    the subprocess sees only normalized audio bytes and capture UTC boundaries.
+    The timeout is in seconds (default 245, maximum 300), plus bounded reap.
+    """
+
+    def __init__(self, command: tuple[str, ...], *, timeout: float = 245.0) -> None:
+        if (
+            sys.platform != "linux"
+            or type(command) is not tuple
+            or not command
+            or not all(type(arg) is str and arg and "\0" not in arg for arg in command)
+            or not os.path.isabs(command[0])
+            or any(arg.split("=", 1)[0] in ("--started-at", "--ended-at") for arg in command)
+            or type(timeout) not in (int, float)
+            or not 0 < timeout <= 300
+        ):
+            raise ValueError("invalid recognition process configuration")
+        self._command = command
+        self._timeout = timeout
+        super().__init__()
+
+    def _recognize(
+        self, audio: BinaryIO, capture: CaptureInput, *, deadline: float | None = None
+    ) -> tuple[ASRResult, tuple[SpeakerResult, ...], tuple[AmbientEvent, ...], int]:
+        """Run one window, returning validated results and the bounded reply byte count."""
+        failed: Literal["input", "process", "result"] = "input"
+        try:
+            wav, end, silent = _read_wav(audio, capture)
+            command = (
+                *self._command,
+                "--started-at",
+                format_utc(capture.started_at),
+                "--ended-at",
+                format_utc(capture.ended_at),
+            )
+            failed = "process"
+            timeout = self._timeout
+            if deadline is not None:
+                timeout = min(timeout, deadline - time.monotonic())
+                if timeout <= 0:
+                    raise RecognitionProcessError("recognition worker timed out")
+            raw = _run(command, wav, timeout)
+            failed = "result"
+            return (*_result(raw, capture, end, silent), len(raw))
+        except RecognitionProcessError:
+            raise
+        except (OSError, ValueError, TypeError, OverflowError, subprocess.SubprocessError):
+            # Raise outside the handler so the original exception/body is not chained.
+            pass
+        raise RecognitionProcessError(f"recognition worker {failed} rejected")
+
+    def asr(self, audio: BinaryIO, capture: CaptureInput) -> ASRResult:
+        self._pending = None
+        try:
+            stream = weakref.ref(audio, self._discard)
+        except TypeError:
+            raise RecognitionProcessError("recognition worker input rejected") from None
+        try:
+            asr, speakers, ambient, _ = self._recognize(audio, capture)
+        except _PartialRecognition:
+            # Keep the short entry point's public failure type unchanged.
+            raise RecognitionProcessError("recognition worker failed") from None
+        self._pending = _Staged(stream, capture, asr if asr.segments else None, speakers, ambient)
+        return asr

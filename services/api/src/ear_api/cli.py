@@ -1,4 +1,4 @@
-"""Deployment CLI; explicit protected config file, no migrations or resource creation."""
+"""Deployment CLI; explicit protected config, no upstream migrations or provisioning."""
 
 from __future__ import annotations
 

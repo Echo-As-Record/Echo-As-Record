@@ -7,13 +7,16 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import BinaryIO, cast
 from urllib.parse import urlsplit
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
+from ear_ingest import native
 from ear_ingest.delivery import Delivery
+from ear_ingest.limited import native_form
 from ear_ingest.pairing import Pairing
 from ear_ingest.record import component, parse
 from ear_ingest.store import persist
@@ -55,6 +58,12 @@ def create_app(pairing: Pairing | None = None) -> FastAPI:
         parsed = urlsplit(url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username:
             raise RuntimeError(f"{key} must be an HTTP(S) URL without credentials")
+    native_phone = native.phone_config()
+    intake = None
+    if native_phone is not None:
+        from ear_adapter.recording_intake import RecordingIntake
+
+        intake = RecordingIntake(native_phone.root)
     delivery = Delivery(root) if event_url else None
 
     @asynccontextmanager
@@ -72,6 +81,7 @@ def create_app(pairing: Pairing | None = None) -> FastAPI:
             await worker
 
     app = FastAPI(lifespan=lifespan)
+    app.state.native_phone = native_phone
     if upstream := os.environ.get("EAR_TRANSCRIPTION_URL"):
         from ear_ingest.transcription import transcription_router
 
@@ -116,7 +126,11 @@ def create_app(pairing: Pairing | None = None) -> FastAPI:
         if scheme.lower() != "bearer" or not matched:
             raise HTTPException(401, "Invalid bearer token", headers={"WWW-Authenticate": "Bearer"})
         try:
+            if native_phone is not None and len(request.headers.getlist("x-device-id")) != 1:
+                raise ValueError("Expected one X-Device-Id")
             device = component(request.headers.get("x-device-id", "")).lower()
+            if native_phone is not None and device != native_phone.device:
+                raise HTTPException(403, "Device is not enabled for native recording uploads")
             legacy = request.path_params.get("instance")
             if legacy is not None and legacy.lower() != f"brain___{device}":
                 raise ValueError("Legacy instance must match X-Device-Id")
@@ -126,14 +140,38 @@ def create_app(pairing: Pairing | None = None) -> FastAPI:
                 .startswith("multipart/form-data")
             ):
                 raise ValueError("Expected multipart/form-data")
-            async with request.form(max_files=1, max_fields=12) as form:
-                payload, upload = parse(form)
-                if user := request.headers.get("x-user-id"):
-                    payload["user_id"] = user
+            form_context = (
+                native_form(request, native_phone.limit)
+                if native_phone is not None
+                else request.form(max_files=1, max_fields=12)
+            )
+            async with form_context as form:
+                payload, upload = parse(form, native=intake is not None)
+                if intake is not None and native_phone is not None:
+                    if not upload.size:
+                        raise ValueError("Empty recording upload")
+                    start, end = native.phone_times(payload)
+                    if start < native_phone.after:
+                        raise ValueError("Recording segment starts before native upload activation")
+                    pending = run_in_threadpool(
+                        native.accept,
+                        intake,
+                        cast(BinaryIO, upload.file),
+                        root=native_phone.root,
+                        device=device,
+                        group=payload["group_id"],
+                        index=payload["segment_meta"]["segmentIndex"],
+                        record_type=payload["type"],
+                        start=start,
+                        end=end,
+                        media=upload.content_type or "",
+                    )
+                else:
+                    if user := request.headers.get("x-user-id"):
+                        payload["user_id"] = user
+                    pending = run_in_threadpool(persist, root, device, payload, upload, delivery)
                 # A cancelled request must not close UploadFile while its worker is copying.
-                work = asyncio.create_task(
-                    run_in_threadpool(persist, root, device, payload, upload, delivery)
-                )
+                work = asyncio.create_task(pending)
                 try:
                     result = await asyncio.shield(work)
                 except asyncio.CancelledError:
@@ -147,6 +185,8 @@ def create_app(pairing: Pairing | None = None) -> FastAPI:
                     if not work.cancelled():
                         work.exception()
                     raise
+        except native.NativeConflict as exc:
+            raise HTTPException(409, str(exc)) from None
         except (ValueError, OverflowError) as exc:
             raise HTTPException(400, str(exc)) from None
         if notify_url:

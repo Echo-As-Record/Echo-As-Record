@@ -1,7 +1,7 @@
 ---
 audience: ai
 doc-type: reference
-based-on: 用户 2026-11-13 services/ingest 实现任务；docs/proposals/phone-recorder-extraction.md 3.5；docs/design/design-v1.2.md 3.4；services/adapters 包结构；本机 brain channel 与旧 Ear 只读源码及 2026-11-12 会话样本
+based-on: 用户 2026-11-13 services/ingest 实现任务；docs/proposals/phone-recorder-extraction.md 3.5；docs/design/design-v1.2.md 3.4；services/adapters 包结构；本机 brain channel 与旧 Ear 只读源码及 2026-11-12 会话样本；原生上传实现任务（dev e9590ae，Octopus iOS 6786977 源码及 RecordingIntake 协作接口）；用户本轮 Octopus 封口导出桥接任务；基线 d868bad 上用户明确要求按已核验设备和固定启用时间限定原生 HTTP
 ---
 
 # Ingest 实现与兼容依据
@@ -16,8 +16,14 @@ based-on: 用户 2026-11-13 services/ingest 实现任务；docs/proposals/phone-
 | `src/ear_ingest/delivery.py` | SQLite 记录未完成发布、单条投递、退避与旧 Ear 的受理回执 |
 | `src/ear_ingest/store.py` | 实例锁、查找重传、分块复制、原子替换、旧附件清理 |
 | `src/ear_ingest/app.py` | 鉴权、两种 URL、health、可选定向投递 worker 与历史 reconcile 通知 |
+| `src/ear_ingest/native.py` / `limited.py` | HTTP 独立启动范围 `phone_config()`，与封口 CLI 共用队列配置 `config()` 和 intake 交接；严格 UTC/标识转换、仅 native 的 multipart 字节数和结束边界校验 |
+| `src/ear_ingest/relay.py` | 确认加密结束帧后转发；由通过鉴权的元数据识别原生录音请求，在接收余下正文之前限制设备和字节数 |
+| `src/ear_ingest/octopus_finalized.py` | stdin 限定设备、启用时间及单条已封口显式事件，不接受路径或扫描 |
+| `src/ear_ingest/octopus_bridge.py` | [专用封口导出](../octopus-bridge.md)单次生产器；复用 OctopusInboxChannel 的路径固定与重查，不复用其基于旧 timestamp 加 offset 的时间解释；校验后交给 finalized 接收入口或输出 wire frame |
 | `src/ear_ingest/__main__.py` | `ear-ingest serve` 启动 |
 | `tests/test_ingest.py` | 合成输入、旧解析最小断言、重传、失败与并发测试 |
+| `tests/test_native_upload.py` | 合成 WAV/Context/IMU/Notes，原生接收、加密中继、去重和本机 finalized 入口 |
+| `tests/test_octopus_bridge.py` | 合成导出、范围过滤、路径与并发替换拒绝、未完整重试、共用手机标识去重、CLI 帧交接 |
 
 沿用单一模块名 `ingest`，数据称 `record`，落盘边界称 `store`；未引入并行同义类型，也没有更名或删除现有模块。旧 URL 的兼容路由留在 HTTP 边界；待手机全部迁移新 URL 后可删除，当前无删除日期。POSIX 文件锁在 worker thread 内执行，不阻塞 ASGI 事件循环；不同实例可并发，跨进程也遵循相同锁文件。重传查找仅扫描当前设备下 group_id 匹配的会话目录。定向投递以 Delivery 命名。publications 表暂存发布计划（两次 rename、旧路径清理），先记录计划再发布，在同一 SQLite 事务中登记 job 并移除计划。启动仅恢复未完成的计划。jobs 每条 record 保留最新 revision；revision 绑定附件字节、record 内容及目标路径。后台进程通过 flock 选出唯一发送者，并按 revision 检查回包。每次 accepted 追加 receipts，按 seq 读取可定位对应 capture。
 

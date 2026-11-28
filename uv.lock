@@ -294,6 +294,7 @@ name = "ear-api"
 version = "0.1.0"
 source = { editable = "services/api" }
 dependencies = [
+    { name = "ear-adapter" },
     { name = "ear-contracts" },
     { name = "ear-extraction" },
     { name = "ear-storage" },
@@ -306,6 +307,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "ear-adapter", editable = "services/adapters" },
     { name = "ear-contracts", editable = "libs/ear_contracts" },
     { name = "ear-extraction", editable = "services/extraction" },
     { name = "ear-storage", editable = "services/storage" },
@@ -401,6 +403,7 @@ version = "0.1.0"
 source = { editable = "services/ingest" }
 dependencies = [
     { name = "cryptography" },
+    { name = "ear-adapter" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "python-multipart" },
@@ -411,6 +414,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "cryptography", specifier = ">=45" },
+    { name = "ear-adapter", editable = "services/adapters" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "python-multipart", specifier = ">=0.0.20" },

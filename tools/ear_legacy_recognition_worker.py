@@ -8,6 +8,11 @@ snapshot Python; ECAPA/PANNs load trusted checkpoint formats. Neither offline
 flags, the source spot-check nor Python audit hooks are a sandbox or model
 attestation. The launcher must verify the whole export/venv/model bundle, limit
 memory/CPU, enforce a hard process deadline and remove scratch even on kill.
+For a CPU profile, use ``--cpu-threads 1`` or ``--cpu-threads 2`` to match the
+CPU allocation; passing environment variables from the caller does not work
+because the worker clears them. ``--moss-cpu-fp32`` opts into higher-memory
+float32 MOSS execution. It does not change ECAPA or PaNNs. Include both
+settings in the profile identity and revalidate time and memory for that host.
 
 Post-normalization only: stdin must be exactly one bounded RIFF/WAVE PCM16LE
 mono 16 kHz file, 1–30 seconds. No decoding, resampling, scan or concatenated
@@ -461,6 +466,8 @@ class Assets:
     panns_checkpoint: Path
     panns_labels: Path
     device: str
+    cpu_threads: int | None = None
+    moss_cpu_fp32: bool = False
 
 
 def _absolute(path: Path) -> Path:
@@ -502,7 +509,7 @@ def _require_launch() -> None:
     )
 
 
-def _offline(root: Path) -> None:
+def _offline(root: Path, cpu_threads: int | None = None) -> None:
     # Preserve no ambient application settings/proxies or credentials. Launch with
     # env already empty: clearing here cannot undo Python/loader startup effects.
     os.environ.clear()
@@ -512,6 +519,9 @@ def _offline(root: Path) -> None:
         XDG_CACHE_HOME=str(root / "cache"),
         HF_HOME=str(root / "hf"),
         TORCH_HOME=str(root / "torch"),
+        TORCHINDUCTOR_CACHE_DIR=str(root / "inductor"),
+        NUMBA_CACHE_DIR=str(root / "numba"),
+        MPLCONFIGDIR=str(root / "matplotlib"),
         HF_HUB_OFFLINE="1",
         TRANSFORMERS_OFFLINE="1",
         HF_DATASETS_OFFLINE="1",
@@ -519,6 +529,17 @@ def _offline(root: Path) -> None:
         HF_HUB_DISABLE_IMPLICIT_TOKEN="1",
         DO_NOT_TRACK="1",
     )
+    if cpu_threads is not None:
+        os.environ.update(
+            OMP_NUM_THREADS=str(cpu_threads),
+            MKL_NUM_THREADS=str(cpu_threads),
+            VECLIB_MAXIMUM_THREADS=str(cpu_threads),
+            OPENBLAS_NUM_THREADS="1",
+            NUMEXPR_NUM_THREADS="1",
+            NUMBA_NUM_THREADS="1",
+            TOKENIZERS_PARALLELISM="false",
+            OMP_WAIT_POLICY="PASSIVE",
+        )
     tempfile.tempdir = str(root)
     os.chdir(root)
 
@@ -555,6 +576,11 @@ class LegacyProviders:
         panns_data.mkdir(mode=0o700)
         # PaNNs reads the labels at import from HOME; prevent its download fallback.
         (panns_data / "class_labels_indices.csv").write_bytes(label_bytes)
+
+        if assets.cpu_threads is not None:
+            torch = importlib.import_module("torch")
+            torch.set_num_threads(assets.cpu_threads)
+            torch.set_num_interop_threads(1)
 
         sys.path.insert(0, str(source))
         old_audio = importlib.import_module("ear.models.audio")
@@ -615,8 +641,21 @@ class LegacyProviders:
                 _require(framewise.shape[0] > 0)
                 return framewise
 
+        class Float32Moss(moss_module.MossSpeechUnderstandingModule):
+            def _load(self) -> tuple[Any, Any, Any, str]:
+                bundle = super()._load()
+                model, _, device, _ = bundle
+                _require(device.type == "cpu")
+                torch = importlib.import_module("torch")
+                if model.dtype != torch.float32:
+                    model.float()
+                return bundle
+
         options = dict(device=assets.device, inference_timeout=TIMEOUT, local_files_only=True)
-        self._moss = moss_module.MossSpeechUnderstandingModule(
+        moss_type = (
+            Float32Moss if assets.moss_cpu_fp32 else moss_module.MossSpeechUnderstandingModule
+        )
+        self._moss = moss_type(
             self,
             model_id=str(moss),
             inference_window_ms=MAX_MS,
@@ -698,7 +737,11 @@ def _args(argv: list[str] | None) -> argparse.Namespace:
     for asset in ("source", "moss", "ecapa", "panns-checkpoint", "panns-labels"):
         parser.add_argument(f"--{asset}", required=True, type=Path)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
-    return parser.parse_args(argv)
+    parser.add_argument("--cpu-threads", type=int, choices=range(1, 5))
+    parser.add_argument("--moss-cpu-fp32", action="store_true")
+    args = parser.parse_args(argv)
+    _require(args.device == "cpu" or (args.cpu_threads is None and not args.moss_cpu_fp32))
+    return args
 
 
 def _encode(result: Complete | Partial | Failed) -> str:
@@ -727,7 +770,14 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     assets = Assets(
-        args.source, args.moss, args.ecapa, args.panns_checkpoint, args.panns_labels, args.device
+        args.source,
+        args.moss,
+        args.ecapa,
+        args.panns_checkpoint,
+        args.panns_labels,
+        args.device,
+        args.cpu_threads,
+        args.moss_cpu_fp32,
     )
     # This CLI is one-shot: never expose legacy library prints/logs, including
     # C-level output. Keep one private stdout descriptor for the protocol only.
@@ -738,7 +788,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             with tempfile.TemporaryDirectory(prefix="ear-local-recognition-") as temp:
                 root = Path(temp).resolve()
-                _offline(root)
+                _offline(root, args.cpu_threads)
                 result = asyncio.run(
                     recognize(
                         audio, args.model_profile, lambda: LegacyProviders(audio, assets, root)

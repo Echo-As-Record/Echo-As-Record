@@ -26,6 +26,8 @@ from ear_api.execution_journal import JournalUnavailable
 from ear_api.models import load_json_object
 from ear_api.upstream import GatewayError
 
+RECORDING_UPLOADS = "/v1/recording-uploads"
+
 HEADERS = {
     "Cache-Control": "no-store",
     "Pragma": "no-cache",
@@ -113,25 +115,36 @@ class Boundary:
         for name in (b"content-type", b"content-length", b"content-encoding", b"host"):
             if sum(k.lower() == name for k, _v in headers) > 1:
                 raise GatewayError(422, "invalid_input")
-        if self.settings.test_no_auth:
+        path = scope["path"]
+        method = scope["method"]
+        intake_enabled = self.settings.recording_intake_root is not None
+        # Uvicorn/Starlette can pass a prefixed ASGI path to a mounted app.
+        # Use the same route-relative path for the upload exemption and guards.
+        root_path = scope.get("root_path", "")
+        route_path = path[len(root_path) :] if path.startswith(root_path + "/") else path
+        upload = intake_enabled and method == "POST" and route_path == RECORDING_UPLOADS
+        job_status = (
+            intake_enabled and method == "GET" and route_path.startswith(RECORDING_UPLOADS + "/")
+        )
+        if self.settings.test_no_auth or upload or job_status:
             hosts = [v.decode("latin1") for k, v in headers if k.lower() == b"host"]
             assert self.settings.public_origin is not None
             expected = httpx.URL(self.settings.public_origin).netloc.decode("ascii")
             # Container-local health checks use the service port, not the browser port.
-            health = scope["path"] in {"/health/live", "/health/ready"}
+            health = path in {"/health/live", "/health/ready"}
             if hosts != [expected] and not (health and hosts == ["127.0.0.1:8086"]):
                 raise GatewayError(403, "host_denied")
             sites = [v for k, v in headers if k.lower() == b"sec-fetch-site"]
             if sites and sites not in ([b"same-origin"], [b"none"]):
                 raise GatewayError(403, "cross_origin_denied")
-            if scope["method"] not in {"GET", "HEAD", "OPTIONS"} and not any(
+            if (upload or method not in {"GET", "HEAD", "OPTIONS"}) and not any(
                 k.lower() == b"origin" for k, _v in headers
             ):
                 raise GatewayError(403, "origin_required")
         lengths = [v for k, v in headers if k.lower() == b"content-length"]
         if lengths and (not lengths[0].isdigit() or len(lengths[0]) > 10):
             raise GatewayError(422, "invalid_input")
-        if lengths and int(lengths[0]) > self.settings.max_body_bytes:
+        if not upload and lengths and int(lengths[0]) > self.settings.max_body_bytes:
             raise GatewayError(413, "body_too_large")
         if lengths and any(k.lower() == b"transfer-encoding" for k, _v in headers):
             raise GatewayError(422, "invalid_input")
@@ -144,6 +157,13 @@ class Boundary:
             raise GatewayError(403, "cross_origin_denied")
         if any(k.lower() == b"content-encoding" and v != b"identity" for k, v in headers):
             raise GatewayError(415, "encoding_not_supported")
+        if upload:
+            # Only this exact opt-in POST bypasses the ordinary JSON buffering gate.
+            # The route authenticates and validates capture metadata before receiving it.
+            transfer = [v.lower() for k, v in headers if k.lower() == b"transfer-encoding"]
+            if transfer and transfer != [b"chunked"]:
+                raise GatewayError(422, "invalid_input")
+            return True
         chunks = bytearray()
         async with asyncio.timeout(self.settings.body_timeout):
             while True:

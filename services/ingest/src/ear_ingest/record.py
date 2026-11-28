@@ -27,7 +27,7 @@ def filename(value: str) -> str:
     return name
 
 
-def parse(form: FormData) -> tuple[dict[str, Any], UploadFile]:
+def parse(form: FormData, *, native: bool = False) -> tuple[dict[str, Any], UploadFile]:
     payload: dict[str, Any] = {}
     upload = None
     allowed = {
@@ -86,6 +86,8 @@ def parse(form: FormData) -> tuple[dict[str, Any], UploadFile]:
     session_notes = payload["type"] == "phoneNotes" and index == start == end == 0
     if end <= start and not session_notes:
         raise ValueError("Segment end must follow start")
+    if native:
+        return payload, upload
     timestamp = datetime.fromisoformat(payload["timestamp"].replace("Z", "+00:00"))
     if timestamp.tzinfo is None:
         timestamp = timestamp.astimezone()

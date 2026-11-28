@@ -370,11 +370,12 @@ def test_json_limits(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize(
-    ("silent", "opt_in", "code", "status"),
+    ("silent", "opt_in", "options", "code", "status"),
     [
         (
             True,
             True,
+            ["--cpu-threads", "2", "--moss-cpu-fp32"],
             0,
             {
                 "status": "complete",
@@ -383,14 +384,31 @@ def test_json_limits(monkeypatch: pytest.MonkeyPatch) -> None:
                 "ambient": [],
             },
         ),
-        (False, True, 2, {"status": "failed", "stage": "setup"}),
-        (True, False, 2, {"status": "failed", "stage": "input"}),
+        (False, True, [], 2, {"status": "failed", "stage": "setup"}),
+        (True, False, [], 2, {"status": "failed", "stage": "input"}),
+        (True, True, ["--cpu-threads", "0"], 2, {"status": "failed", "stage": "input"}),
+        (True, True, ["--cpu-threads", "5"], 2, {"status": "failed", "stage": "input"}),
+        (
+            True,
+            True,
+            ["--device", "cuda", "--cpu-threads", "1"],
+            2,
+            {"status": "failed", "stage": "input"},
+        ),
+        (
+            True,
+            True,
+            ["--device", "cuda", "--moss-cpu-fp32"],
+            2,
+            {"status": "failed", "stage": "input"},
+        ),
     ],
 )
 def test_cli_no_assets_or_old_imports(
     tmp_path: Path,
     silent: bool,
     opt_in: bool,
+    options: list[str],
     code: int,
     status: dict[str, Any],
 ) -> None:
@@ -405,6 +423,7 @@ def test_cli_no_assets_or_old_imports(
         END,
         "--model-profile",
         PROFILE,
+        *options,
     ]
     for asset in ("source", "moss", "ecapa", "panns-checkpoint", "panns-labels"):
         command += [f"--{asset}", str(tmp_path / "missing")]
@@ -425,8 +444,32 @@ def test_cli_no_assets_or_old_imports(
     assert list(tmp_path.iterdir()) == []
 
 
+def test_offline_cache_and_cpu_environment_are_private(tmp_path: Path) -> None:
+    # Run in a separate process: the worker changes cwd/env and installs an audit hook.
+    check = (
+        "import json, os, runpy, sys; from pathlib import Path; "
+        "runpy.run_path(sys.argv[1])['_offline'](Path(sys.argv[2]), 2); "
+        "print(json.dumps(dict(os.environ)))"
+    )
+    response = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", check, str(worker.__file__), str(tmp_path)],
+        env={"TORCHINDUCTOR_CACHE_DIR": "/outside", "OMP_NUM_THREADS": "88", "LEAK": "fake"},
+        capture_output=True,
+        check=True,
+        timeout=10,
+    )
+    env = json.loads(response.stdout)
+    assert env["TORCHINDUCTOR_CACHE_DIR"] == str(tmp_path / "inductor")
+    assert env["NUMBA_CACHE_DIR"] == str(tmp_path / "numba")
+    assert env["MPLCONFIGDIR"] == str(tmp_path / "matplotlib")
+    assert env["OMP_NUM_THREADS"] == env["MKL_NUM_THREADS"] == "2"
+    assert env["OPENBLAS_NUM_THREADS"] == env["NUMBA_NUM_THREADS"] == "1"
+    assert env["HF_HUB_OFFLINE"] == "1" and "LEAK" not in env
+
+
+@pytest.mark.parametrize("tuned", [False, True])
 def test_audited_constructor_and_request_wiring(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tuned: bool
 ) -> None:
     """Exercise actual bridge wiring with doubles, not imports from the legacy venv."""
     audio = _audio()
@@ -448,6 +491,17 @@ def test_audited_constructor_and_request_wiring(
     labels = tmp_path / "labels.csv"
     labels.write_text("index,mid,display_name\n" + "".join(f"{i},x,label\n" for i in range(527)))
 
+    tuning_calls: list[tuple[str, int]] = []
+    conversions: list[str] = []
+
+    class FakeModel:
+        dtype = "bf16"
+
+        def float(self):
+            conversions.append(self.dtype)
+            self.dtype = "fp32"
+            return self
+
     class Moss:
         def __init__(
             self,
@@ -462,8 +516,14 @@ def test_audited_constructor_and_request_wiring(
             assert model_id == str(moss) and device == "cpu" and local_files_only is True
             assert inference_timeout == worker.TIMEOUT and inference_window_ms == worker.MAX_MS
             self.store = store
+            self.model = FakeModel()
+
+        def _load(self):
+            return self.model, object(), NS(type="cpu"), "test-version"
 
         async def process(self, chunk, context):
+            for _ in range(2):
+                assert self._load()[0].dtype == ("fp32" if tuned else "bf16")
             assert context.idempotency_key == chunk.audio_chunk_id == audio.chunk_id
             assert self.store.resolve_path(chunk.audio_ref) == root / "input.wav"
             assert chunk.format.sample_rate_hz == 16_000
@@ -521,14 +581,23 @@ def test_audited_constructor_and_request_wiring(
         "ear.providers.speaker_ecapa_encoder": NS(EcapaSpeakerEncoder=Encoder),
         "ear.providers.environment_panns": NS(PannsAudioEventModule=Panns),
         "numpy": NS(),
+        "torch": NS(
+            float32="fp32",
+            set_num_threads=lambda n: tuning_calls.append(("intra", n)),
+            set_num_interop_threads=lambda n: tuning_calls.append(("inter", n)),
+        ),
     }
     monkeypatch.setattr(worker.importlib, "import_module", doubles.__getitem__)
     monkeypatch.setattr(worker.sys, "path", worker.sys.path.copy())
     monkeypatch.setattr(worker, "_require_launch", lambda: None)
     monkeypatch.setattr(worker, "_verify_source", lambda path: path)
-    assets = worker.Assets(tmp_path, moss, ecapa, checkpoint, labels, "cpu")
+    assets = worker.Assets(
+        tmp_path, moss, ecapa, checkpoint, labels, "cpu", 2 if tuned else None, tuned
+    )
     result = asyncio.run(
         worker.recognize(audio, PROFILE, lambda: worker.LegacyProviders(audio, assets, root))
     )
     assert result["status"] == "complete"
     assert fake.calls == ["asr", "speakers", "ambient"]
+    assert tuning_calls == ([("intra", 2), ("inter", 1)] if tuned else [])
+    assert conversions == (["bf16"] if tuned else [])

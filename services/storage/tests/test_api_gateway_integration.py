@@ -66,12 +66,23 @@ LOOPBACK_KEEPALIVE_SECONDS = 30
 
 
 @contextmanager
-def loopback(app, *, timeout_keep_alive: int = LOOPBACK_KEEPALIVE_SECONDS):
+def loopback(
+    app=None, *, app_for_origin=None, timeout_keep_alive: int = LOOPBACK_KEEPALIVE_SECONDS
+):
     # asyncio enables TCP_NODELAY on accepted sockets of a prebound listener
     # only when the socket has an explicit TCP protocol.
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP)
     sock.bind(("127.0.0.1", 0))
     sock.listen(32)
+    origin = f"http://127.0.0.1:{sock.getsockname()[1]}"
+    try:
+        if app_for_origin is not None:
+            assert app is None
+            app = app_for_origin(origin)
+        assert app is not None
+    except BaseException:
+        sock.close()
+        raise
     runner = uvicorn.Server(
         uvicorn.Config(
             app, log_level="critical", access_log=False, timeout_keep_alive=timeout_keep_alive
@@ -84,7 +95,7 @@ def loopback(app, *, timeout_keep_alive: int = LOOPBACK_KEEPALIVE_SECONDS):
         while not runner.started and thread.is_alive() and time.monotonic() < deadline:
             time.sleep(0.01)
         assert runner.started, "integration loopback startup failed"
-        yield f"http://127.0.0.1:{sock.getsockname()[1]}"
+        yield origin
     finally:
         runner.should_exit = True
         thread.join(10)
