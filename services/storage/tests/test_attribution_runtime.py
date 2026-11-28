@@ -19,6 +19,7 @@ from ear_contracts import (
     DEFAULT_REGISTRY,
     Cause,
     DataTypeSpec,
+    RawRecord,
     ReevaluationRequested,
     Registry,
     SemanticRecord,
@@ -26,6 +27,7 @@ from ear_contracts import (
 )
 from ear_storage import bootstrap, migrate
 from ear_storage.auth import AuthOperator
+from ear_storage.core_deployment import core_identity_policies
 from ear_storage.http import create_app
 from ear_storage.relay import RelayConfig, RelayStore, run_relay
 from ear_storage.service import StorageService
@@ -40,7 +42,16 @@ from .test_api_gateway_integration import Harness, loopback
 from .test_relay import reader
 
 pytestmark = [pytest.mark.postgres, pytest.mark.nats]
-CONFIG = MatchConfig(cosine_threshold=0.9, gps_threshold_m=100)
+CONFIG = MatchConfig(
+    cosine_threshold=0.9,
+    gps_threshold_m=100,
+    unnamed_margin=0.0,
+    named_threshold=0.9,
+    named_margin=0.0,
+    aggregation="max",
+    top_k=None,
+    safe_anonymous_reuse=True,
+)
 RAW_TYPES = {
     "audio_ref",
     "transcript_segment",
@@ -88,10 +99,11 @@ def attribution_runtime(pg_dsn, nats_server, tmp_path):
         max_msgs=1000,
     )
     operator = AuthOperator(pg_dsn)
+    policy = core_identity_policies()["attribution"]
     principal = operator.issue_principal(
         "attribution",
-        read_types=ATTR_TYPES,
-        subscribe_types=["voiceprint", "gps_point", "feedback", "attribution"],
+        read_types=policy.reads,
+        subscribe_types=policy.subscriptions,
     )
     operator.reserve_consumer_identity("attribution", principal.principal_id)
     adapter = operator.issue_principal("adapter", read_types=RAW_TYPES)
@@ -192,6 +204,26 @@ def test_import_feedback_and_finish_through_broker(attribution_runtime, profile,
         assert rt.clients["owner"].count(Query("place")) == 1
         assert isinstance(importer().run_once(capture_ids=["cap-1"]).outcomes[0], AlreadyIngested)
         current = next(a for a in attrs if a.payload["target_type"] == "person")
+        source_voice = rt.clients["owner"].get(current.payload["subject_id"])
+        assert isinstance(source_voice, RawRecord)
+        speaker_id = source_voice.payload["local_speaker_id"]
+        assert rt.clients["adapter"].get(speaker_id) is not None
+        assert rt.clients["owner"].get(speaker_id) is None  # hidden by the read policy
+        # A second, non-reference match under the real worker's read scope. In
+        # particular the attribution-profile snapshot need not allow speaker reads.
+        probe = make_raw("voiceprint", source_voice.payload, start="2026-11-05T09:00:00Z")
+        rt.clients["adapter"].write([AppendRaw(probe)], Context.system()).check()
+        relay(rt)
+        rt.clients["owner"].run_until_idle()
+        probe_matches = (
+            rt.clients["owner"].query(Query("attribution", where={"subject_id": probe.id})).items
+        )
+        assert len(probe_matches) == 1
+        assert probe_matches[0].payload["target_id"] == current.payload["target_id"]
+        probe_deps = rt.clients["owner"].dependencies_of(probe_matches[0].id)
+        assert [(d.depends_on.id, d.fields) for d in probe_deps] == [
+            (current.payload["target_id"], ("name", "references")),
+        ]
         feedback = make_raw(
             "feedback",
             {

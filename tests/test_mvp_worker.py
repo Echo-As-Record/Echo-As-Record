@@ -105,7 +105,16 @@ def settings(tmp_path, module="attribution", **changes):
         "timeout": 1,
     }
     if module == "attribution":
-        value.update(cosine_threshold=0.9, gps_threshold_m=100)
+        value.update(
+            cosine_threshold=0.9,
+            gps_threshold_m=100,
+            unnamed_margin=0.0,
+            named_threshold=0.9,
+            named_margin=0.0,
+            aggregation="max",
+            top_k=None,
+            safe_anonymous_reuse=True,
+        )
     if module == "extraction":
         value.update(gateway_url="http://synthetic-gateway.invalid", model="synthetic")
     return {**value, **changes}
@@ -120,6 +129,8 @@ def write_config(tmp_path, value):
 
 @pytest.mark.parametrize("mode", [0o000, 0o400, 0o640, 0o644, 0o660, 0o700, 0o4600])
 def test_config_exact_0600(tmp_path, mode):
+    if mode == 0o4600 and sys.platform == "darwin":
+        pytest.skip("macOS chmod strips the setuid bit before it can be inspected")
     path = write_config(tmp_path, settings(tmp_path))
     path.chmod(mode)
     with pytest.raises((ValueError, OSError)):
@@ -237,6 +248,88 @@ def test_valid_configs_no_default_timer_or_history(tmp_path, module):
     cfg = worker.load_config(str(write_config(tmp_path, settings(tmp_path, module))))
     assert cfg.schedule is None and "from_beginning" not in cfg.model_fields_set
     assert SECRET not in repr(cfg)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "cosine_threshold",
+        "gps_threshold_m",
+        "unnamed_margin",
+        "named_threshold",
+        "named_margin",
+        "aggregation",
+        "top_k",
+        "safe_anonymous_reuse",
+    ],
+)
+def test_attribution_voice_configuration_is_explicit(tmp_path, field):
+    value = settings(tmp_path)
+    value.pop(field)
+    with pytest.raises(ValueError, match="explicit_thresholds_required"):
+        worker.Settings.model_validate(value)
+
+
+@pytest.mark.parametrize("mode", ["legacy", "max", "top_k_mean"])
+def test_attribution_cli_accepts_legacy_and_full_configs(tmp_path, mode, monkeypatch):
+    data = settings(tmp_path)
+    if mode == "legacy":
+        for key in worker.GROUPED_VOICE_FIELDS:
+            data.pop(key)
+    elif mode == "top_k_mean":
+        data.update(aggregation=mode, top_k=2)
+    health = Mock(return_value=True)
+    monkeypatch.setattr(worker, "healthy", health)
+    path = write_config(tmp_path, data)
+    assert worker.main(["--config", str(path), "--healthcheck"]) == 0
+    cfg = health.call_args.args[0].attribution_match_config()
+    if mode == "legacy":
+        from ear_attribution.matching import MatchConfig
+
+        assert cfg == MatchConfig(0.9, 100)
+    else:
+        assert cfg.aggregation == mode and cfg.top_k == data["top_k"]
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "cosine_threshold",
+        "gps_threshold_m",
+        "unnamed_margin",
+        "named_threshold",
+        "named_margin",
+        "aggregation",
+        "safe_anonymous_reuse",
+    ],
+)
+def test_attribution_cli_rejects_null_voice_settings(tmp_path, field, capsys):
+    path = write_config(tmp_path, settings(tmp_path) | {field: None})
+    with pytest.raises(ValueError, match=r"explicit_thresholds_required|null_voice_option"):
+        worker.load_config(str(path))
+    assert worker.main(["--config", str(path), "--healthcheck"]) == 1
+    assert capsys.readouterr().err == worker.ERROR_METADATA + "\n"
+
+
+def test_attribution_top_k_matches_aggregation(tmp_path):
+    for changes in (
+        {"aggregation": "max", "top_k": 2},
+        {"aggregation": "top_k_mean", "top_k": None},
+    ):
+        with pytest.raises(ValueError, match="top_k must match aggregation"):
+            worker.Settings.model_validate(settings(tmp_path, **changes))
+    cfg = worker.Settings.model_validate(settings(tmp_path, aggregation="top_k_mean", top_k=2))
+    assert cfg.top_k == 2
+
+
+@pytest.mark.parametrize("module", ["extraction", "dependency"])
+def test_non_attribution_round_trips_null_defaults_but_rejects_voice_options(tmp_path, module):
+    data = settings(tmp_path, module)
+    cfg = worker.Settings.model_validate(data)
+    assert worker.Settings.model_validate(cfg.model_dump()) == cfg
+    for changes in ({"cosine_threshold": 0.9}, {"aggregation": "max"}):
+        with pytest.raises(ValueError, match="unexpected_thresholds"):
+            worker.Settings.model_validate(data | changes)
 
 
 @pytest.mark.parametrize("value", [0, 661, "330", True, float("inf"), float("nan")])

@@ -132,7 +132,17 @@ def rows(storage: MemoryStorage, kind: str) -> list[SemanticRecord]:
 def test_import_correction_and_real_owners_finish_in_memory(rebuild_scheduler):
     storage = MemoryStorage(capable_registry(), duplicate_delivery=True)
     attribution = AttributionService.business(
-        storage.client("attribution"), config=MatchConfig(cosine_threshold=0.9, gps_threshold_m=100)
+        storage.client("attribution"),
+        config=MatchConfig(
+            cosine_threshold=0.9,
+            gps_threshold_m=100,
+            unnamed_margin=0.0,
+            named_threshold=0.9,
+            named_margin=0.0,
+            aggregation="max",
+            top_k=None,
+            safe_anonymous_reuse=True,
+        ),
     )
     attribution.subscribe()
     source = SelectedSource({"cap-1": evidence_json()})

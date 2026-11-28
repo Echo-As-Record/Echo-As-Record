@@ -295,7 +295,16 @@ def start_attribution(rt):
     rt.attr_journal = journal
     rt.attribution = AttributionService.business(
         rt.clients["attribution"],
-        config=MatchConfig(cosine_threshold=0.9, gps_threshold_m=100),
+        config=MatchConfig(
+            cosine_threshold=0.9,
+            gps_threshold_m=100,
+            unnamed_margin=0.0,
+            named_threshold=0.9,
+            named_margin=0.0,
+            aggregation="max",
+            top_k=None,
+            safe_anonymous_reuse=True,
+        ),
         journal=journal,
     )
     rt.attribution.subscribe()

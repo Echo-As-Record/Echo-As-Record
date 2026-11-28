@@ -3,7 +3,7 @@ audience: ai
 doc-type: reference
 generated-by: Claude (AI)
 generated-at: 2026-11-11
-based-on: 设计 v1.2 第 6 节与信号补充 §3.2、§4（accepted，仅表示目标已采纳）；工作分解 v1.2 ③节；integration/mvp-runnable 工作区 services/attribution 的实际源码与测试（基线 c5c31f8，未提交，本文作者读代码核对）；任务记录 /tmp/ear-mvp-attribution-state.json（非仓库文件，写于 2026-11-11T19:10Z）；2026-11-12 增补依据：transactions.py、service.py 源码，services/storage/tests/test_attribution_runtime.py 与 tests/e2e/test_core_memory_loop.py 源码（均读源码核对），仓库外日志 /tmp/ear-mvp-acceptance.{sh,log,exit}、/tmp/ear-mvp-attribution-{recovery-red,real-final}.log，以及本次对相关文件的定向复跑；2026-11-12 journal 硬化增补依据：secure_files.py、transactions.py、tests/test_journal_safety.py 源码，仓库外记录 /tmp/ear-mvp-precommit-review.json、/tmp/ear-mvp-journal-fix.json、/tmp/ear-mvp-journal-*.{log,exit} 与 /tmp/ear-mvp-final-local.log（非仓库文件，作者读取并核对哈希与时间），以及作者的 pytest 复跑（见跑通计划第 2.3 节）；来源分支 origin/attribution/initial-implementation 617fbc5（git show 只读）；2026-11-12 第二批增补依据：create_place.py、feedback.py 与 ⑥ 的 attribution_results.py 源码（只读核对），仓库外摘要 /tmp/ear-mvp-api-place.json（此前读取）与 /tmp/ear-mvp-eight-steps.json（作者读取并核对退出码文件与 junit 用例名），测试结果均未复跑；用户在本任务中的授权仅为开始 MVP 实施、可用 vm-octopus 音频、在常驻分支实现提交并提 PR 由用户审核，本文不新增授权记录，也不增加用户决定；未填写或改动任何 reviewed 字段
+based-on: 设计 v1.2 第 6 节与信号补充 §3.2、§4（accepted，仅表示目标已采纳）；工作分解 v1.2 ③节；integration/mvp-runnable 工作区 services/attribution 的实际源码与测试（基线 c5c31f8，未提交，本文作者读代码核对）；任务记录 /tmp/ear-mvp-attribution-state.json（非仓库文件，写于 2026-11-11T19:10Z）；2026-11-12 增补依据：transactions.py、service.py 源码，services/storage/tests/test_attribution_runtime.py 与 tests/e2e/test_core_memory_loop.py 源码（均读源码核对），仓库外日志 /tmp/ear-mvp-acceptance.{sh,log,exit}、/tmp/ear-mvp-attribution-{recovery-red,real-final}.log，以及本次对相关文件的定向复跑；2026-11-12 journal 硬化增补依据：secure_files.py、transactions.py、tests/test_journal_safety.py 源码，仓库外记录 /tmp/ear-mvp-precommit-review.json、/tmp/ear-mvp-journal-fix.json、/tmp/ear-mvp-journal-*.{log,exit} 与 /tmp/ear-mvp-final-local.log（非仓库文件，作者读取并核对哈希与时间），以及作者的 pytest 复跑（见跑通计划第 2.3 节）；来源分支 origin/attribution/initial-implementation 617fbc5（git show 只读）；2026-11-12 第二批增补依据：create_place.py、feedback.py 与 ⑥ 的 attribution_results.py 源码（只读核对），仓库外摘要 /tmp/ear-mvp-api-place.json（此前读取）与 /tmp/ear-mvp-eight-steps.json（作者读取并核对退出码文件与 junit 用例名），测试结果均未复跑；用户在本任务中的授权仅为开始 MVP 实施、可用 vm-octopus 音频、在常驻分支实现提交并提 PR 由用户审核，本文不新增授权记录，也不增加用户决定；未填写或改动任何 reviewed 字段；声纹匹配与配置增补依据：PR #35（5a6b5a6）与 dev（66cfa5e）的冲突处理、matching.py、scoring.py、tools/mvp_worker.py
 ---
 
 # ③ 归属：实现说明（首批切片）
@@ -60,12 +60,15 @@ based-on: 设计 v1.2 第 6 节与信号补充 §3.2、§4（accepted，仅表�
 
 ## 4. 匹配
 
-同一事件仍用同一授权快照读取候选与参考。参考记录用既有 SDK `get_many`，每批至多 32 条；不会跨事件复用参考。候选依赖、匹配阈值和顺序、单 worker、提交围栏、用户确认保护均不改变。 独立 worker 使用归属专用快照，不复制已存依赖图；算法仍读取候选及参考，并在原有受围栏的提交中登记完整新依赖。
+同一事件用同一授权快照读取候选与参考。参考记录用 SDK `get_many`，每批至多 32 条；批读拒绝时在同一快照内按原顺序逐条校验，不掩盖更早的坏输入；快照失效不回退。不会跨事件复用参考。独立 worker 使用归属专用快照，不复制已存依赖图，并在原有受围栏的提交中登记完整新依赖。
 
 - **已是参考者优先**：数据 id 已出现在某个人物或地点的 `references` 里，直接归该对象，不看相似度。一个 id 出现在两个对象的参考里，抛 `reference_owner_conflict`。
-- **声纹**：`payload.model_version`（非空字符串）和 `payload.embedding.values/shape`（一维、有限、非零）。向量先按最大绝对值缩放再归一化，防止溢出。只与**同一 `model_version`、同一维度**的参考向量比余弦；`>= cosine_threshold` 才算候选，取相似度最高者，平局按对象 id 稳定排序。
-- **GPS**：`payload.latitude/longitude`（度，WGS84）。用 haversine 球面距离（平均地球半径 6371008.8 m），`<= gps_threshold_m` 才算候选。这是球面近似，不是椭球大地线。
-- **阈值必须显式配置**：`MatchConfig(cosine_threshold, gps_threshold_m)` 没有默认值，非有限数或越界会在构造时报错。阈值没有校准，D2 认人准确率没有验证。
+- **声纹**：`payload.model_version`（非空字符串）和 `payload.embedding.values/shape`（一维、有限、非零）。向量先按最大绝对值缩放再归一化，只与同模型、同维度参考比较。旧配置逐条比较归一化向量的点积，按最高合格分数、再按人物 ID 决胜。完整配置才由 `scoring.py` 按人聚合（`max` 或 top-k 平均），参考不会先平均成模板。`normalized` 与 `support_bonus` 只供离线评估，未接入生产匹配。
+- **离线评分**：`normalized` 使用查询向量与该人的参考相似度分布作为 genuine、其他人的参考作为 impostor，公式为 `(s-μ_self)/(σ_self+1e-6) - (s-μ_other)/(σ_other+1e-6)`；只要任一候选少于两条参考或没有对照候选，整个排名退回 raw，并在诊断记录模式和原因。`support_bonus` 只按余弦达到显式 `support_min_score` 的参考数计数，raw/normalized 均一致。两者目前不进入生产配置。
+- **新版阈值与分差**：未命名和已命名人物分别使用 `cosine_threshold`/`unnamed_margin` 与 `named_threshold`/`named_margin`；第二名按不同人物计算，唯一候选不要求分差。已命名第一名分差不足会新建未命名人物；未命名第一名按 `safe_anonymous_reuse` 安全复用。所有新增 worker 配置项只能显式传入，非有限、越界值报错；阈值尚未校准。
+- **worker 配置形状**：attribution JSON 必须显式提供 `cosine_threshold`、`gps_threshold_m`；只给这两项时保留旧算法。选择新版时必须同时显式给出 `unnamed_margin`、`named_threshold`、`named_margin`、`aggregation`、`top_k`、`safe_anonymous_reuse` 六项，少给任何一项都报错。仅 `aggregation=max` 时 `top_k` 必须为 null；`top_k_mean` 时 worker 要求 1–100 的整数，其余项均不接受 null。④⑤ 的 worker 配置拒绝这些字段的非 null 值；序列化默认值产生的 null 不启用归属设置。
+- **同段互斥暂不启用**：不能把自动归属互作输入，否则两侧重判可形成 C20 禁止的环。纠正/确认及之后的受保护重判只登记所选人物的 `references`，不登记其他归属；但独立 worker 的身份不能读取 `local_speaker`，且归属专用快照无法读取已存依赖边给旧记录做核对。因此本次不引入同段读取或归属间依赖，也不扩大权限或放宽 DAG 检查。
+- **GPS**：`payload.latitude/longitude`（度，WGS84）。用 haversine 球面距离（平均地球半径 6371008.8 m），`<= gps_threshold_m` 才算候选。这是球面近似，不是椭球大地线，行为保持不变。
 - **认不出时**：声纹新建未命名人物（`name: null`、`references: [数据 id]`、单调递增的 `display_number`），并同批写归属；GPS 归全局唯一的未知地点（无参考、`is_unknown: true`，不参与匹配）。自动匹配本身不增加参考；只有新建未命名人物时把这条声纹设为其首个参考。
 - 输入畸形（向量非法、坐标越界等）抛 `DomainError`，**不当作"未知人物"成功处理**。
 
@@ -116,7 +119,7 @@ based-on: 设计 v1.2 第 6 节与信号补充 §3.2、§4（accepted，仅表�
 
 ## 8. 依赖登记与栅栏
 
-- **依赖按实际读到的输入登记**：匹配时读过的每个候选（包括没有参考、不匹配、被排除的候选）都登记为依赖，字段为 `("references",)`，地点另加 `is_unknown`；**不登记 `name`**，所以改名不会使只靠参考匹配的归属过期。用户纠正/确认的归属只依赖所选目标的 `references`（以及提交后的版本）。
+- **依赖按实际读到的输入登记**：匹配时读过的每个候选（包括没有参考和不匹配的候选）都登记为依赖，字段为 `("references",)`，地点另加 `is_unknown`。新版声纹评分仅对至少有一条同模型、同维度参考而实际进入评分的人物另登记 `name`；改名可使这类归属过期，直接参考、旧算法、GPS、无合格参考的候选均不受影响。用户纠正/确认的归属只依赖所选目标的参考相关字段（以及提交后的版本）。
 - **候选集合栅栏**：`attribution_state` 单例带版本（`expected_revision`）。凡是新建候选对象、修改参考或分配 `display_number` 的批次都要同批写栅栏；并发的另一个批次会因栅栏版本冲突而重读重算。`reference_revision` 只在参考关系真的变化时加一，改名不加。仅维护参考的反馈对 `attribution` 类型做只读的 `AssertTypeRevision`，不修改该类型。
 - **未知地点单例**：首次需要时与栅栏同批创建，去重键 `attribution:unknown_place:v1`；单例创建竞争（`id_exists`）重读而不绕过。已存在栅栏但对象缺失、或未知地点带参考，按 `invalid_attribution_state` / `invalid_unknown_place` 拒绝，不修复。
 
@@ -192,7 +195,7 @@ based-on: 设计 v1.2 第 6 节与信号补充 §3.2、§4（accepted，仅表�
 | P3 | 第 6 节的命令字段，沿用 ⑥ 草案模型 | 待 ⑥ 与 ③ 确认；⑥ 侧仍记 `pending_contract` |
 | P4 | 未知地点 id 不是常量，而是首次创建时生成并记录在 `attribution_state.unknown_place_id`；未命名人物编号 `display_number` 由同一栅栏分配 | 待确认 |
 | P5 | 见下 | 见下 |
-| P6 | 依赖按对象版本加 `fields` 登记，不登记 `name`；完成走现有 `FinishReevaluation`；无变化也提交 | 待确认；`fields` 的接口位置设计仍待契约同步 |
+| P6 | 依赖按对象版本加 `fields` 登记；只有新版评分读取名字时才登记 `name`（见第 8 节）；完成走现有 `FinishReevaluation`；无变化也提交 | 待确认；`fields` 的接口位置设计仍待契约同步 |
 | P7 | 无启动/补扫/健康入口；② 之外没有正式身份签发 | 未做 |
 
 **P5 用户确认保护。** 原交接文档把"移除参考后是否仍受保护"列为待确认。已采纳设计已经回答了这一点：[设计 v1.2 §6.2](../../../docs/design/design-v1.2.md)规定用户纠正或确认过的数据，**任何重新归属均不得改变其归属结果**，上游删除或整体替代时用户确认的归属保护也不被推翻。因此：

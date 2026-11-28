@@ -4,35 +4,91 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum, auto
+from typing import Literal, TypeGuard
 
 from ear_contracts import RawRecord, SemanticRecord, VersionRef
 from ear_storage_client import DependencyInput, PermissionDenied, Query, Reader, iter_query
 
 from ear_attribution.payloads import PAIRS, DomainError, references
+from ear_attribution.scoring import Reference, ScoreDiagnostic, decide, rank_identity_matches
 
 # Well below the wire limit; bound the number of full reference payloads per read.
 REFERENCE_READ_SIZE = 32
+
+
+class _Omitted(Enum):
+    VALUE = auto()
+
+
+_OMITTED = _Omitted.VALUE
+
+
+@dataclass(frozen=True)
+class _VoiceOptions:
+    unnamed_margin: float
+    named_threshold: float
+    named_margin: float
+    aggregation: Literal["max", "top_k_mean"]
+    top_k: int | None
+    safe_anonymous_reuse: bool
+
+
+def _finite(value: object) -> TypeGuard[float]:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 @dataclass(frozen=True)
 class MatchConfig:
     cosine_threshold: float
     gps_threshold_m: float
+    unnamed_margin: float | _Omitted = _OMITTED
+    named_threshold: float | _Omitted = _OMITTED
+    named_margin: float | _Omitted = _OMITTED
+    aggregation: Literal["max", "top_k_mean"] | _Omitted = _OMITTED
+    top_k: int | _Omitted | None = _OMITTED
+    safe_anonymous_reuse: bool | _Omitted = _OMITTED
+    _voice: _VoiceOptions | None = field(init=False, default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        if (
-            type(self.cosine_threshold) not in (int, float)
-            or not math.isfinite(self.cosine_threshold)
-            or not -1 <= self.cosine_threshold <= 1
-        ):
+        if not _finite(self.cosine_threshold) or not -1 <= self.cosine_threshold <= 1:
             raise ValueError("cosine_threshold must be finite in [-1, 1]")
-        if (
-            type(self.gps_threshold_m) not in (int, float)
-            or not math.isfinite(self.gps_threshold_m)
-            or self.gps_threshold_m < 0
-        ):
+        if not _finite(self.gps_threshold_m) or self.gps_threshold_m < 0:
             raise ValueError("gps_threshold_m must be finite and nonnegative")
+
+        u, n, m = self.unnamed_margin, self.named_threshold, self.named_margin
+        aggregation, top_k, safe = self.aggregation, self.top_k, self.safe_anonymous_reuse
+        options = (u, n, m, aggregation, top_k, safe)
+        if all(value is _OMITTED for value in options):
+            return
+        if any(value is _OMITTED for value in options):
+            raise ValueError("voice options must all be explicitly supplied")
+        if not _finite(u) or u < 0:
+            raise ValueError("unnamed_margin must be finite and nonnegative")
+        if not _finite(n) or not -1 <= n <= 1:
+            raise ValueError("named_threshold must be finite in [-1, 1]")
+        if not _finite(m) or m < 0:
+            raise ValueError("named_margin must be finite and nonnegative")
+        if not isinstance(aggregation, str) or aggregation not in {"max", "top_k_mean"}:
+            raise ValueError("invalid voice aggregation")
+        if (aggregation == "top_k_mean" and (type(top_k) is not int or top_k < 1)) or (
+            aggregation == "max" and top_k is not None
+        ):
+            raise ValueError("top_k must match aggregation")
+        if type(safe) is not bool:
+            raise ValueError("safe_anonymous_reuse must be bool")
+        # At this point top_k can only be the validated int or None.
+        object.__setattr__(
+            self,
+            "_voice",
+            _VoiceOptions(u, n, m, aggregation, top_k if type(top_k) is int else None, safe),
+        )
 
 
 def vector(record: RawRecord) -> tuple[str, tuple[float, ...]]:
@@ -97,12 +153,13 @@ def reference_dependency(record: SemanticRecord) -> DependencyInput:
 class Match:
     target_id: str | None
     dependencies: tuple[DependencyInput, ...]
+    diagnostic: ScoreDiagnostic | None = None
 
 
 def _reference_batches(
     reader: Reader, kind: str, unknown_id: str, dependencies: list[DependencyInput]
-) -> Iterator[list[tuple[str, str]]]:
-    pending: list[tuple[str, str]] = []
+) -> Iterator[list[tuple[SemanticRecord, str]]]:
+    pending: list[tuple[SemanticRecord, str]] = []
     try:
         for item in iter_query(reader, Query(kind, order="id")):
             if not isinstance(item, SemanticRecord):
@@ -119,7 +176,7 @@ def _reference_batches(
                         raise DomainError("unknown_place_has_references")
                     continue
             for id in refs:
-                pending.append((item.id, id))
+                pending.append((item, id))
                 if len(pending) == REFERENCE_READ_SIZE:
                     yield pending
                     pending = []
@@ -137,7 +194,7 @@ def match(reader: Reader, subject: RawRecord, config: MatchConfig, unknown_id: s
     kind = PAIRS[subject.data_type]
     query_vector = vector(subject) if kind == "person" else None
     query_point = coordinates(subject) if kind == "place" else None
-    candidates: list[tuple[str, RawRecord]] = []
+    candidates: list[tuple[SemanticRecord, RawRecord]] = []
     dependencies: list[DependencyInput] = []
     owners: dict[str, str] = {}
     for group in _reference_batches(reader, kind, unknown_id, dependencies):
@@ -157,11 +214,16 @@ def match(reader: Reader, subject: RawRecord, config: MatchConfig, unknown_id: s
                 raise DomainError("reference_type_mismatch")
             if id in owners:
                 raise DomainError("reference_owner_conflict")
-            owners[id] = owner
+            owners[id] = owner.id
             candidates.append((owner, raw))
     # Being a reference takes precedence over distance/similarity.
     if subject.id in owners:
         return Match(owners[subject.id], tuple(dependencies))
+    if query_vector is not None and config._voice is not None:
+        return _score_voice(
+            query_vector, candidates, dependencies, config.cosine_threshold, config._voice
+        )
+    # Exact legacy ordering and arithmetic, also used for GPS in both configurations.
     best: tuple[float, str] | None = None
     for owner, raw in candidates:
         if query_vector is not None:
@@ -177,7 +239,55 @@ def match(reader: Reader, subject: RawRecord, config: MatchConfig, unknown_id: s
             score = distance_m(query_point, coordinates(raw))
             if score > config.gps_threshold_m:
                 continue
-        proposal = (score, owner)
+        proposal = (score, owner.id)
         if best is None or proposal < best:
             best = proposal
     return Match(best[1] if best is not None else None, tuple(dependencies))
+
+
+def _score_voice(
+    query_vector: tuple[str, tuple[float, ...]],
+    candidates: list[tuple[SemanticRecord, RawRecord]],
+    dependencies: list[DependencyInput],
+    cosine_threshold: float,
+    options: _VoiceOptions,
+) -> Match:
+    model, query = query_vector
+    scored: list[Reference] = []
+    named: dict[str, bool] = {}
+    # Don't depend on sibling attributions: the ordinary candidates can depend on
+    # one another when rejudged, and the deployed worker cannot read local speakers.
+    for owner, raw in candidates:
+        ref_model, values = vector(raw)
+        if ref_model != model or len(values) != len(query):
+            continue
+        if owner.id not in named:
+            named[owner.id] = bool(owner.payload.get("name"))
+        scored.append(Reference(owner.id, raw.id, values, named[owner.id]))
+    ranked = rank_identity_matches(
+        query,
+        scored,
+        aggregation=options.aggregation,
+        top_k=options.top_k,
+        support_bonus=0.0,  # production stays raw until offline calibration
+        support_min_score=1.0,  # bonus is disabled; this is an explicit sentinel
+        score_mode="raw",
+    )
+    diagnostic = decide(
+        ranked,
+        named_threshold=options.named_threshold,
+        named_margin=options.named_margin,
+        unnamed_threshold=cosine_threshold,
+        unnamed_margin=options.unnamed_margin,
+        safe_anonymous_reuse=options.safe_anonymous_reuse,
+        score_mode_used="raw",
+        score_mode_reason="production_matching_uses_raw_only",
+    )
+    return Match(
+        diagnostic.best.identity_id if diagnostic.accepted and diagnostic.best else None,
+        tuple(
+            DependencyInput(dep.ref, ("name", "references")) if dep.id in named else dep
+            for dep in dependencies
+        ),
+        diagnostic,
+    )

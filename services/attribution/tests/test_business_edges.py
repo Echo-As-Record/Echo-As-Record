@@ -23,7 +23,7 @@ from .support import CONFIG, append, attr, feedback, present, request, setup, vo
 )
 def test_configuration_rejects_unsafe_thresholds(cosine, gps):
     with pytest.raises(ValueError):
-        MatchConfig(cosine, gps)
+        MatchConfig(cosine, gps, 0.0, cosine, 0.0, "max", None, True)
 
 
 def test_existing_reference_wins_even_against_earlier_identical_candidate():
@@ -212,16 +212,23 @@ def test_invalid_candidate_blocks_new_match_and_terminal_failed_finish_is_visibl
     assert client.stale_dependencies([person.id])  # failure does not pretend fresh dependencies
 
 
-def test_unchanged_plan_accepts_name_only_change_but_not_reference_change():
+@pytest.mark.parametrize("grouped", [False, True])
+def test_rename_during_match_conflicts_only_if_scoring_read_name(grouped):
     storage, client, service = setup()
     x = append(storage)
     service.handle(x)
     y = append(storage)
-    planner = BusinessPlanner(CONFIG)
+    planner = BusinessPlanner(CONFIG if grouped else MatchConfig(0.9, 100))
     with client.snapshot() as reader:
         ops = planner.new_record(reader, present(reader.get(y.data_id)), y)
     target = attr(client, x).payload["target_id"]
     feedback(storage, service, {"kind": "rename", "target_id": target, "name": "Only synthetic"})
-    client.write([*ops, MarkProcessed("attribution", y.event_id)], Context.of(y)).check()
+    result = client.write([*ops, MarkProcessed("attribution", y.event_id)], Context.of(y))
+    if grouped:
+        assert present(result.conflict).reason == "stale_dependency"
+        assert not client.is_processed("attribution", y.event_id)
+        service.handle(y)  # retry from a fresh snapshot with the new name
+    else:
+        result.check()
     assert attr(client, y).payload["target_id"] == target
     assert not client.stale_dependencies([target])

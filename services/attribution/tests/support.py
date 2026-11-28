@@ -15,7 +15,16 @@ from ear_contracts import (
 from ear_storage_client import AppendRaw, Context, MemoryStorage, PublishReevaluation, Query
 from ear_storage_client.testing import make_raw
 
-CONFIG = MatchConfig(cosine_threshold=0.9, gps_threshold_m=100)
+CONFIG = MatchConfig(
+    cosine_threshold=0.9,
+    gps_threshold_m=100,
+    unnamed_margin=0.0,
+    named_threshold=0.9,
+    named_margin=0.0,
+    aggregation="max",
+    top_k=None,
+    safe_anonymous_reuse=True,
+)
 
 
 def registry():

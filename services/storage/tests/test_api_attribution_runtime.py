@@ -75,7 +75,16 @@ OWNER_READS = READS | {
     "attribution",
     "attribution_state",
 }
-CONFIG = MatchConfig(cosine_threshold=0.9, gps_threshold_m=100)
+CONFIG = MatchConfig(
+    cosine_threshold=0.9,
+    gps_threshold_m=100,
+    unnamed_margin=0.0,
+    named_threshold=0.9,
+    named_margin=0.0,
+    aggregation="max",
+    top_k=None,
+    safe_anonymous_reuse=True,
+)
 
 
 def registry():
